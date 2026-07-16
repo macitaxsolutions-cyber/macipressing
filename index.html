@@ -1,0 +1,1752 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Maci Pressing — Gestion</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Expanded:wght@600;700;800&family=Source+Sans+3:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#1A1F1C;
+    --paper:#F6F2E8;
+    --paper-2:#EFE9DA;
+    --pine:#1B3A36;
+    --pine-2:#2D5F58;
+    --pine-light:#E4EDE9;
+    --rust:#C76B3F;
+    --rust-light:#F3E0D3;
+    --steam:#7FA89E;
+    --line:rgba(27,58,54,0.16);
+    --line-strong:rgba(27,58,54,0.35);
+    --white:#FFFDF8;
+    --danger:#B23B3B;
+    --danger-light:#F6DEDD;
+    --ok:#3B7D4F;
+    --ok-light:#DEEEE1;
+    --warn:#B8862E;
+    --warn-light:#F6E9D3;
+    --radius:10px;
+    --radius-lg:16px;
+    --shadow-card:0 1px 0 rgba(27,58,54,0.06);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'Source Sans 3', sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  #root{min-height:100vh;}
+  h1,h2,h3,.display{
+    font-family:'Archivo Expanded', sans-serif;
+    letter-spacing:-0.01em;
+  }
+  .mono{font-family:'JetBrains Mono', monospace; letter-spacing:0.02em;}
+  button{font-family:inherit; cursor:pointer;}
+  input,select,textarea{font-family:inherit; font-size:14px;}
+  ::selection{background:var(--rust-light);}
+  ::-webkit-scrollbar{width:10px; height:10px;}
+  ::-webkit-scrollbar-thumb{background:var(--line-strong); border-radius:6px;}
+  ::-webkit-scrollbar-track{background:transparent;}
+
+  .btn{
+    border:1.5px solid var(--ink);
+    background:transparent;
+    color:var(--ink);
+    padding:10px 18px;
+    border-radius:8px;
+    font-weight:600;
+    font-size:14px;
+    transition:transform .08s ease, background .15s ease;
+  }
+  .btn:hover{background:rgba(27,31,28,0.06);}
+  .btn:active{transform:scale(0.97);}
+  .btn-primary{
+    background:var(--pine);
+    border-color:var(--pine);
+    color:var(--white);
+  }
+  .btn-primary:hover{background:var(--pine-2);}
+  .btn-rust{
+    background:var(--rust);
+    border-color:var(--rust);
+    color:var(--white);
+  }
+  .btn-rust:hover{background:#B35A30;}
+  .btn-ghost{
+    border-color:transparent;
+    color:var(--pine);
+    padding:8px 12px;
+  }
+  .btn-ghost:hover{background:var(--pine-light);}
+  .btn-sm{padding:6px 12px; font-size:13px; border-radius:6px;}
+  .btn-danger{border-color:var(--danger); color:var(--danger);}
+  .btn-danger:hover{background:var(--danger-light);}
+  .btn:disabled{opacity:0.4; cursor:not-allowed;}
+
+  input[type=text],input[type=number],input[type=tel],input[type=email],input[type=date],select,textarea{
+    border:1.5px solid var(--line);
+    background:var(--white);
+    border-radius:8px;
+    padding:9px 12px;
+    color:var(--ink);
+    width:100%;
+    outline:none;
+    transition:border-color .15s ease;
+  }
+  input:focus,select:focus,textarea:focus{border-color:var(--pine);}
+  label{font-size:12.5px; font-weight:600; color:var(--pine); text-transform:uppercase; letter-spacing:0.04em; display:block; margin-bottom:5px;}
+
+  .card{
+    background:var(--white);
+    border:1px solid var(--line);
+    border-radius:var(--radius-lg);
+    box-shadow:var(--shadow-card);
+  }
+  .tag{
+    display:inline-flex; align-items:center; gap:5px;
+    font-size:11.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em;
+    padding:4px 10px; border-radius:100px;
+  }
+  .tag-recu{background:#E8E4D6; color:#5C5640;}
+  .tag-encours{background:var(--rust-light); color:#8C4322;}
+  .tag-pret{background:var(--ok-light); color:var(--ok);}
+  .tag-recupere{background:var(--pine-light); color:var(--pine);}
+  .tag-impaye{background:var(--danger-light); color:var(--danger);}
+  .tag-paye{background:var(--ok-light); color:var(--ok);}
+
+  .ticket-perfo{
+    position:relative;
+  }
+  .ticket-perfo::before, .ticket-perfo::after{
+    content:'';
+    position:absolute;
+    width:18px; height:18px;
+    background:var(--paper);
+    border-radius:50%;
+    top:50%;
+    transform:translateY(-50%);
+  }
+  .ticket-perfo::before{left:-9px;}
+  .ticket-perfo::after{right:-9px;}
+
+  @media print{
+    .no-print{display:none !important;}
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useCallback, useRef } = React;
+
+/* ===================== UTILITAIRES ===================== */
+
+const uid = (p='') => p + Math.random().toString(36).slice(2,9);
+const todayISO = () => new Date().toISOString().slice(0,10);
+
+const fmtGNF = (n) => new Intl.NumberFormat('fr-FR',{style:'currency',currency:'GNF',maximumFractionDigits:0}).format(Math.round(n||0));
+
+const fmtDate = (iso) => {
+  if(!iso) return '—';
+  const d = new Date(iso+'T00:00:00');
+  return d.toLocaleDateString('fr-FR',{day:'2-digit',month:'short',year:'numeric'});
+};
+const fmtDateTime = (iso) => {
+  if(!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString('fr-FR',{day:'2-digit',month:'short'}) + ' à ' + d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
+};
+
+function ticketNumber(siteCode, seq){
+  const d = new Date();
+  const yy = String(d.getFullYear()).slice(2);
+  const mm = String(d.getMonth()+1).padStart(2,'0');
+  return `${siteCode}-${yy}${mm}-${String(seq).padStart(4,'0')}`;
+}
+
+function siteCodeFromName(nom){
+  const letters = nom.replace(/[^a-zA-Z]/g,'').toUpperCase();
+  return (letters.slice(0,3) || 'PSG');
+}
+
+/* ===================== STORAGE LAYER ===================== */
+
+const memoryFallback = {};
+const hasStorage = typeof window !== 'undefined' && window.storage;
+
+async function storageGet(key, shared){
+  try{
+    if(hasStorage){
+      const r = await window.storage.get(key, shared);
+      return r ? r.value : null;
+    }
+    return memoryFallback[key] ?? null;
+  }catch(e){ return null; }
+}
+async function storageSet(key, value, shared){
+  try{
+    if(hasStorage){ await window.storage.set(key, value, shared); }
+    else{ memoryFallback[key] = value; }
+    return true;
+  }catch(e){ console.error('storage set failed', e); return false; }
+}
+
+const DB_KEY = 'pressing-db-v2';
+
+/* ===================== DONNEES PAR DEFAUT (par site) ===================== */
+
+function defaultServices(){
+  return [
+    { id: uid('svc_'), nom: 'Chemise', prix: 15000, categorie: 'Repassage' },
+    { id: uid('svc_'), nom: 'Pantalon', prix: 20000, categorie: 'Nettoyage' },
+    { id: uid('svc_'), nom: 'Costume 2 pièces', prix: 60000, categorie: 'Nettoyage' },
+    { id: uid('svc_'), nom: 'Robe simple', prix: 30000, categorie: 'Nettoyage' },
+    { id: uid('svc_'), nom: 'Robe de soirée', prix: 70000, categorie: 'Nettoyage' },
+    { id: uid('svc_'), nom: 'Manteau / Doudoune', prix: 50000, categorie: 'Nettoyage' },
+    { id: uid('svc_'), nom: 'Couette (2 pers.)', prix: 80000, categorie: 'Maison' },
+    { id: uid('svc_'), nom: 'Rideau (au mètre)', prix: 25000, categorie: 'Maison' },
+    { id: uid('svc_'), nom: 'Pull / Lainage', prix: 25000, categorie: 'Nettoyage' },
+    { id: uid('svc_'), nom: 'Retouche ourlet', prix: 25000, categorie: 'Retouche' },
+  ];
+}
+function defaultStock(){
+  return [
+    { id: uid('stk_'), nom: 'Housses plastique', unite: 'unité', quantite: 240, seuil: 100 },
+    { id: uid('stk_'), nom: 'Cintres bois', unite: 'unité', quantite: 180, seuil: 80 },
+    { id: uid('stk_'), nom: 'Perchlorethylène', unite: 'litre', quantite: 18, seuil: 15 },
+    { id: uid('stk_'), nom: 'Détachant taches grasses', unite: 'litre', quantite: 6, seuil: 5 },
+    { id: uid('stk_'), nom: 'Sachets papier kraft', unite: 'unité', quantite: 320, seuil: 150 },
+    { id: uid('stk_'), nom: 'Étiquettes adhésives', unite: 'rouleau', quantite: 9, seuil: 4 },
+  ];
+}
+
+function makeSite(nom, adresse, tel){
+  return {
+    id: uid('site_'),
+    nom, adresse, tel,
+    code: siteCodeFromName(nom),
+    seq: 1,
+    services: defaultServices(),
+    stock: defaultStock(),
+    clients: [],
+    commandes: [],
+    notifications: [],
+    employes: [],
+  };
+}
+
+function emptyDB(){
+  const site1 = makeSite('Maci Pressing — Kipé', 'Kipé, Conakry, République de Guinée', '625 63 33 83');
+  return {
+    sites: [site1],
+  };
+}
+
+/* migration depuis l'ancien format mono-site (pressing-db-v1) si présent */
+function migrateFromV1(oldRaw){
+  try{
+    const old = JSON.parse(oldRaw);
+    if(!old || !old.entreprise) return null;
+    const site = {
+      id: uid('site_'),
+      nom: old.entreprise.nom || 'Mon pressing',
+      adresse: old.entreprise.adresse || '',
+      tel: old.entreprise.tel || '',
+      code: siteCodeFromName(old.entreprise.nom || 'PSG'),
+      seq: old.seq || 1,
+      services: old.services || defaultServices(),
+      stock: old.stock || defaultStock(),
+      clients: old.clients || [],
+      commandes: old.commandes || [],
+      notifications: old.notifications || [],
+      employes: old.employes || [],
+    };
+    return { sites: [site] };
+  }catch(e){ return null; }
+}
+
+/* ===================== ICONES ===================== */
+
+const Icon = ({ name, size=18, style }) => {
+  const paths = {
+    shirt: "M8 3l4 2 4-2 3 4-3 2v11H5V9L2 7l3-4z",
+    ticket: "M3 7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4V7z",
+    users: "M16 11a4 4 0 1 0-4-4 M2 21v-2a4 4 0 0 1 4-4h3a4 4 0 0 1 4 4v2 M16 7a4 4 0 1 1 4 4 M16 21v-2a4 4 0 0 0-2-3.46",
+    box: "M21 8l-9-5-9 5 9 5 9-5z M3 8v8l9 5 9-5V8 M12 13v8",
+    chart: "M3 21h18 M7 17V9 M12 17V5 M17 17v-6",
+    bell: "M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9 M13.73 21a2 2 0 0 1-3.46 0",
+    plus: "M12 5v14 M5 12h14",
+    check: "M20 6L9 17l-5-5",
+    x: "M18 6L6 18 M6 6l12 12",
+    search: "M11 11m-7 0a7 7 0 1 0 14 0 7 7 0 1 0-14 0 M21 21l-4.35-4.35",
+    euro: "M19 7a6 6 0 0 0-5-3c-3.3 0-6 2.7-6 6s2.7 6 6 6a6 6 0 0 0 5-3 M3 10h10 M3 14h8",
+    clock: "M12 7v5l3 3 M21 12a9 9 0 1 1-18 0 9 9 0 1 1 18 0",
+    arrowRight: "M5 12h14 M12 5l7 7-7 7",
+    logout: "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4 M16 17l5-5-5-5 M21 12H9",
+    print: "M6 9V2h12v7 M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2 M6 14h12v8H6z",
+    trash: "M3 6h18 M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2 M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6 M10 11v6 M14 11v6",
+    edit: "M12 20h9 M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z",
+    home: "M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9z M9 22V12h6v10",
+    alert: "M12 9v4 M12 17h.01 M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z",
+    mail: "M4 4h16v16H4V4z M22 6l-10 7L2 6",
+    phone: "M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z",
+    history: "M3 3v5h5 M3.05 13A9 9 0 1 0 6 5.3L3 8 M12 7v5l4 2",
+    building: "M3 21h18 M5 21V7l8-4v18 M19 21V11l-6-4 M9 9v.01 M9 12v.01 M9 15v.01 M9 18v.01",
+    layers: "M12 2 2 7l10 5 10-5-10-5z M2 17l10 5 10-5 M2 12l10 5 10-5",
+  };
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+      <path d={paths[name] || ''} />
+    </svg>
+  );
+};
+
+/* ===================== STATUTS ===================== */
+
+const STATUTS = ['Reçu', 'En cours', 'Prêt', 'Récupéré'];
+const STATUT_TAG_CLASS = { 'Reçu':'tag-recu', 'En cours':'tag-encours', 'Prêt':'tag-pret', 'Récupéré':'tag-recupere' };
+function nextStatut(s){
+  const i = STATUTS.indexOf(s);
+  return STATUTS[Math.min(i+1, STATUTS.length-1)];
+}
+
+/* ===================== APP ROOT ===================== */
+
+function App(){
+  const [db, setDb] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [role, setRole] = useState(null); // 'gerant' | 'employe' | 'client'
+  const [currentSiteId, setCurrentSiteId] = useState(null);
+  const [currentClientId, setCurrentClientId] = useState(null);
+  const saveTimer = useRef(null);
+
+  useEffect(() => {
+    (async () => {
+      const raw = await storageGet(DB_KEY, true);
+      if(raw){
+        try{ setDb(JSON.parse(raw)); }
+        catch(e){ setDb(emptyDB()); }
+      }else{
+        const oldRaw = await storageGet('pressing-db-v1', true);
+        const migrated = oldRaw ? migrateFromV1(oldRaw) : null;
+        const fresh = migrated || emptyDB();
+        setDb(fresh);
+        await storageSet(DB_KEY, JSON.stringify(fresh), true);
+      }
+      setLoading(false);
+    })();
+  }, []);
+
+  const persist = useCallback((next) => {
+    setDb(next);
+    if(saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      storageSet(DB_KEY, JSON.stringify(next), true);
+    }, 250);
+  }, []);
+
+  if(loading || !db){
+    return (
+      <div style={{minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', color:'var(--pine)'}}>
+        <div className="mono" style={{fontSize:13}}>Chargement…</div>
+      </div>
+    );
+  }
+
+  if(!role){
+    return <RoleSelect db={db} setDb={persist} onSelect={(r, siteId, clientId) => { setRole(r); setCurrentSiteId(siteId||null); setCurrentClientId(clientId||null); }} />;
+  }
+
+  if(role === 'gerant') return <GerantApp db={db} setDb={persist} onLogout={()=>{setRole(null); setCurrentSiteId(null);}} />;
+  if(role === 'employe') return <EmployeApp db={db} setDb={persist} siteId={currentSiteId} onLogout={()=>{setRole(null); setCurrentSiteId(null);}} />;
+  if(role === 'client') return <ClientApp db={db} setDb={persist} siteId={currentSiteId} clientId={currentClientId} onLogout={()=>{setRole(null); setCurrentSiteId(null); setCurrentClientId(null);}} />;
+
+  return null;
+}
+
+/* ===================== ECRAN CHOIX DE ROLE ===================== */
+
+function RoleSelect({ db, setDb, onSelect }){
+  const [mode, setMode] = useState(null); // null | 'employe' | 'client'
+  const [search, setSearch] = useState('');
+
+  return (
+    <div style={{minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'2rem'}}>
+      <div style={{textAlign:'center', marginBottom:'2.5rem'}}>
+        <div style={{display:'inline-flex', alignItems:'center', gap:10, color:'var(--pine)', marginBottom:14}}>
+          <Icon name="shirt" size={30} />
+        </div>
+        <h1 style={{fontSize:34, margin:0, color:'var(--pine)'}}>Maci Pressing</h1>
+        <p className="mono" style={{color:'var(--steam)', fontSize:13, marginTop:6}}>
+          {db.sites.length > 1 ? `${db.sites.length} sites — choisissez votre espace` : 'Gestion de pressing — choisissez votre espace'}
+        </p>
+      </div>
+
+      {!mode && (
+        <div style={{display:'flex', gap:18, flexWrap:'wrap', justifyContent:'center', maxWidth:760}}>
+          <RoleCard icon="home" title="Gérant" desc="Supervision de tous les sites, finances, stock" onClick={() => onSelect('gerant')} />
+          <RoleCard icon="ticket" title="Employé" desc="Caisse, création et suivi des commandes" onClick={() => setMode('employe')} />
+          <RoleCard icon="users" title="Client" desc="Suivre mes commandes et factures" onClick={() => setMode('client')} />
+        </div>
+      )}
+
+      {mode === 'employe' && (
+        <SitePicker db={db} title="Quel pressing ?" onPick={(siteId) => onSelect('employe', siteId)} onBack={()=>setMode(null)} />
+      )}
+
+      {mode === 'client' && (
+        <ClientLoginFlow db={db} onPick={(siteId, clientId) => onSelect('client', siteId, clientId)} onBack={()=>setMode(null)} />
+      )}
+    </div>
+  );
+}
+
+function SitePicker({ db, title, onPick, onBack }){
+  return (
+    <div className="card" style={{marginTop:24, padding:'1.25rem', width:380, maxWidth:'90vw'}}>
+      <label>{title}</label>
+      <div style={{display:'grid', gap:8, marginTop:6}}>
+        {db.sites.map(s => (
+          <button key={s.id} className="btn" style={{width:'100%', textAlign:'left', display:'flex', justifyContent:'space-between', alignItems:'center'}} onClick={()=>onPick(s.id)}>
+            <span>{s.nom}</span>
+            <span className="mono" style={{fontSize:11.5, color:'var(--steam)'}}>{s.code}</span>
+          </button>
+        ))}
+      </div>
+      <button className="btn btn-ghost btn-sm" style={{marginTop:10}} onClick={onBack}>← Retour</button>
+    </div>
+  );
+}
+
+function ClientLoginFlow({ db, onPick, onBack }){
+  const [siteId, setSiteId] = useState(db.sites.length === 1 ? db.sites[0].id : null);
+  const [search, setSearch] = useState('');
+
+  const site = db.sites.find(s => s.id === siteId);
+  const matches = useMemo(() => {
+    if(!site || !search.trim()) return [];
+    const q = search.toLowerCase();
+    return site.clients.filter(c => c.nom.toLowerCase().includes(q) || (c.tel||'').includes(q)).slice(0,6);
+  }, [search, site]);
+
+  if(!siteId){
+    return <SitePicker db={db} title="Vous êtes client de quel pressing ?" onPick={setSiteId} onBack={onBack} />;
+  }
+
+  return (
+    <div className="card" style={{marginTop:24, padding:'1.25rem', width:380, maxWidth:'90vw'}}>
+      <label>Trouvez votre fiche client — {site.nom}</label>
+      <input type="text" placeholder="Nom ou téléphone…" value={search} onChange={e=>setSearch(e.target.value)} autoFocus />
+      <div style={{marginTop:10, maxHeight:220, overflowY:'auto'}}>
+        {search && matches.length === 0 && (
+          <p style={{fontSize:13, color:'var(--steam)', margin:'8px 0'}}>Aucun client trouvé. Demandez à l'accueil de créer votre fiche.</p>
+        )}
+        {matches.map(c => (
+          <button key={c.id} className="btn" style={{width:'100%', textAlign:'left', marginBottom:6, display:'flex', justifyContent:'space-between'}} onClick={() => onPick(siteId, c.id)}>
+            <span>{c.nom}</span>
+            <span className="mono" style={{color:'var(--steam)', fontSize:12}}>{c.tel}</span>
+          </button>
+        ))}
+      </div>
+      <div style={{display:'flex', gap:8, marginTop:8}}>
+        {db.sites.length > 1 && <button className="btn btn-ghost btn-sm" onClick={()=>setSiteId(null)}>← Changer de site</button>}
+        <button className="btn btn-ghost btn-sm" onClick={onBack}>Annuler</button>
+      </div>
+    </div>
+  );
+}
+
+function RoleCard({ icon, title, desc, onClick }){
+  return (
+    <button onClick={onClick} className="card" style={{
+      width:220, padding:'1.75rem 1.5rem', textAlign:'left', border:'1px solid var(--line)',
+      transition:'transform .12s ease, border-color .12s ease', background:'var(--white)'
+    }}
+    onMouseEnter={e=>{e.currentTarget.style.transform='translateY(-3px)'; e.currentTarget.style.borderColor='var(--pine)';}}
+    onMouseLeave={e=>{e.currentTarget.style.transform='translateY(0)'; e.currentTarget.style.borderColor='var(--line)';}}
+    >
+      <div style={{color:'var(--rust)', marginBottom:14}}><Icon name={icon} size={26} /></div>
+      <h3 style={{margin:'0 0 6px', fontSize:18}}>{title}</h3>
+      <p style={{margin:0, fontSize:13.5, color:'var(--steam)', lineHeight:1.5}}>{desc}</p>
+      <div style={{marginTop:14, display:'flex', alignItems:'center', gap:6, color:'var(--pine)', fontSize:13, fontWeight:600}}>
+        Entrer <Icon name="arrowRight" size={14} />
+      </div>
+    </button>
+  );
+}
+
+/* ===================== SHELL COMMUN ===================== */
+
+function Shell({ title, role, navItems, active, onNav, onLogout, children }){
+  return (
+    <div style={{display:'flex', minHeight:'100vh'}}>
+      <aside style={{
+        width:230, background:'var(--pine)', color:'var(--white)', padding:'1.5rem 1rem',
+        display:'flex', flexDirection:'column', position:'sticky', top:0, height:'100vh'
+      }}>
+        <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:'2rem', padding:'0 0.5rem'}}>
+          <Icon name="shirt" size={22} />
+          <div>
+            <div style={{fontFamily:"'Archivo Expanded',sans-serif", fontSize:14.5, fontWeight:700, lineHeight:1.25}}>{title}</div>
+            <div className="mono" style={{fontSize:11, opacity:0.65}}>{role}</div>
+          </div>
+        </div>
+        <nav style={{display:'flex', flexDirection:'column', gap:4, flex:1}}>
+          {navItems.map(item => (
+            <button key={item.key} onClick={()=>onNav(item.key)}
+              style={{
+                display:'flex', alignItems:'center', gap:10, padding:'10px 12px', borderRadius:8,
+                background: active===item.key ? 'rgba(255,255,255,0.14)' : 'transparent',
+                border:'none', color:'var(--white)', fontSize:14, fontWeight:active===item.key?600:400,
+                textAlign:'left', cursor:'pointer'
+              }}>
+              <Icon name={item.icon} size={17} />
+              {item.label}
+              {item.badge ? <span style={{marginLeft:'auto', background:'var(--rust)', borderRadius:100, fontSize:10.5, padding:'1px 7px', fontWeight:700}}>{item.badge}</span> : null}
+            </button>
+          ))}
+        </nav>
+        <button onClick={onLogout} style={{
+          display:'flex', alignItems:'center', gap:8, padding:'10px 12px', borderRadius:8,
+          background:'transparent', border:'1px solid rgba(255,255,255,0.25)', color:'var(--white)',
+          fontSize:13.5, marginTop:'1rem', cursor:'pointer'
+        }}>
+          <Icon name="logout" size={15}/> Changer d'espace
+        </button>
+      </aside>
+      <main style={{flex:1, padding:'2rem 2.5rem', maxWidth:'calc(100vw - 230px)'}}>
+        {children}
+      </main>
+    </div>
+  );
+}
+
+function PageHeader({ title, subtitle, right }){
+  return (
+    <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'1.75rem', gap:16, flexWrap:'wrap'}}>
+      <div>
+        <h1 style={{fontSize:26, margin:0, color:'var(--pine)'}}>{title}</h1>
+        {subtitle && <p style={{margin:'4px 0 0', color:'var(--steam)', fontSize:14}}>{subtitle}</p>}
+      </div>
+      {right}
+    </div>
+  );
+}
+
+/* ===================== LOGIQUE METIER ===================== */
+
+function calcCommandeTotal(commande, services){
+  return commande.lignes.reduce((sum, l) => {
+    const svc = services.find(s => s.id === l.serviceId);
+    const prix = svc ? svc.prix : 0;
+    return sum + prix * l.qte;
+  }, 0);
+}
+
+function pushNotification(site, updateSite, { clientId, message, canal }){
+  const notif = { id: uid('notif_'), clientId, message, canal, date: new Date().toISOString() };
+  updateSite({ ...site, notifications: [notif, ...site.notifications].slice(0, 300) });
+}
+
+/* ===================== ESPACE GERANT (multi-sites) ===================== */
+
+function GerantApp({ db, setDb, onLogout }){
+  const [page, setPage] = useState('global');
+  const [activeSiteId, setActiveSiteId] = useState(null);
+
+  function updateSite(updatedSite){
+    setDb({ ...db, sites: db.sites.map(s => s.id === updatedSite.id ? updatedSite : s) });
+  }
+  function addSite(nom, adresse, tel){
+    const newSite = makeSite(nom, adresse, tel);
+    setDb({ ...db, sites: [...db.sites, newSite] });
+    return newSite.id;
+  }
+  function removeSite(id){
+    if(db.sites.length <= 1) return;
+    setDb({ ...db, sites: db.sites.filter(s=>s.id!==id) });
+    if(activeSiteId === id) setActiveSiteId(null);
+  }
+
+  const navItems = [
+    { key:'global', label:'Vue globale', icon:'layers' },
+    { key:'sites', label:'Mes pressings', icon:'building' },
+  ];
+
+  const activeSite = db.sites.find(s => s.id === activeSiteId);
+
+  return (
+    <Shell title="Maci Pressing" role={`Gérant — ${db.sites.length} site(s)`} navItems={navItems}
+      active={activeSiteId ? null : page} onNav={(p)=>{setActiveSiteId(null); setPage(p);}} onLogout={onLogout}>
+      {activeSite ? (
+        <SiteDetailForGerant site={activeSite} db={db} updateSite={updateSite} onBack={()=>setActiveSiteId(null)} />
+      ) : (
+        <>
+          {page === 'global' && <GlobalDashboard db={db} onOpenSite={setActiveSiteId} />}
+          {page === 'sites' && <SitesManager db={db} addSite={addSite} removeSite={removeSite} onOpenSite={setActiveSiteId} />}
+        </>
+      )}
+    </Shell>
+  );
+}
+
+function GlobalDashboard({ db, onOpenSite }){
+  const today = todayISO();
+
+  const perSite = db.sites.map(site => {
+    const cmds = site.commandes;
+    const cmdsToday = cmds.filter(c => c.dateCreation.slice(0,10) === today);
+    const cmdsMonth = cmds.filter(c => c.dateCreation.slice(0,7) === today.slice(0,7));
+    const caJour = cmdsToday.reduce((s,c)=>s+calcCommandeTotal(c, site.services),0);
+    const caMois = cmdsMonth.reduce((s,c)=>s+calcCommandeTotal(c, site.services),0);
+    const impayes = cmds.filter(c => c.paiement === 'impaye');
+    const montantImpaye = impayes.reduce((s,c)=>s+calcCommandeTotal(c, site.services),0);
+    const enCours = cmds.filter(c => c.statut === 'En cours' || c.statut === 'Reçu').length;
+    const lowStock = site.stock.filter(s => s.quantite <= s.seuil).length;
+    return { site, caJour, caMois, montantImpaye, impayesCount: impayes.length, enCours, lowStock, clientsCount: site.clients.length };
+  });
+
+  const totals = perSite.reduce((acc, p) => ({
+    caJour: acc.caJour + p.caJour,
+    caMois: acc.caMois + p.caMois,
+    montantImpaye: acc.montantImpaye + p.montantImpaye,
+    clientsCount: acc.clientsCount + p.clientsCount,
+  }), { caJour:0, caMois:0, montantImpaye:0, clientsCount:0 });
+
+  return (
+    <div>
+      <PageHeader title="Vue globale" subtitle={`${db.sites.length} pressing(s) — ${fmtDate(today)}`} />
+
+      <div style={{display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:14, marginBottom:28}}>
+        <StatCard label="CA total aujourd'hui" value={fmtGNF(totals.caJour)} icon="euro" />
+        <StatCard label="CA total ce mois" value={fmtGNF(totals.caMois)} icon="chart" />
+        <StatCard label="Impayés cumulés" value={fmtGNF(totals.montantImpaye)} icon="alert" tone={totals.montantImpaye>0?'danger':'default'} />
+        <StatCard label="Clients (tous sites)" value={totals.clientsCount} icon="users" />
+      </div>
+
+      <h2 style={{fontSize:16, color:'var(--pine)', marginBottom:14}}>Détail par site</h2>
+      <div style={{display:'grid', gap:14}}>
+        {perSite.map(p => (
+          <div key={p.site.id} className="card" style={{padding:'1.25rem 1.5rem', cursor:'pointer'}} onClick={()=>onOpenSite(p.site.id)}>
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:10}}>
+              <div>
+                <div style={{display:'flex', alignItems:'center', gap:8}}>
+                  <span style={{fontWeight:700, fontSize:16}}>{p.site.nom}</span>
+                  <span className="mono" style={{fontSize:11, color:'var(--steam)'}}>{p.site.code}</span>
+                </div>
+                <div style={{fontSize:12.5, color:'var(--steam)', marginTop:2}}>{p.site.adresse}</div>
+              </div>
+              <div style={{display:'flex', alignItems:'center', gap:6, color:'var(--pine)', fontSize:13, fontWeight:600}}>
+                Voir le détail <Icon name="arrowRight" size={14}/>
+              </div>
+            </div>
+            <div style={{display:'flex', gap:24, marginTop:16, flexWrap:'wrap'}}>
+              <MiniMetric label="CA aujourd'hui" value={fmtGNF(p.caJour)} />
+              <MiniMetric label="CA ce mois" value={fmtGNF(p.caMois)} />
+              <MiniMetric label="Impayés" value={fmtGNF(p.montantImpaye)} danger={p.impayesCount>0} />
+              <MiniMetric label="À traiter" value={p.enCours} />
+              <MiniMetric label="Stock bas" value={p.lowStock} danger={p.lowStock>0} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MiniMetric({ label, value, danger }){
+  return (
+    <div>
+      <div style={{fontSize:11, color:'var(--steam)', textTransform:'uppercase', fontWeight:600, letterSpacing:'0.03em'}}>{label}</div>
+      <div className="mono" style={{fontSize:15, fontWeight:700, color: danger ? 'var(--danger)' : 'var(--pine)'}}>{value}</div>
+    </div>
+  );
+}
+
+function SitesManager({ db, addSite, removeSite, onOpenSite }){
+  const [showNew, setShowNew] = useState(false);
+  return (
+    <div>
+      <PageHeader title="Mes pressings" subtitle="Créez, supprimez ou ouvrez un établissement"
+        right={<button className="btn btn-rust" onClick={()=>setShowNew(true)}><Icon name="plus" size={15}/> Nouveau pressing</button>} />
+
+      <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:14}}>
+        {db.sites.map(s => (
+          <div key={s.id} className="card" style={{padding:'1.25rem 1.4rem'}}>
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start'}}>
+              <div>
+                <div style={{fontWeight:700, fontSize:15}}>{s.nom}</div>
+                <div style={{fontSize:12.5, color:'var(--steam)', marginTop:2}}>{s.adresse}</div>
+                <div style={{fontSize:12.5, color:'var(--steam)'}}>{s.tel}</div>
+              </div>
+              <span className="mono" style={{fontSize:11, color:'var(--steam)'}}>{s.code}</span>
+            </div>
+            <div style={{display:'flex', gap:8, marginTop:16}}>
+              <button className="btn btn-sm" onClick={()=>onOpenSite(s.id)}>Ouvrir</button>
+              <button className="btn btn-ghost btn-sm btn-danger" disabled={db.sites.length<=1} onClick={()=>{
+                if(window.confirm(`Supprimer définitivement « ${s.nom} » et toutes ses données ?`)) removeSite(s.id);
+              }}>
+                <Icon name="trash" size={13}/> Supprimer
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {showNew && <NewSiteModal onClose={()=>setShowNew(false)} onCreate={(nom,adresse,tel)=>{ addSite(nom,adresse,tel); setShowNew(false); }} />}
+    </div>
+  );
+}
+
+function NewSiteModal({ onClose, onCreate }){
+  const [nom, setNom] = useState('');
+  const [adresse, setAdresse] = useState('');
+  const [tel, setTel] = useState('');
+  return (
+    <ModalShell title="Nouveau pressing" onClose={onClose} width={420}>
+      <div style={{display:'grid', gap:14}}>
+        <div><label>Nom du pressing</label><input type="text" value={nom} onChange={e=>setNom(e.target.value)} autoFocus placeholder="ex. Maci Pressing — Hamdallaye"/></div>
+        <div><label>Adresse</label><input type="text" value={adresse} onChange={e=>setAdresse(e.target.value)} /></div>
+        <div><label>Téléphone</label><input type="tel" value={tel} onChange={e=>setTel(e.target.value)} /></div>
+        <p style={{fontSize:12.5, color:'var(--steam)', margin:0, lineHeight:1.5}}>
+          Ce site démarre avec sa propre liste de services, son propre stock, et aucun client ni commande — totalement indépendant des autres pressings.
+        </p>
+        <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
+          <button className="btn" onClick={onClose}>Annuler</button>
+          <button className="btn btn-rust" disabled={!nom.trim()} onClick={()=>onCreate(nom.trim(), adresse.trim(), tel.trim())}>Créer</button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ===================== DETAIL D'UN SITE (vu par le gérant) ===================== */
+
+function SiteDetailForGerant({ site, db, updateSite, onBack }){
+  const [page, setPage] = useState('dashboard');
+  const navItems = [
+    { key:'dashboard', label:'Tableau de bord', icon:'chart' },
+    { key:'commandes', label:'Commandes', icon:'ticket' },
+    { key:'clients', label:'Clients', icon:'users' },
+    { key:'stock', label:'Stock', icon:'box' },
+    { key:'employes', label:'Équipe', icon:'users' },
+    { key:'notifications', label:'Notifications', icon:'bell' },
+    { key:'parametres', label:'Paramètres', icon:'edit' },
+  ];
+  return (
+    <div>
+      <button className="btn btn-ghost btn-sm" style={{marginBottom:16}} onClick={onBack}>← Tous les pressings</button>
+      <div style={{display:'flex', gap:8, marginBottom:20, flexWrap:'wrap'}}>
+        {navItems.map(item => (
+          <button key={item.key} onClick={()=>setPage(item.key)} className="btn btn-sm" style={{
+            background: page===item.key ? 'var(--pine)' : 'transparent',
+            color: page===item.key ? 'var(--white)' : 'var(--ink)',
+            borderColor: page===item.key ? 'var(--pine)' : 'var(--line-strong)'
+          }}>{item.label}</button>
+        ))}
+      </div>
+      {page === 'dashboard' && <Dashboard site={site} updateSite={updateSite} siteTitle={site.nom} />}
+      {page === 'commandes' && <CommandesView site={site} updateSite={updateSite} editable={true} />}
+      {page === 'clients' && <ClientsView site={site} updateSite={updateSite} />}
+      {page === 'stock' && <StockView site={site} updateSite={updateSite} />}
+      {page === 'employes' && <EquipeView site={site} updateSite={updateSite} />}
+      {page === 'notifications' && <NotificationsView site={site} />}
+      {page === 'parametres' && <ParametresView site={site} updateSite={updateSite} />}
+    </div>
+  );
+}
+
+function Dashboard({ site, updateSite }){
+  const today = todayISO();
+  const stats = useMemo(() => {
+    const cmds = site.commandes;
+    const cmdsToday = cmds.filter(c => c.dateCreation.slice(0,10) === today);
+    const cmdsMonth = cmds.filter(c => c.dateCreation.slice(0,7) === today.slice(0,7));
+    const caJour = cmdsToday.reduce((s,c)=>s+calcCommandeTotal(c, site.services),0);
+    const caMois = cmdsMonth.reduce((s,c)=>s+calcCommandeTotal(c, site.services),0);
+    const impayes = cmds.filter(c => c.paiement === 'impaye');
+    const montantImpaye = impayes.reduce((s,c)=>s+calcCommandeTotal(c, site.services),0);
+    const enCours = cmds.filter(c => c.statut === 'En cours' || c.statut === 'Reçu').length;
+    const pretsNonRecuperes = cmds.filter(c => c.statut === 'Prêt').length;
+
+    const serviceCount = {};
+    cmds.forEach(c => c.lignes.forEach(l => { serviceCount[l.serviceId] = (serviceCount[l.serviceId]||0) + l.qte; }));
+    const topServices = Object.entries(serviceCount)
+      .map(([id, qte]) => ({ svc: site.services.find(s=>s.id===id), qte }))
+      .filter(x=>x.svc).sort((a,b)=>b.qte-a.qte).slice(0,5);
+
+    const last7 = Array.from({length:7}, (_,i)=>{
+      const d = new Date(); d.setDate(d.getDate()-(6-i));
+      const iso = d.toISOString().slice(0,10);
+      const ca = cmds.filter(c=>c.dateCreation.slice(0,10)===iso).reduce((s,c)=>s+calcCommandeTotal(c,site.services),0);
+      return { iso, ca, label: d.toLocaleDateString('fr-FR',{weekday:'short'}) };
+    });
+    const maxCa = Math.max(...last7.map(d=>d.ca), 1);
+
+    return { caJour, caMois, montantImpaye, impayesCount: impayes.length, enCours, pretsNonRecuperes, topServices, last7, maxCa, totalClients: site.clients.length };
+  }, [site, today]);
+
+  const lowStock = site.stock.filter(s => s.quantite <= s.seuil);
+
+  return (
+    <div>
+      <PageHeader title={site.nom} subtitle={`Aujourd'hui, ${fmtDate(today)}`} />
+
+      <div style={{display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:14, marginBottom:24}}>
+        <StatCard label="CA aujourd'hui" value={fmtGNF(stats.caJour)} icon="euro" />
+        <StatCard label="CA ce mois" value={fmtGNF(stats.caMois)} icon="chart" />
+        <StatCard label="Impayés" value={fmtGNF(stats.montantImpaye)} sub={`${stats.impayesCount} commande(s)`} icon="alert" tone={stats.impayesCount>0 ? 'danger':'default'} />
+        <StatCard label="Clients" value={stats.totalClients} icon="users" />
+      </div>
+
+      <div style={{display:'grid', gridTemplateColumns:'1.4fr 1fr', gap:16, marginBottom:24}}>
+        <div className="card" style={{padding:'1.5rem'}}>
+          <h3 style={{margin:'0 0 16px', fontSize:15}}>Chiffre d'affaires — 7 derniers jours</h3>
+          <div style={{display:'flex', alignItems:'flex-end', gap:10, height:140}}>
+            {stats.last7.map(d => (
+              <div key={d.iso} style={{flex:1, display:'flex', flexDirection:'column', alignItems:'center', gap:6}}>
+                <div style={{fontSize:10.5, color:'var(--steam)'}} className="mono">{d.ca>0 ? Math.round(d.ca/1000)+'k' : ''}</div>
+                <div style={{
+                  width:'100%', background:'var(--rust)', borderRadius:'4px 4px 0 0',
+                  height: Math.max(4, (d.ca/stats.maxCa)*90), opacity: d.iso===today?1:0.55
+                }}/>
+                <div style={{fontSize:11.5, color:'var(--pine)', textTransform:'capitalize'}}>{d.label}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="card" style={{padding:'1.5rem'}}>
+          <h3 style={{margin:'0 0 16px', fontSize:15}}>Services les plus demandés</h3>
+          {stats.topServices.length === 0 && <p style={{fontSize:13, color:'var(--steam)'}}>Pas encore de données.</p>}
+          {stats.topServices.map((t,i) => (
+            <div key={t.svc.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'7px 0', borderBottom: i<stats.topServices.length-1 ? '1px solid var(--line)' : 'none'}}>
+              <span style={{fontSize:13.5}}>{t.svc.nom}</span>
+              <span className="mono" style={{fontSize:13, color:'var(--steam)'}}>{t.qte}x</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:16}}>
+        <div className="card" style={{padding:'1.5rem'}}>
+          <h3 style={{margin:'0 0 12px', fontSize:15}}>À traiter</h3>
+          <div style={{display:'flex', gap:16}}>
+            <div>
+              <div style={{fontSize:22, fontWeight:700, color:'var(--rust)'}}>{stats.enCours}</div>
+              <div style={{fontSize:12.5, color:'var(--steam)'}}>en cours / reçues</div>
+            </div>
+            <div>
+              <div style={{fontSize:22, fontWeight:700, color:'var(--ok)'}}>{stats.pretsNonRecuperes}</div>
+              <div style={{fontSize:12.5, color:'var(--steam)'}}>prêtes, à récupérer</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="card" style={{padding:'1.5rem'}}>
+          <h3 style={{margin:'0 0 12px', fontSize:15, display:'flex', alignItems:'center', gap:8}}>
+            <Icon name="alert" size={15} style={{color: lowStock.length ? 'var(--danger)':'var(--steam)'}}/> Stock à surveiller
+          </h3>
+          {lowStock.length === 0 && <p style={{fontSize:13, color:'var(--steam)'}}>Tous les stocks sont au-dessus du seuil.</p>}
+          {lowStock.map(s => (
+            <div key={s.id} style={{display:'flex', justifyContent:'space-between', fontSize:13.5, padding:'5px 0'}}>
+              <span>{s.nom}</span>
+              <span className="mono" style={{color:'var(--danger)'}}>{s.quantite} {s.unite}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ label, value, sub, icon, tone='default' }){
+  const toneColor = tone === 'danger' ? 'var(--danger)' : 'var(--pine)';
+  return (
+    <div className="card" style={{padding:'1.1rem 1.25rem'}}>
+      <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start'}}>
+        <div>
+          <div style={{fontSize:12, color:'var(--steam)', textTransform:'uppercase', letterSpacing:'0.04em', fontWeight:600}}>{label}</div>
+          <div style={{fontSize:22, fontWeight:700, color:toneColor, marginTop:4}}>{value}</div>
+          {sub && <div style={{fontSize:12, color:'var(--steam)', marginTop:2}}>{sub}</div>}
+        </div>
+        <Icon name={icon} size={18} style={{color:'var(--steam)', marginTop:2}} />
+      </div>
+    </div>
+  );
+}
+
+/* ===================== COMMANDES ===================== */
+
+function CommandesView({ site, updateSite, editable }){
+  const [filter, setFilter] = useState('Toutes');
+  const [search, setSearch] = useState('');
+  const [showNew, setShowNew] = useState(false);
+  const [openTicket, setOpenTicket] = useState(null);
+
+  const filtered = useMemo(() => {
+    let list = [...site.commandes].sort((a,b)=> new Date(b.dateCreation) - new Date(a.dateCreation));
+    if(filter !== 'Toutes') list = list.filter(c => c.statut === filter);
+    if(search.trim()){
+      const q = search.toLowerCase();
+      list = list.filter(c => {
+        const client = site.clients.find(cl => cl.id === c.clientId);
+        return c.numero.toLowerCase().includes(q) || (client && client.nom.toLowerCase().includes(q));
+      });
+    }
+    return list;
+  }, [site.commandes, site.clients, filter, search]);
+
+  function updateCommande(updated){
+    updateSite({ ...site, commandes: site.commandes.map(c => c.id === updated.id ? updated : c) });
+  }
+
+  function advanceStatut(cmd){
+    const updated = { ...cmd, statut: nextStatut(cmd.statut) };
+    const client = site.clients.find(c => c.id === cmd.clientId);
+    const nextSite = { ...site, commandes: site.commandes.map(c => c.id === updated.id ? updated : c) };
+    if(client && (updated.statut === 'Prêt' || updated.statut === 'Récupéré')){
+      const msg = updated.statut === 'Prêt'
+        ? `Bonjour ${client.nom}, votre commande ${cmd.numero} est prête à récupérer.`
+        : `Merci ${client.nom}, votre commande ${cmd.numero} a été récupérée.`;
+      const notif = { id: uid('notif_'), clientId: client.id, message: msg, canal: client.canalPref || 'SMS', date: new Date().toISOString() };
+      nextSite.notifications = [notif, ...nextSite.notifications].slice(0,300);
+    }
+    updateSite(nextSite);
+  }
+
+  function togglePaiement(cmd){
+    updateCommande({ ...cmd, paiement: cmd.paiement === 'paye' ? 'impaye' : 'paye' });
+  }
+
+  return (
+    <div>
+      <PageHeader
+        title="Commandes"
+        subtitle={`${site.commandes.length} commande(s) au total`}
+        right={editable ? <button className="btn btn-rust" onClick={()=>setShowNew(true)}><Icon name="plus" size={15}/> Nouvelle commande</button> : null}
+      />
+
+      <div style={{display:'flex', gap:10, marginBottom:18, flexWrap:'wrap', alignItems:'center'}}>
+        <div style={{position:'relative', flex:'1 1 240px', maxWidth:320}}>
+          <input type="text" placeholder="Rechercher (n° ticket, client)…" value={search} onChange={e=>setSearch(e.target.value)} style={{paddingLeft:34}}/>
+          <Icon name="search" size={15} style={{position:'absolute', left:11, top:11, color:'var(--steam)'}}/>
+        </div>
+        {['Toutes', ...STATUTS].map(s => (
+          <button key={s} onClick={()=>setFilter(s)} className="btn btn-sm" style={{
+            background: filter===s ? 'var(--pine)' : 'transparent',
+            color: filter===s ? 'var(--white)' : 'var(--ink)',
+            borderColor: filter===s ? 'var(--pine)' : 'var(--line-strong)'
+          }}>{s}</button>
+        ))}
+      </div>
+
+      <div className="card" style={{overflow:'hidden'}}>
+        <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+          <thead>
+            <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+              <th style={th}>Ticket</th>
+              <th style={th}>Client</th>
+              <th style={th}>Articles</th>
+              <th style={th}>Total</th>
+              <th style={th}>Statut</th>
+              <th style={th}>Paiement</th>
+              <th style={th}>Dépôt</th>
+              <th style={th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 && (
+              <tr><td colSpan={8} style={{...td, textAlign:'center', color:'var(--steam)', padding:'2rem'}}>Aucune commande ne correspond.</td></tr>
+            )}
+            {filtered.map(cmd => {
+              const client = site.clients.find(c => c.id === cmd.clientId);
+              const total = calcCommandeTotal(cmd, site.services);
+              return (
+                <tr key={cmd.id} style={{borderTop:'1px solid var(--line)'}}>
+                  <td style={{...td}}><span className="mono" style={{fontWeight:600}}>{cmd.numero}</span></td>
+                  <td style={td}>{client ? client.nom : '—'}</td>
+                  <td style={td}>{cmd.lignes.reduce((s,l)=>s+l.qte,0)} article(s)</td>
+                  <td style={td} className="mono">{fmtGNF(total)}</td>
+                  <td style={td}><span className={`tag ${STATUT_TAG_CLASS[cmd.statut]}`}>{cmd.statut}</span></td>
+                  <td style={td}><span className={`tag ${cmd.paiement==='paye'?'tag-paye':'tag-impaye'}`}>{cmd.paiement==='paye'?'Payé':'Impayé'}</span></td>
+                  <td style={td}>{fmtDate(cmd.dateCreation.slice(0,10))}</td>
+                  <td style={{...td, textAlign:'right'}}>
+                    <div style={{display:'flex', gap:6, justifyContent:'flex-end'}}>
+                      <button className="btn btn-ghost btn-sm" onClick={()=>setOpenTicket(cmd)}>Voir</button>
+                      {editable && cmd.statut !== 'Récupéré' && (
+                        <button className="btn btn-sm" onClick={()=>advanceStatut(cmd)}>→ {nextStatut(cmd.statut)}</button>
+                      )}
+                      {editable && (
+                        <button className="btn btn-sm" onClick={()=>togglePaiement(cmd)}>{cmd.paiement==='paye' ? 'Marquer impayé' : 'Marquer payé'}</button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {showNew && <NewCommandeModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
+      {openTicket && <TicketModal cmd={openTicket} site={site} onClose={()=>setOpenTicket(null)} />}
+    </div>
+  );
+}
+
+const th = { padding:'10px 14px', fontSize:12, fontWeight:700, color:'var(--pine)', textTransform:'uppercase', letterSpacing:'0.03em' };
+const td = { padding:'10px 14px' };
+
+function NewCommandeModal({ site, updateSite, onClose }){
+  const [clientId, setClientId] = useState('');
+  const [clientSearch, setClientSearch] = useState('');
+  const [newClientMode, setNewClientMode] = useState(false);
+  const [newClientNom, setNewClientNom] = useState('');
+  const [newClientTel, setNewClientTel] = useState('');
+  const [lignes, setLignes] = useState([]);
+  const [dateRetrait, setDateRetrait] = useState('');
+  const [notes, setNotes] = useState('');
+
+  const clientMatches = useMemo(() => {
+    if(!clientSearch.trim()) return site.clients.slice(0,5);
+    const q = clientSearch.toLowerCase();
+    return site.clients.filter(c => c.nom.toLowerCase().includes(q) || (c.tel||'').includes(q)).slice(0,5);
+  }, [clientSearch, site.clients]);
+
+  function addLigne(serviceId){
+    setLignes(prev => {
+      const exist = prev.find(l => l.serviceId === serviceId);
+      if(exist) return prev.map(l => l.serviceId===serviceId ? {...l, qte:l.qte+1} : l);
+      return [...prev, { serviceId, qte:1 }];
+    });
+  }
+  function setQte(serviceId, qte){
+    setLignes(prev => prev.map(l => l.serviceId===serviceId ? {...l, qte: Math.max(0,qte)} : l).filter(l=>l.qte>0));
+  }
+
+  const total = lignes.reduce((s,l)=>{
+    const svc = site.services.find(x=>x.id===l.serviceId);
+    return s + (svc ? svc.prix*l.qte : 0);
+  }, 0);
+
+  function handleSubmit(){
+    let finalClientId = clientId;
+    let workingClients = site.clients;
+    if(newClientMode){
+      if(!newClientNom.trim()) return;
+      const newClient = { id: uid('cli_'), nom: newClientNom.trim(), tel: newClientTel.trim(), canalPref:'SMS', dateInscription: todayISO() };
+      workingClients = [...site.clients, newClient];
+      finalClientId = newClient.id;
+    }
+    if(!finalClientId || lignes.length === 0) return;
+
+    const seq = site.seq;
+    const cmd = {
+      id: uid('cmd_'),
+      numero: ticketNumber(site.code, seq),
+      clientId: finalClientId,
+      lignes,
+      statut: 'Reçu',
+      paiement: 'impaye',
+      dateCreation: new Date().toISOString(),
+      dateRetraitPrevue: dateRetrait || null,
+      notes: notes.trim(),
+    };
+    const client = workingClients.find(c=>c.id===finalClientId);
+    const notif = { id: uid('notif_'), clientId: finalClientId, message: `Bonjour ${client.nom}, votre commande ${cmd.numero} a été enregistrée (${fmtGNF(total)}).`, canal: client.canalPref || 'SMS', date: new Date().toISOString() };
+
+    updateSite({
+      ...site,
+      seq: seq+1,
+      clients: workingClients,
+      commandes: [cmd, ...site.commandes],
+      notifications: [notif, ...site.notifications].slice(0,300),
+    });
+    onClose();
+  }
+
+  return (
+    <ModalShell title="Nouvelle commande" onClose={onClose} width={620}>
+      <div style={{display:'grid', gap:18}}>
+        <div>
+          <label>Client</label>
+          {!newClientMode ? (
+            <>
+              <input type="text" placeholder="Rechercher un client…" value={clientSearch} onChange={e=>{setClientSearch(e.target.value); setClientId('');}} />
+              <div style={{marginTop:6, display:'flex', flexWrap:'wrap', gap:6}}>
+                {clientMatches.map(c => (
+                  <button key={c.id} className="btn btn-sm" onClick={()=>{setClientId(c.id); setClientSearch(c.nom);}}
+                    style={{background: clientId===c.id?'var(--pine-light)':'transparent', borderColor: clientId===c.id?'var(--pine)':'var(--line-strong)'}}>
+                    {c.nom}
+                  </button>
+                ))}
+              </div>
+              <button className="btn btn-ghost btn-sm" style={{marginTop:8}} onClick={()=>setNewClientMode(true)}>+ Créer un nouveau client</button>
+            </>
+          ) : (
+            <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:10}}>
+              <input type="text" placeholder="Nom complet" value={newClientNom} onChange={e=>setNewClientNom(e.target.value)} />
+              <input type="tel" placeholder="Téléphone" value={newClientTel} onChange={e=>setNewClientTel(e.target.value)} />
+              <button className="btn btn-ghost btn-sm" style={{gridColumn:'1/-1', justifySelf:'start'}} onClick={()=>setNewClientMode(false)}>← Choisir un client existant</button>
+            </div>
+          )}
+        </div>
+
+        <div>
+          <label>Articles</label>
+          <div style={{display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap:8}}>
+            {site.services.map(s => (
+              <button key={s.id} className="btn btn-sm" style={{justifyContent:'space-between', display:'flex'}} onClick={()=>addLigne(s.id)}>
+                <span>{s.nom}</span><span className="mono">{fmtGNF(s.prix)}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {lignes.length > 0 && (
+          <div>
+            <label>Panier</label>
+            {lignes.map(l => {
+              const svc = site.services.find(s=>s.id===l.serviceId);
+              return (
+                <div key={l.serviceId} style={{display:'flex', alignItems:'center', justifyContent:'space-between', padding:'6px 0', borderBottom:'1px solid var(--line)'}}>
+                  <span style={{fontSize:13.5}}>{svc.nom}</span>
+                  <div style={{display:'flex', alignItems:'center', gap:8}}>
+                    <button className="btn btn-sm" style={{padding:'2px 9px'}} onClick={()=>setQte(l.serviceId, l.qte-1)}>−</button>
+                    <span className="mono" style={{minWidth:18, textAlign:'center'}}>{l.qte}</span>
+                    <button className="btn btn-sm" style={{padding:'2px 9px'}} onClick={()=>setQte(l.serviceId, l.qte+1)}>+</button>
+                    <span className="mono" style={{minWidth:90, textAlign:'right'}}>{fmtGNF(svc.prix*l.qte)}</span>
+                  </div>
+                </div>
+              );
+            })}
+            <div style={{display:'flex', justifyContent:'space-between', paddingTop:10, fontWeight:700}}>
+              <span>Total</span><span className="mono">{fmtGNF(total)}</span>
+            </div>
+          </div>
+        )}
+
+        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:10}}>
+          <div>
+            <label>Date de retrait prévue</label>
+            <input type="date" value={dateRetrait} onChange={e=>setDateRetrait(e.target.value)} min={todayISO()} />
+          </div>
+          <div>
+            <label>Notes (optionnel)</label>
+            <input type="text" placeholder="Tache, bouton manquant…" value={notes} onChange={e=>setNotes(e.target.value)} />
+          </div>
+        </div>
+
+        <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
+          <button className="btn" onClick={onClose}>Annuler</button>
+          <button className="btn btn-rust" disabled={(!clientId && !newClientMode) || lignes.length===0} onClick={handleSubmit}>Créer le ticket</button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ModalShell({ title, children, onClose, width=520 }){
+  return (
+    <div style={{
+      position:'fixed', inset:0, background:'rgba(27,31,28,0.45)', display:'flex',
+      alignItems:'center', justifyContent:'center', zIndex:50, padding:20
+    }} onClick={(e)=>{ if(e.target === e.currentTarget) onClose(); }}>
+      <div className="card" style={{width, maxWidth:'92vw', maxHeight:'88vh', overflowY:'auto', padding:'1.5rem'}}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:18}}>
+          <h2 style={{margin:0, fontSize:19, color:'var(--pine)'}}>{title}</h2>
+          <button onClick={onClose} className="btn btn-ghost btn-sm" aria-label="Fermer"><Icon name="x" size={16}/></button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function TicketModal({ cmd, site, onClose }){
+  const client = site.clients.find(c => c.id === cmd.clientId);
+  const total = calcCommandeTotal(cmd, site.services);
+  return (
+    <ModalShell title={`Ticket ${cmd.numero}`} onClose={onClose} width={420}>
+      <div className="ticket-perfo" style={{background:'var(--paper-2)', borderRadius:10, padding:'1.25rem'}}>
+        <div style={{textAlign:'center', marginBottom:14}}>
+          <div style={{fontWeight:700, fontSize:16}}>{site.nom}</div>
+          <div style={{fontSize:12, color:'var(--steam)'}}>{site.adresse}</div>
+          <div style={{fontSize:12, color:'var(--steam)'}}>{site.tel}</div>
+        </div>
+        <div style={{borderTop:'1px dashed var(--line-strong)', borderBottom:'1px dashed var(--line-strong)', padding:'10px 0', margin:'10px 0'}}>
+          <div className="mono" style={{textAlign:'center', fontSize:15, fontWeight:700}}>{cmd.numero}</div>
+          <div style={{textAlign:'center', fontSize:12, color:'var(--steam)'}}>{fmtDateTime(cmd.dateCreation)}</div>
+        </div>
+        <div style={{fontSize:13.5, marginBottom:8}}><strong>{client ? client.nom : 'Client inconnu'}</strong>{client && client.tel ? ` — ${client.tel}` : ''}</div>
+        {cmd.lignes.map(l => {
+          const svc = site.services.find(s=>s.id===l.serviceId);
+          if(!svc) return null;
+          return (
+            <div key={l.serviceId} style={{display:'flex', justifyContent:'space-between', fontSize:13, padding:'3px 0'}}>
+              <span>{l.qte}x {svc.nom}</span>
+              <span className="mono">{fmtGNF(svc.prix*l.qte)}</span>
+            </div>
+          );
+        })}
+        <div style={{borderTop:'1px dashed var(--line-strong)', marginTop:10, paddingTop:10, display:'flex', justifyContent:'space-between', fontWeight:700}}>
+          <span>Total</span><span className="mono">{fmtGNF(total)}</span>
+        </div>
+        <div style={{marginTop:10, display:'flex', justifyContent:'space-between', fontSize:12.5}}>
+          <span className={`tag ${STATUT_TAG_CLASS[cmd.statut]}`}>{cmd.statut}</span>
+          <span className={`tag ${cmd.paiement==='paye'?'tag-paye':'tag-impaye'}`}>{cmd.paiement==='paye'?'Payé':'Impayé'}</span>
+        </div>
+        {cmd.dateRetraitPrevue && <div style={{fontSize:12, color:'var(--steam)', marginTop:8}}>Retrait prévu : {fmtDate(cmd.dateRetraitPrevue)}</div>}
+        {cmd.notes && <div style={{fontSize:12, color:'var(--steam)', marginTop:4}}>Note : {cmd.notes}</div>}
+      </div>
+      <div className="no-print" style={{display:'flex', justifyContent:'flex-end', gap:8, marginTop:16}}>
+        <button className="btn btn-sm" onClick={()=>window.print()}><Icon name="print" size={14}/> Imprimer</button>
+        <button className="btn btn-rust btn-sm" onClick={onClose}>Fermer</button>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ===================== CLIENTS ===================== */
+
+function ClientsView({ site, updateSite }){
+  const [search, setSearch] = useState('');
+  const [selected, setSelected] = useState(null);
+  const [showNew, setShowNew] = useState(false);
+
+  const filtered = useMemo(() => {
+    if(!search.trim()) return site.clients;
+    const q = search.toLowerCase();
+    return site.clients.filter(c => c.nom.toLowerCase().includes(q) || (c.tel||'').includes(q));
+  }, [site.clients, search]);
+
+  function clientStats(clientId){
+    const cmds = site.commandes.filter(c => c.clientId === clientId);
+    const total = cmds.reduce((s,c)=>s+calcCommandeTotal(c, site.services), 0);
+    const impaye = cmds.filter(c=>c.paiement==='impaye').reduce((s,c)=>s+calcCommandeTotal(c, site.services), 0);
+    return { count: cmds.length, total, impaye };
+  }
+
+  return (
+    <div>
+      <PageHeader title="Clients" subtitle={`${site.clients.length} fiche(s) client`}
+        right={<button className="btn btn-rust" onClick={()=>setShowNew(true)}><Icon name="plus" size={15}/> Nouveau client</button>} />
+
+      <div style={{position:'relative', maxWidth:320, marginBottom:18}}>
+        <input type="text" placeholder="Rechercher…" value={search} onChange={e=>setSearch(e.target.value)} style={{paddingLeft:34}}/>
+        <Icon name="search" size={15} style={{position:'absolute', left:11, top:11, color:'var(--steam)'}}/>
+      </div>
+
+      <div style={{display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:14}}>
+        {filtered.map(c => {
+          const st = clientStats(c.id);
+          return (
+            <div key={c.id} className="card" style={{padding:'1.1rem 1.25rem', cursor:'pointer'}} onClick={()=>setSelected(c)}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start'}}>
+                <div>
+                  <div style={{fontWeight:600, fontSize:15}}>{c.nom}</div>
+                  <div style={{fontSize:12.5, color:'var(--steam)'}}>{c.tel || 'Pas de téléphone'}</div>
+                </div>
+                {st.impaye > 0 && <span className="tag tag-impaye">{fmtGNF(st.impaye)}</span>}
+              </div>
+              <div style={{display:'flex', gap:14, marginTop:12, fontSize:12.5, color:'var(--steam)'}}>
+                <span>{st.count} commande(s)</span>
+                <span className="mono">{fmtGNF(st.total)} cumulé</span>
+              </div>
+            </div>
+          );
+        })}
+        {filtered.length === 0 && <p style={{color:'var(--steam)'}}>Aucun client trouvé.</p>}
+      </div>
+
+      {showNew && <NewClientModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
+      {selected && <ClientDetailModal client={selected} site={site} onClose={()=>setSelected(null)} />}
+    </div>
+  );
+}
+
+function NewClientModal({ site, updateSite, onClose }){
+  const [nom, setNom] = useState('');
+  const [tel, setTel] = useState('');
+  const [email, setEmail] = useState('');
+  const [canalPref, setCanalPref] = useState('SMS');
+
+  function submit(){
+    if(!nom.trim()) return;
+    const client = { id: uid('cli_'), nom: nom.trim(), tel: tel.trim(), email: email.trim(), canalPref, dateInscription: todayISO() };
+    updateSite({ ...site, clients: [...site.clients, client] });
+    onClose();
+  }
+
+  return (
+    <ModalShell title="Nouveau client" onClose={onClose} width={420}>
+      <div style={{display:'grid', gap:14}}>
+        <div><label>Nom complet</label><input type="text" value={nom} onChange={e=>setNom(e.target.value)} autoFocus/></div>
+        <div><label>Téléphone</label><input type="tel" value={tel} onChange={e=>setTel(e.target.value)} /></div>
+        <div><label>Email (optionnel)</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)} /></div>
+        <div>
+          <label>Canal de notification préféré</label>
+          <select value={canalPref} onChange={e=>setCanalPref(e.target.value)}>
+            <option value="SMS">SMS</option>
+            <option value="Email">Email</option>
+          </select>
+        </div>
+        <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
+          <button className="btn" onClick={onClose}>Annuler</button>
+          <button className="btn btn-rust" disabled={!nom.trim()} onClick={submit}>Créer</button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ClientDetailModal({ client, site, onClose }){
+  const cmds = site.commandes.filter(c => c.clientId === client.id).sort((a,b)=>new Date(b.dateCreation)-new Date(a.dateCreation));
+  const total = cmds.reduce((s,c)=>s+calcCommandeTotal(c, site.services), 0);
+  return (
+    <ModalShell title={client.nom} onClose={onClose} width={560}>
+      <div style={{display:'flex', gap:20, marginBottom:18, fontSize:13.5, color:'var(--steam)'}}>
+        {client.tel && <span><Icon name="phone" size={13} style={{verticalAlign:-2, marginRight:4}}/>{client.tel}</span>}
+        {client.email && <span><Icon name="mail" size={13} style={{verticalAlign:-2, marginRight:4}}/>{client.email}</span>}
+        <span>Client depuis {fmtDate(client.dateInscription)}</span>
+      </div>
+      <div style={{display:'flex', gap:14, marginBottom:18}}>
+        <StatMini label="Commandes" value={cmds.length} />
+        <StatMini label="Total dépensé" value={fmtGNF(total)} />
+      </div>
+      <h3 style={{fontSize:14, margin:'0 0 10px'}}>Historique</h3>
+      <div style={{maxHeight:280, overflowY:'auto'}}>
+        {cmds.length === 0 && <p style={{fontSize:13, color:'var(--steam)'}}>Aucune commande pour ce client.</p>}
+        {cmds.map(c => (
+          <div key={c.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 0', borderBottom:'1px solid var(--line)', fontSize:13}}>
+            <div>
+              <span className="mono" style={{fontWeight:600}}>{c.numero}</span>
+              <span style={{color:'var(--steam)', marginLeft:8}}>{fmtDate(c.dateCreation.slice(0,10))}</span>
+            </div>
+            <div style={{display:'flex', gap:8, alignItems:'center'}}>
+              <span className={`tag ${STATUT_TAG_CLASS[c.statut]}`}>{c.statut}</span>
+              <span className="mono">{fmtGNF(calcCommandeTotal(c, site.services))}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </ModalShell>
+  );
+}
+
+function StatMini({ label, value }){
+  return (
+    <div style={{background:'var(--paper-2)', borderRadius:8, padding:'10px 16px', flex:1}}>
+      <div style={{fontSize:11.5, color:'var(--steam)', textTransform:'uppercase', fontWeight:600}}>{label}</div>
+      <div style={{fontSize:19, fontWeight:700, color:'var(--pine)'}}>{value}</div>
+    </div>
+  );
+}
+
+/* ===================== STOCK ===================== */
+
+function StockView({ site, updateSite }){
+  const [showNew, setShowNew] = useState(false);
+
+  function adjust(id, delta){
+    updateSite({ ...site, stock: site.stock.map(s => s.id===id ? {...s, quantite: Math.max(0, s.quantite+delta)} : s) });
+  }
+  function removeItem(id){
+    updateSite({ ...site, stock: site.stock.filter(s => s.id !== id) });
+  }
+
+  return (
+    <div>
+      <PageHeader title="Stock" subtitle="Consommables et fournitures"
+        right={<button className="btn btn-rust" onClick={()=>setShowNew(true)}><Icon name="plus" size={15}/> Ajouter un article</button>} />
+
+      <div className="card" style={{overflow:'hidden'}}>
+        <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+          <thead>
+            <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+              <th style={th}>Article</th>
+              <th style={th}>Quantité</th>
+              <th style={th}>Seuil d'alerte</th>
+              <th style={th}>Statut</th>
+              <th style={th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {site.stock.map(s => {
+              const low = s.quantite <= s.seuil;
+              return (
+                <tr key={s.id} style={{borderTop:'1px solid var(--line)'}}>
+                  <td style={td}>{s.nom}</td>
+                  <td style={td}>
+                    <div style={{display:'flex', alignItems:'center', gap:8}}>
+                      <button className="btn btn-sm" style={{padding:'2px 9px'}} onClick={()=>adjust(s.id,-1)}>−</button>
+                      <span className="mono">{s.quantite} {s.unite}</span>
+                      <button className="btn btn-sm" style={{padding:'2px 9px'}} onClick={()=>adjust(s.id,1)}>+</button>
+                    </div>
+                  </td>
+                  <td style={td} className="mono">{s.seuil} {s.unite}</td>
+                  <td style={td}>{low ? <span className="tag tag-impaye">Stock bas</span> : <span className="tag tag-paye">OK</span>}</td>
+                  <td style={{...td, textAlign:'right'}}><button className="btn btn-ghost btn-sm" onClick={()=>removeItem(s.id)}><Icon name="trash" size={14}/></button></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {showNew && <NewStockModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
+    </div>
+  );
+}
+
+function NewStockModal({ site, updateSite, onClose }){
+  const [nom, setNom] = useState('');
+  const [unite, setUnite] = useState('unité');
+  const [quantite, setQuantite] = useState(0);
+  const [seuil, setSeuil] = useState(10);
+
+  function submit(){
+    if(!nom.trim()) return;
+    updateSite({ ...site, stock: [...site.stock, { id: uid('stk_'), nom: nom.trim(), unite, quantite: Number(quantite)||0, seuil: Number(seuil)||0 }] });
+    onClose();
+  }
+
+  return (
+    <ModalShell title="Ajouter un article au stock" onClose={onClose} width={400}>
+      <div style={{display:'grid', gap:14}}>
+        <div><label>Nom de l'article</label><input type="text" value={nom} onChange={e=>setNom(e.target.value)} autoFocus/></div>
+        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:10}}>
+          <div><label>Quantité initiale</label><input type="number" value={quantite} onChange={e=>setQuantite(e.target.value)} /></div>
+          <div><label>Unité</label><input type="text" value={unite} onChange={e=>setUnite(e.target.value)} placeholder="unité, litre…"/></div>
+        </div>
+        <div><label>Seuil d'alerte</label><input type="number" value={seuil} onChange={e=>setSeuil(e.target.value)} /></div>
+        <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
+          <button className="btn" onClick={onClose}>Annuler</button>
+          <button className="btn btn-rust" disabled={!nom.trim()} onClick={submit}>Ajouter</button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ===================== EQUIPE ===================== */
+
+function EquipeView({ site, updateSite }){
+  const [showNew, setShowNew] = useState(false);
+  function removeEmp(id){ updateSite({ ...site, employes: site.employes.filter(e=>e.id!==id) }); }
+
+  return (
+    <div>
+      <PageHeader title="Équipe" subtitle={`${site.employes.length} employé(s)`}
+        right={<button className="btn btn-rust" onClick={()=>setShowNew(true)}><Icon name="plus" size={15}/> Ajouter un employé</button>} />
+      <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14}}>
+        {site.employes.map(e => (
+          <div key={e.id} className="card" style={{padding:'1.1rem 1.25rem', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+            <div>
+              <div style={{fontWeight:600, fontSize:14.5}}>{e.nom}</div>
+              <div style={{fontSize:12.5, color:'var(--steam)'}}>{e.role}</div>
+            </div>
+            <button className="btn btn-ghost btn-sm" onClick={()=>removeEmp(e.id)}><Icon name="trash" size={14}/></button>
+          </div>
+        ))}
+        {site.employes.length === 0 && <p style={{color:'var(--steam)'}}>Aucun employé enregistré pour ce site.</p>}
+      </div>
+      {showNew && <NewEmployeModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
+    </div>
+  );
+}
+
+function NewEmployeModal({ site, updateSite, onClose }){
+  const [nom, setNom] = useState('');
+  const [role, setRole] = useState('Caissier');
+  function submit(){
+    if(!nom.trim()) return;
+    updateSite({ ...site, employes: [...site.employes, { id: uid('emp_'), nom: nom.trim(), role }] });
+    onClose();
+  }
+  return (
+    <ModalShell title="Ajouter un employé" onClose={onClose} width={380}>
+      <div style={{display:'grid', gap:14}}>
+        <div><label>Nom complet</label><input type="text" value={nom} onChange={e=>setNom(e.target.value)} autoFocus/></div>
+        <div>
+          <label>Rôle</label>
+          <select value={role} onChange={e=>setRole(e.target.value)}>
+            <option>Caissier</option>
+            <option>Pressing</option>
+            <option>Livreur</option>
+            <option>Gérant adjoint</option>
+          </select>
+        </div>
+        <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
+          <button className="btn" onClick={onClose}>Annuler</button>
+          <button className="btn btn-rust" disabled={!nom.trim()} onClick={submit}>Ajouter</button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ===================== NOTIFICATIONS ===================== */
+
+function NotificationsView({ site }){
+  const sorted = [...site.notifications].sort((a,b)=>new Date(b.date)-new Date(a.date));
+  return (
+    <div>
+      <PageHeader title="Notifications" subtitle="Journal des messages envoyés aux clients" />
+      <div className="card" style={{padding:'1.25rem'}}>
+        <p style={{fontSize:13, color:'var(--steam)', marginTop:0, marginBottom:16, lineHeight:1.6}}>
+          Ce journal simule l'envoi de SMS et d'emails. Pour un envoi réel, il faudrait connecter un service comme Twilio (SMS) ou un fournisseur email — c'est une intégration à ajouter séparément.
+        </p>
+        {sorted.length === 0 && <p style={{fontSize:13, color:'var(--steam)'}}>Aucune notification envoyée pour le moment.</p>}
+        {sorted.map(n => (
+          <div key={n.id} style={{display:'flex', gap:12, padding:'10px 0', borderTop:'1px solid var(--line)'}}>
+            <Icon name={n.canal==='SMS'?'phone':'mail'} size={16} style={{color:'var(--rust)', marginTop:2, flexShrink:0}} />
+            <div style={{flex:1}}>
+              <div style={{fontSize:13.5}}>{n.message}</div>
+              <div style={{fontSize:11.5, color:'var(--steam)', marginTop:2}}>{n.canal} · {fmtDateTime(n.date)}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ===================== PARAMETRES (avec édition des prix) ===================== */
+
+function ParametresView({ site, updateSite }){
+  const [nom, setNom] = useState(site.nom);
+  const [adresse, setAdresse] = useState(site.adresse);
+  const [tel, setTel] = useState(site.tel);
+  const [savedFlash, setSavedFlash] = useState(false);
+
+  function save(){
+    updateSite({ ...site, nom, adresse, tel });
+    setSavedFlash(true);
+    setTimeout(()=>setSavedFlash(false), 1800);
+  }
+
+  return (
+    <div>
+      <PageHeader title="Paramètres" subtitle="Informations de l'établissement et services" />
+
+      <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:18}}>
+        <div className="card" style={{padding:'1.5rem'}}>
+          <h3 style={{margin:'0 0 16px', fontSize:15}}>Établissement</h3>
+          <div style={{display:'grid', gap:12}}>
+            <div><label>Nom</label><input type="text" value={nom} onChange={e=>setNom(e.target.value)} /></div>
+            <div><label>Adresse</label><input type="text" value={adresse} onChange={e=>setAdresse(e.target.value)} /></div>
+            <div><label>Téléphone</label><input type="text" value={tel} onChange={e=>setTel(e.target.value)} /></div>
+            <button className="btn btn-rust" onClick={save} style={{justifySelf:'start'}}>
+              {savedFlash ? <><Icon name="check" size={14}/> Enregistré</> : 'Enregistrer'}
+            </button>
+          </div>
+        </div>
+
+        <ServicesEditor site={site} updateSite={updateSite} />
+      </div>
+    </div>
+  );
+}
+
+function ServicesEditor({ site, updateSite }){
+  const [nom, setNom] = useState('');
+  const [prix, setPrix] = useState('');
+  const [categorie, setCategorie] = useState('Nettoyage');
+  const [editingId, setEditingId] = useState(null);
+  const [editNom, setEditNom] = useState('');
+  const [editPrix, setEditPrix] = useState('');
+  const [editCategorie, setEditCategorie] = useState('Nettoyage');
+
+  function addService(){
+    if(!nom.trim() || !prix) return;
+    updateSite({ ...site, services: [...site.services, { id: uid('svc_'), nom: nom.trim(), prix: Number(prix), categorie }] });
+    setNom(''); setPrix('');
+  }
+  function removeService(id){
+    updateSite({ ...site, services: site.services.filter(s=>s.id!==id) });
+  }
+  function startEdit(s){
+    setEditingId(s.id);
+    setEditNom(s.nom);
+    setEditPrix(String(s.prix));
+    setEditCategorie(s.categorie);
+  }
+  function cancelEdit(){
+    setEditingId(null);
+  }
+  function saveEdit(){
+    if(!editNom.trim() || editPrix === '') return;
+    updateSite({
+      ...site,
+      services: site.services.map(s => s.id === editingId ? { ...s, nom: editNom.trim(), prix: Number(editPrix), categorie: editCategorie } : s)
+    });
+    setEditingId(null);
+  }
+
+  return (
+    <div className="card" style={{padding:'1.5rem'}}>
+      <h3 style={{margin:'0 0 16px', fontSize:15}}>Services & tarifs</h3>
+      <div style={{maxHeight:320, overflowY:'auto', marginBottom:14}}>
+        {site.services.map(s => (
+          editingId === s.id ? (
+            <div key={s.id} style={{display:'grid', gridTemplateColumns:'1.3fr 0.9fr 1fr auto auto', gap:6, alignItems:'center', padding:'8px 0', borderBottom:'1px solid var(--line)'}}>
+              <input type="text" value={editNom} onChange={e=>setEditNom(e.target.value)} style={{padding:'6px 8px', fontSize:13}} />
+              <input type="number" value={editPrix} onChange={e=>setEditPrix(e.target.value)} style={{padding:'6px 8px', fontSize:13}} />
+              <select value={editCategorie} onChange={e=>setEditCategorie(e.target.value)} style={{padding:'6px 8px', fontSize:13}}>
+                <option>Nettoyage</option>
+                <option>Repassage</option>
+                <option>Retouche</option>
+                <option>Maison</option>
+              </select>
+              <button className="btn btn-sm" style={{padding:'5px 9px'}} onClick={saveEdit}><Icon name="check" size={13}/></button>
+              <button className="btn btn-ghost btn-sm" style={{padding:'5px 9px'}} onClick={cancelEdit}><Icon name="x" size={13}/></button>
+            </div>
+          ) : (
+            <div key={s.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'6px 0', borderBottom:'1px solid var(--line)', fontSize:13.5}}>
+              <span>{s.nom} <span style={{color:'var(--steam)', fontSize:12}}>· {s.categorie}</span></span>
+              <div style={{display:'flex', alignItems:'center', gap:6}}>
+                <span className="mono">{fmtGNF(s.prix)}</span>
+                <button className="btn btn-ghost btn-sm" style={{padding:'4px 7px'}} onClick={()=>startEdit(s)} aria-label="Modifier"><Icon name="edit" size={13}/></button>
+                <button className="btn btn-ghost btn-sm" style={{padding:'4px 7px'}} onClick={()=>removeService(s.id)} aria-label="Supprimer"><Icon name="trash" size={13}/></button>
+              </div>
+            </div>
+          )
+        ))}
+      </div>
+      <div style={{display:'grid', gridTemplateColumns:'1.4fr 0.8fr 1fr', gap:8}}>
+        <input type="text" placeholder="Nom du service" value={nom} onChange={e=>setNom(e.target.value)} />
+        <input type="number" placeholder="Prix (GNF)" value={prix} onChange={e=>setPrix(e.target.value)} />
+        <select value={categorie} onChange={e=>setCategorie(e.target.value)}>
+          <option>Nettoyage</option>
+          <option>Repassage</option>
+          <option>Retouche</option>
+          <option>Maison</option>
+        </select>
+      </div>
+      <button className="btn btn-rust btn-sm" style={{marginTop:10}} onClick={addService} disabled={!nom.trim()||!prix}>
+        <Icon name="plus" size={13}/> Ajouter
+      </button>
+    </div>
+  );
+}
+
+/* ===================== ESPACE EMPLOYE (lié à un site) ===================== */
+
+function EmployeApp({ db, setDb, siteId, onLogout }){
+  const [page, setPage] = useState('caisse');
+  const site = db.sites.find(s => s.id === siteId);
+
+  function updateSite(updatedSite){
+    setDb({ ...db, sites: db.sites.map(s => s.id === updatedSite.id ? updatedSite : s) });
+  }
+
+  if(!site){
+    return (
+      <div style={{minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center'}}>
+        <div style={{textAlign:'center'}}>
+          <p>Ce pressing n'existe plus.</p>
+          <button className="btn" onClick={onLogout}>Retour</button>
+        </div>
+      </div>
+    );
+  }
+
+  const navItems = [
+    { key:'caisse', label:'Caisse', icon:'ticket' },
+    { key:'clients', label:'Clients', icon:'users' },
+    { key:'stock', label:'Stock', icon:'box' },
+  ];
+  return (
+    <Shell title={site.nom} role="Espace employé" navItems={navItems} active={page} onNav={setPage} onLogout={onLogout}>
+      {page === 'caisse' && <CommandesView site={site} updateSite={updateSite} editable={true} />}
+      {page === 'clients' && <ClientsView site={site} updateSite={updateSite} />}
+      {page === 'stock' && <StockView site={site} updateSite={updateSite} />}
+    </Shell>
+  );
+}
+
+/* ===================== ESPACE CLIENT (lié à un site) ===================== */
+
+function ClientApp({ db, setDb, siteId, clientId, onLogout }){
+  const site = db.sites.find(s => s.id === siteId);
+  const client = site ? site.clients.find(c => c.id === clientId) : null;
+
+  if(!site || !client){
+    return (
+      <div style={{minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center'}}>
+        <div style={{textAlign:'center'}}>
+          <p>Fiche client introuvable.</p>
+          <button className="btn" onClick={onLogout}>Retour</button>
+        </div>
+      </div>
+    );
+  }
+
+  const cmds = site.commandes.filter(c => c.clientId === clientId).sort((a,b)=>new Date(b.dateCreation)-new Date(a.dateCreation));
+  const impayes = cmds.filter(c => c.paiement === 'impaye');
+  const totalImpaye = impayes.reduce((s,c)=>s+calcCommandeTotal(c, site.services), 0);
+  const enCours = cmds.filter(c => c.statut !== 'Récupéré');
+
+  return (
+    <div style={{minHeight:'100vh', padding:'2.5rem 2rem', maxWidth:840, margin:'0 auto'}}>
+      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:30}}>
+        <div>
+          <p className="mono" style={{color:'var(--steam)', fontSize:12, margin:0}}>{site.nom}</p>
+          <h1 style={{margin:'2px 0 0', fontSize:26, color:'var(--pine)'}}>Bonjour {client.nom.split(' ')[0]}</h1>
+        </div>
+        <button className="btn" onClick={onLogout}><Icon name="logout" size={14}/> Changer d'espace</button>
+      </div>
+
+      <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:26}}>
+        <StatCard label="Commandes en cours" value={enCours.length} icon="clock" />
+        <StatCard label="Total commandes" value={cmds.length} icon="ticket" />
+        <StatCard label="Solde impayé" value={fmtGNF(totalImpaye)} icon="euro" tone={totalImpaye>0?'danger':'default'} />
+      </div>
+
+      <h2 style={{fontSize:17, color:'var(--pine)', marginBottom:14}}>Mes commandes</h2>
+      <div style={{display:'grid', gap:12}}>
+        {cmds.length === 0 && (
+          <div className="card" style={{padding:'2rem', textAlign:'center', color:'var(--steam)'}}>
+            Vous n'avez pas encore de commande chez nous.
+          </div>
+        )}
+        {cmds.map(c => {
+          const total = calcCommandeTotal(c, site.services);
+          return (
+            <div key={c.id} className="card" style={{padding:'1.1rem 1.3rem', display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10}}>
+              <div>
+                <div style={{display:'flex', alignItems:'center', gap:10}}>
+                  <span className="mono" style={{fontWeight:700}}>{c.numero}</span>
+                  <span className={`tag ${STATUT_TAG_CLASS[c.statut]}`}>{c.statut}</span>
+                  <span className={`tag ${c.paiement==='paye'?'tag-paye':'tag-impaye'}`}>{c.paiement==='paye'?'Payé':'Impayé'}</span>
+                </div>
+                <div style={{fontSize:12.5, color:'var(--steam)', marginTop:6}}>
+                  {c.lignes.reduce((s,l)=>s+l.qte,0)} article(s) · déposé le {fmtDate(c.dateCreation.slice(0,10))}
+                  {c.dateRetraitPrevue && ` · retrait prévu le ${fmtDate(c.dateRetraitPrevue)}`}
+                </div>
+              </div>
+              <div className="mono" style={{fontSize:17, fontWeight:700, color:'var(--pine)'}}>{fmtGNF(total)}</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ===================== MONTAGE ===================== */
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+</script>
+</body>
+</html>
