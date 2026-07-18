@@ -2204,7 +2204,7 @@ function DepensesView({ site, updateSite }){
                 <td style={td}>{fmtDate(d.date)}</td>
                 <td style={td}>{d.description}</td>
                 <td style={td}><span className="tag tag-recu">{d.categorie}</span></td>
-                <td style={td} className="mono" style={{...td, color:'var(--danger)', fontWeight:600}}>{fmtGNF(d.montant)}</td>
+                <td style={{...td, color:'var(--danger)', fontWeight:600}} className="mono">{fmtGNF(d.montant)}</td>
                 <td style={{...td, textAlign:'right'}}>
                   <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>setConfirmDep(d)}>
                     <Icon name="trash" size={14}/>
@@ -2359,7 +2359,7 @@ function RemunerationGerantView({ site }){
                 <td style={td}>{fmtDate(r.date)}</td>
                 <td style={td}><span className="tag tag-recu">{r.type === 'repassage' ? '👔 Repassage' : '🚗 Livraison'}</span></td>
                 <td style={td}>{r.detail}</td>
-                <td style={td} className="mono" style={{...td, fontWeight:700, color:'var(--ok)'}}>{fmtGNF(r.montant)}</td>
+                <td style={{...td, fontWeight:700, color:'var(--ok)'}} className="mono">{fmtGNF(r.montant)}</td>
               </tr>
             ))}
             {filtered.length > 0 && (
@@ -2856,7 +2856,7 @@ function RemunerationView({ site, updateSite, db, siteId }){
                 <td style={td}>{fmtDate(r.date)}</td>
                 <td style={td}><span className="tag tag-recu">{r.type === 'repassage' ? '👔 Repassage' : '🚗 Livraison'}</span></td>
                 <td style={td}>{r.detail}</td>
-                <td style={td} className="mono" style={{...td, fontWeight:700, color:'var(--ok)'}}>{fmtGNF(r.montant)}</td>
+                <td style={{...td, fontWeight:700, color:'var(--ok)'}} className="mono">{fmtGNF(r.montant)}</td>
               </tr>
             ))}
             {filtered.length > 0 && (
@@ -2983,7 +2983,11 @@ function ClientApp({ db, setDb, siteId, clientId, onLogout }){
 /* ===================== MONTAGE ===================== */
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(<App />);
+try {
+  root.render(<App />);
+} catch(e) {
+  document.getElementById('root').innerHTML = '<div style="padding:2rem;font-family:monospace;color:red;"><h2>Erreur de démarrage</h2><pre>' + e.message + '\n' + e.stack + '</pre></div>';
+}
 </script>
 </body>
 </html>
