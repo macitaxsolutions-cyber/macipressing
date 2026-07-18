@@ -261,7 +261,7 @@ function makeSite(nom, adresse, tel){
     depenses: [],
     remunerations: [], // historique des saisies de rémunération employés
     configRemuneration: {
-      prixUnitRepassage: 0, // GNF par unité repassée
+      tarifsRepassage: [], // tarifs par article
       zones: [ // zones de livraison
         { id: uid('zone_'), nom: 'Zone 1 — Locale', montant: 15000 },
         { id: uid('zone_'), nom: 'Zone 2 — Proche', montant: 25000 },
@@ -358,7 +358,8 @@ function nextStatut(s){
 
 /* ===================== MOTS DE PASSE ===================== */
 /* ===================== MOTS DE PASSE ===================== */
-const PASS_GERANT = "Dero1981@";
+const DEFAULT_PASS_GERANT = "Dero1981@";
+function getPassGerant(db){ return db.passGerant || DEFAULT_PASS_GERANT; }
 
 // Les mots de passe employés sont stockés dans la base de données Firebase
 // et gérés par le gérant directement dans l'application.
@@ -445,7 +446,7 @@ function RoleSelect({ db, setDb, onSelect }){
 
   function handleLogin(){
     if(loginRole === 'gerant'){
-      if(password === PASS_GERANT){
+      if(password === getPassGerant(db)){
         onSelect('gerant');
       } else {
         setError('Mot de passe incorrect. Réessayez.');
@@ -704,7 +705,7 @@ function GerantApp({ db, setDb, onLogout }){
     <Shell title="Maci Pressing" role={`Gérant — ${db.sites.length} site(s)`} navItems={navItems}
       active={activeSiteId ? null : page} onNav={(p)=>{setActiveSiteId(null); setPage(p);}} onLogout={onLogout}>
       {activeSite ? (
-        <SiteDetailForGerant site={activeSite} db={db} updateSite={updateSite} onBack={()=>setActiveSiteId(null)} />
+        <SiteDetailForGerant site={activeSite} db={db} setDb={setDb} updateSite={updateSite} onBack={()=>setActiveSiteId(null)} />
       ) : (
         <>
           {page === 'global' && <GlobalDashboard db={db} onOpenSite={setActiveSiteId} />}
@@ -885,7 +886,7 @@ function SitesManager({ db, addSite, removeSite, onOpenSite, setDb }){
       </div>
 
       {showNew && <NewSiteModal onClose={()=>setShowNew(false)} onCreate={(nom,adresse,tel)=>{ addSite(nom,adresse,tel); setShowNew(false); }} />}
-      {confirmSite && <ConfirmDelete
+      {confirmSite && <ConfirmDelete db={db}
         message={`Supprimer définitivement « ${confirmSite.nom} » et TOUTES ses données (commandes, clients, stock) ? Cette action est irréversible.`}
         onConfirm={()=>{ removeSite(confirmSite.id); setConfirmSite(null); }}
         onCancel={()=>setConfirmSite(null)}
@@ -918,7 +919,7 @@ function NewSiteModal({ onClose, onCreate }){
 
 /* ===================== DETAIL D'UN SITE (vu par le gérant) ===================== */
 
-function SiteDetailForGerant({ site, db, updateSite, onBack }){
+function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
   const [page, setPage] = useState('dashboard');
   const navItems = [
     { key:'dashboard', label:'Tableau de bord', icon:'chart' },
@@ -951,7 +952,7 @@ function SiteDetailForGerant({ site, db, updateSite, onBack }){
       {page === 'notifications' && <NotificationsView site={site} />}
       {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} />}
       {page === 'remuneration' && <RemunerationGerantView site={site} />}
-      {page === 'parametres' && <ParametresView site={site} updateSite={updateSite} />}
+      {page === 'parametres' && <ParametresView site={site} updateSite={updateSite} db={db} setDb={setDb} />}
     </div>
   );
 }
@@ -1114,13 +1115,31 @@ function CommandesView({ site, updateSite, editable }){
   function advanceStatut(cmd){
     const updated = { ...cmd, statut: nextStatut(cmd.statut) };
     const client = site.clients.find(c => c.id === cmd.clientId);
+    const total = calcCommandeTotal(cmd, site.services);
+    const acompte = Number(cmd.acompte) || 0;
+    const solde = total - acompte;
     const nextSite = { ...site, commandes: site.commandes.map(c => c.id === updated.id ? updated : c) };
-    if(client && (updated.statut === 'Prêt' || updated.statut === 'Récupéré')){
-      const msg = updated.statut === 'Prêt'
-        ? `Bonjour ${client.nom}, votre commande ${cmd.numero} est prête à récupérer.`
-        : `Merci ${client.nom}, votre commande ${cmd.numero} a été récupérée.`;
-      const notif = { id: uid('notif_'), clientId: client.id, message: msg, canal: client.canalPref || 'SMS', date: new Date().toISOString() };
-      nextSite.notifications = [notif, ...nextSite.notifications].slice(0,300);
+
+    if(client){
+      let msg = '';
+      if(updated.statut === 'Prêt'){
+        msg = `Bonjour ${client.nom}, votre commande ${cmd.numero} chez ${site.nom} est prête à récupérer.${solde > 0 ? ` Solde à régler : ${fmtGNF(solde)}.` : ' Entièrement payée.'}`;
+      } else if(updated.statut === 'Récupéré'){
+        const lignesDetail = cmd.lignes.map(l => {
+          const svc = site.services.find(s=>s.id===l.serviceId);
+          return svc ? `${l.qte}x ${svc.nom}` : '';
+        }).filter(Boolean).join(', ');
+        msg = `✅ Reçu — ${site.nom}\nCommande : ${cmd.numero}\nArticles : ${lignesDetail}${cmd.rabais>0?`\nRabais : -${fmtGNF(cmd.rabais)}`:''}${acompte>0?`\nAcompte versé : ${fmtGNF(acompte)}`:''}\nTotal payé : ${fmtGNF(total - (solde > 0 ? solde : 0))}\n${solde > 0 ? `⚠️ Reste dû : ${fmtGNF(solde)}` : '✔️ Compte soldé'}\nMerci pour votre confiance !`;
+      }
+      if(msg){
+        const notif = { id: uid('notif_'), clientId: client.id, message: msg, canal: client.canalPref || 'SMS', date: new Date().toISOString() };
+        nextSite.notifications = [notif, ...nextSite.notifications].slice(0,300);
+        // Ouvrir WhatsApp automatiquement si le client a un numéro
+        if(client.tel && (updated.statut === 'Prêt' || updated.statut === 'Récupéré')){
+          const tel = client.tel.replace(/\D/g,'');
+          setTimeout(() => window.open(`https://wa.me/${tel}?text=${encodeURIComponent(msg)}`, '_blank'), 300);
+        }
+      }
     }
     updateSite(nextSite);
   }
@@ -1299,7 +1318,16 @@ function NewCommandeModal({ site, updateSite, onClose }){
       notes: notes.trim(),
     };
     const client = workingClients.find(c=>c.id===finalClientId);
-    const notif = { id: uid('notif_'), clientId: finalClientId, message: `Bonjour ${client.nom}, votre commande ${cmd.numero} a été enregistrée (${fmtGNF(total)}).`, canal: client.canalPref || 'SMS', date: new Date().toISOString() };
+
+    // Reçu de dépose à envoyer au client
+    const lignesDetail = lignes.map(l => {
+      const svc = site.services.find(x=>x.id===l.serviceId);
+      return svc ? `${l.qte}x ${svc.nom} (${fmtGNF(svc.prix*l.qte)})` : '';
+    }).filter(Boolean).join('\n');
+
+    const msgDepose = `🧺 Reçu de dépôt — ${site.nom}\nCommande : ${cmd.numero}\n\n${lignesDetail}${montantRabais>0?`\nRabais : -${fmtGNF(montantRabais)}`:''}\nTotal : ${fmtGNF(total)}${montantAcompte>0?`\nAcompte versé : ${fmtGNF(montantAcompte)}\nSolde restant : ${fmtGNF(total-montantAcompte)}`:'\nPaiement : À la récupération'}${cmd.dateRetraitPrevue?`\nRetrait prévu : ${fmtDate(cmd.dateRetraitPrevue)}`:''}\n\nMerci pour votre confiance !`;
+
+    const notif = { id: uid('notif_'), clientId: finalClientId, message: msgDepose, canal: client.canalPref || 'SMS', date: new Date().toISOString() };
 
     updateSite({
       ...site,
@@ -1308,6 +1336,13 @@ function NewCommandeModal({ site, updateSite, onClose }){
       commandes: [cmd, ...site.commandes],
       notifications: [notif, ...site.notifications].slice(0,300),
     });
+
+    // Ouvrir WhatsApp automatiquement si le client a un numéro
+    if(client.tel){
+      const tel = client.tel.replace(/\D/g,'');
+      setTimeout(() => window.open(`https://wa.me/${tel}?text=${encodeURIComponent(msgDepose)}`, '_blank'), 300);
+    }
+
     onClose();
   }
 
@@ -1552,12 +1587,12 @@ function NewCommandeModal({ site, updateSite, onClose }){
 
 /* ===================== CONFIRMATION SUPPRESSION AVEC MOT DE PASSE ===================== */
 
-function ConfirmDelete({ message, onConfirm, onCancel }){
+function ConfirmDelete({ message, onConfirm, onCancel, db }){
   const [pass, setPass] = useState('');
   const [error, setError] = useState('');
 
   function handleConfirm(){
-    if(pass === PASS_GERANT){
+    if(pass === getPassGerant(db)){
       onConfirm();
     } else {
       setError('Mot de passe incorrect.');
@@ -1951,7 +1986,7 @@ function StockView({ site, updateSite }){
 
       {showNew && <NewStockModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
 
-      {confirmItem && <ConfirmDelete
+      {confirmItem && <ConfirmDelete db={db}
         message={`Supprimer « ${confirmItem.nom} » du stock ?`}
         onConfirm={()=>{ removeItem(confirmItem.id); setConfirmItem(null); }}
         onCancel={()=>setConfirmItem(null)}
@@ -2021,11 +2056,21 @@ function EquipeView({ site, updateSite }){
   const [showNew, setShowNew] = useState(false);
   const [showPass, setShowPass] = useState({});
   const [confirmEmp, setConfirmEmp] = useState(null);
+  const [editPassEmp, setEditPassEmp] = useState(null);
+  const [newPass, setNewPass] = useState('');
+  const [showNewPass, setShowNewPass] = useState(false);
+  const [passFlash, setPassFlash] = useState(false);
 
   function removeEmp(id){
     updateSite({ ...site, employes: site.employes.filter(e=>e.id!==id) });
   }
   function togglePass(id){ setShowPass(prev => ({...prev, [id]: !prev[id]})); }
+  function saveNewPass(){
+    if(!newPass.trim()) return;
+    updateSite({ ...site, employes: site.employes.map(e => e.id===editPassEmp.id ? {...e, motdepasse: newPass.trim()} : e) });
+    setPassFlash(true);
+    setTimeout(()=>{ setPassFlash(false); setEditPassEmp(null); setNewPass(''); }, 1500);
+  }
 
   return (
     <div>
@@ -2041,20 +2086,48 @@ function EquipeView({ site, updateSite }){
               </div>
               <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>setConfirmEmp(e)}><Icon name="trash" size={14}/></button>
             </div>
-            <div style={{marginTop:10, display:'flex', alignItems:'center', gap:8}}>
+            <div style={{marginTop:10, display:'flex', alignItems:'center', gap:8, flexWrap:'wrap'}}>
               <span className="mono" style={{fontSize:12, color:'var(--pine)', background:'var(--pine-light)', padding:'3px 8px', borderRadius:6}}>
                 {showPass[e.id] ? (e.motdepasse || '—') : '••••••••'}
               </span>
               <button className="btn btn-ghost btn-sm" style={{padding:'3px 8px', fontSize:11}} onClick={()=>togglePass(e.id)}>
                 {showPass[e.id] ? 'Masquer' : 'Voir mdp'}
               </button>
+              <button className="btn btn-ghost btn-sm" style={{padding:'3px 8px', fontSize:11, color:'var(--rust)'}} onClick={()=>{ setEditPassEmp(e); setNewPass(''); setShowNewPass(false); }}>
+                <Icon name="edit" size={12}/> Changer mdp
+              </button>
             </div>
           </div>
         ))}
         {site.employes.length === 0 && <p style={{color:'var(--steam)'}}>Aucun employé enregistré pour ce site.</p>}
       </div>
+
       {showNew && <NewEmployeModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
-      {confirmEmp && <ConfirmDelete
+
+      {editPassEmp && (
+        <ModalShell title={`Changer le mot de passe — ${editPassEmp.nom}`} onClose={()=>{ setEditPassEmp(null); setNewPass(''); }} width={400}>
+          <div style={{display:'grid', gap:14}}>
+            <div>
+              <label>Nouveau mot de passe</label>
+              <div style={{display:'flex', gap:8}}>
+                <input type={showNewPass ? 'text' : 'password'} placeholder="Nouveau mot de passe…" value={newPass} onChange={e=>setNewPass(e.target.value)} autoFocus />
+                <button className="btn btn-ghost btn-sm" onClick={()=>setShowNewPass(!showNewPass)}>{showNewPass ? 'Masquer' : 'Voir'}</button>
+              </div>
+            </div>
+            <p style={{fontSize:12.5, color:'var(--steam)', margin:0, lineHeight:1.5}}>
+              L'employé devra utiliser ce nouveau mot de passe à sa prochaine connexion.
+            </p>
+            <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
+              <button className="btn" onClick={()=>{ setEditPassEmp(null); setNewPass(''); }}>Annuler</button>
+              <button className="btn btn-rust" disabled={!newPass.trim()} onClick={saveNewPass}>
+                {passFlash ? <><Icon name="check" size={14}/> Modifié !</> : 'Enregistrer'}
+              </button>
+            </div>
+          </div>
+        </ModalShell>
+      )}
+
+      {confirmEmp && <ConfirmDelete db={db}
         message={`Supprimer définitivement l'employé « ${confirmEmp.nom} » ? Il ne pourra plus se connecter.`}
         onConfirm={()=>{ removeEmp(confirmEmp.id); setConfirmEmp(null); }}
         onCancel={()=>setConfirmEmp(null)}
@@ -2224,7 +2297,7 @@ function DepensesView({ site, updateSite }){
       </div>
 
       {showNew && <NewDepenseModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
-      {confirmDep && <ConfirmDelete
+      {confirmDep && <ConfirmDelete db={db}
         message={`Supprimer la dépense « ${confirmDep.description} » (${fmtGNF(confirmDep.montant)}) ?`}
         onConfirm={()=>{ removeDepense(confirmDep.id); setConfirmDep(null); }}
         onCancel={()=>setConfirmDep(null)}
@@ -2376,18 +2449,26 @@ function RemunerationGerantView({ site }){
 }
 
 function ConfigRemunerationEditor({ site, updateSite }){
-  const config = site.configRemuneration || { prixUnitRepassage: 0, zones: [] };
-  const [prixUnit, setPrixUnit] = useState(String(config.prixUnitRepassage || 0));
+  const config = site.configRemuneration || { tarifsRepassage: [], zones: [] };
+  const [tarifsRepassage, setTarifsRepassage] = useState(config.tarifsRepassage || []);
   const [zones, setZones] = useState(config.zones || []);
+  const [newRepNom, setNewRepNom] = useState('');
+  const [newRepPrix, setNewRepPrix] = useState('');
   const [newZoneNom, setNewZoneNom] = useState('');
   const [newZoneMontant, setNewZoneMontant] = useState('');
   const [flash, setFlash] = useState(false);
 
   function save(){
-    updateSite({ ...site, configRemuneration: { prixUnitRepassage: Number(prixUnit)||0, zones } });
+    updateSite({ ...site, configRemuneration: { tarifsRepassage, zones } });
     setFlash(true);
     setTimeout(()=>setFlash(false), 1800);
   }
+  function addTarifRepassage(){
+    if(!newRepNom.trim()||!newRepPrix) return;
+    setTarifsRepassage([...tarifsRepassage, { id: uid('rep_'), nom: newRepNom.trim(), prix: Number(newRepPrix) }]);
+    setNewRepNom(''); setNewRepPrix('');
+  }
+  function removeTarifRepassage(id){ setTarifsRepassage(tarifsRepassage.filter(t=>t.id!==id)); }
   function addZone(){
     if(!newZoneNom.trim()||!newZoneMontant) return;
     setZones([...zones, { id: uid('zone_'), nom: newZoneNom.trim(), montant: Number(newZoneMontant) }]);
@@ -2401,12 +2482,28 @@ function ConfigRemunerationEditor({ site, updateSite }){
         💰 Configuration des rémunérations employés
       </h3>
 
-      {/* Prix par unité repassage */}
-      <div style={{marginBottom:18}}>
-        <label>Prix par unité repassée (GNF)</label>
-        <div style={{display:'flex', gap:10, alignItems:'center'}}>
-          <input type="number" value={prixUnit} onChange={e=>setPrixUnit(e.target.value)} placeholder="Ex: 500" style={{maxWidth:200}}/>
-          <span style={{fontSize:13, color:'var(--steam)'}}>par article repassé</span>
+      {/* Tarifs de repassage par article */}
+      <div style={{marginBottom:20}}>
+        <label>Tarifs de repassage (par article)</label>
+        <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 10px', lineHeight:1.5}}>
+          Ajoutez chaque type d'article avec son prix de repassage. Le repasseur choisira dans cette liste.
+        </p>
+        <div style={{marginBottom:10, maxHeight:200, overflowY:'auto'}}>
+          {tarifsRepassage.map(t => (
+            <div key={t.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'7px 0', borderBottom:'1px solid var(--line)', fontSize:13.5}}>
+              <span>👔 {t.nom}</span>
+              <div style={{display:'flex', gap:10, alignItems:'center'}}>
+                <span className="mono">{fmtGNF(t.prix)}</span>
+                <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>removeTarifRepassage(t.id)}><Icon name="trash" size={13}/></button>
+              </div>
+            </div>
+          ))}
+          {tarifsRepassage.length === 0 && <p style={{fontSize:13, color:'var(--steam)'}}>Aucun tarif configuré.</p>}
+        </div>
+        <div style={{display:'grid', gridTemplateColumns:'2fr 1fr auto', gap:8}}>
+          <input type="text" placeholder="Article (ex: Chemise, Pantalon, Robe…)" value={newRepNom} onChange={e=>setNewRepNom(e.target.value)} />
+          <input type="number" placeholder="Prix GNF" value={newRepPrix} onChange={e=>setNewRepPrix(e.target.value)} />
+          <button className="btn btn-sm" disabled={!newRepNom.trim()||!newRepPrix} onClick={addTarifRepassage}><Icon name="plus" size={13}/> Ajouter</button>
         </div>
       </div>
 
@@ -2439,11 +2536,30 @@ function ConfigRemunerationEditor({ site, updateSite }){
   );
 }
 
-function ParametresView({ site, updateSite }){
+function ParametresView({ site, updateSite, db, setDb }){
   const [nom, setNom] = useState(site.nom);
   const [adresse, setAdresse] = useState(site.adresse);
   const [tel, setTel] = useState(site.tel);
   const [savedFlash, setSavedFlash] = useState(false);
+
+  // Changement mot de passe gérant
+  const [ancienPass, setAncienPass] = useState('');
+  const [nouveauPass, setNouveauPass] = useState('');
+  const [confirmPass, setConfirmPass] = useState('');
+  const [showPassFields, setShowPassFields] = useState(false);
+  const [passError, setPassError] = useState('');
+  const [passFlash, setPassFlash] = useState(false);
+
+  function changePassGerant(){
+    if(ancienPass !== getPassGerant(db)){ setPassError('Ancien mot de passe incorrect.'); return; }
+    if(nouveauPass.length < 6){ setPassError('Le nouveau mot de passe doit contenir au moins 6 caractères.'); return; }
+    if(nouveauPass !== confirmPass){ setPassError('Les deux mots de passe ne correspondent pas.'); return; }
+    setDb({ ...db, passGerant: nouveauPass });
+    setPassError('');
+    setAncienPass(''); setNouveauPass(''); setConfirmPass('');
+    setPassFlash(true);
+    setTimeout(()=>{ setPassFlash(false); setShowPassFields(false); }, 2000);
+  }
 
   // Config SMS — stockée dans le site
   const smsConfig = site.smsConfig || { provider: 'none', apiKey: '', apiSecret: '', senderId: '' };
@@ -2522,6 +2638,39 @@ function ParametresView({ site, updateSite }){
         </div>
 
         <ServicesEditor site={site} updateSite={updateSite} />
+      </div>
+
+      {/* Changement mot de passe gérant */}
+      <div className="card" style={{padding:'1.5rem', marginTop:18}}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: showPassFields ? 14 : 0}}>
+          <h3 style={{margin:0, fontSize:15, display:'flex', alignItems:'center', gap:8}}>
+            🔐 Mot de passe gérant
+          </h3>
+          <button className="btn btn-sm" onClick={()=>{ setShowPassFields(!showPassFields); setPassError(''); }}>
+            {showPassFields ? 'Annuler' : 'Changer le mot de passe'}
+          </button>
+        </div>
+        {passFlash && <p style={{color:'var(--ok)', fontWeight:600, margin:0}}><Icon name="check" size={14}/> Mot de passe modifié avec succès !</p>}
+        {showPassFields && (
+          <div style={{display:'grid', gap:12}}>
+            <div>
+              <label>Ancien mot de passe</label>
+              <input type="password" value={ancienPass} onChange={e=>setAncienPass(e.target.value)} placeholder="Votre mot de passe actuel" />
+            </div>
+            <div>
+              <label>Nouveau mot de passe</label>
+              <input type="password" value={nouveauPass} onChange={e=>setNouveauPass(e.target.value)} placeholder="Au moins 6 caractères" />
+            </div>
+            <div>
+              <label>Confirmer le nouveau mot de passe</label>
+              <input type="password" value={confirmPass} onChange={e=>setConfirmPass(e.target.value)} placeholder="Répétez le nouveau mot de passe" />
+            </div>
+            {passError && <p style={{color:'var(--danger)', fontSize:13, margin:0}}>{passError}</p>}
+            <button className="btn btn-rust" style={{justifySelf:'start'}} onClick={changePassGerant} disabled={!ancienPass||!nouveauPass||!confirmPass}>
+              Enregistrer le nouveau mot de passe
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Section Rémunération */}
@@ -2683,7 +2832,7 @@ function ServicesEditor({ site, updateSite }){
       <button className="btn btn-rust btn-sm" style={{marginTop:10}} onClick={addService} disabled={!nom.trim()||!prix}>
         <Icon name="plus" size={13}/> Ajouter
       </button>
-      {confirmSvc && <ConfirmDelete
+      {confirmSvc && <ConfirmDelete db={db}
         message={`Supprimer le service « ${confirmSvc.nom} » (${fmtGNF(confirmSvc.prix)}) ?`}
         onConfirm={()=>{ removeService(confirmSvc.id); setConfirmSvc(null); }}
         onCancel={()=>setConfirmSvc(null)}
@@ -2695,17 +2844,16 @@ function ServicesEditor({ site, updateSite }){
 /* ===================== REMUNERATION EMPLOYES ===================== */
 
 function RemunerationView({ site, updateSite, db, siteId }){
-  const [type, setType] = useState('repassage'); // 'repassage' | 'livraison'
+  const [type, setType] = useState('repassage');
   const [date, setDate] = useState(todayISO());
-  const [unites, setUnites] = useState('');
+  const [selectedArticles, setSelectedArticles] = useState([]); // [{tarifId, qte}]
   const [zoneId, setZoneId] = useState('');
   const [filterMois, setFilterMois] = useState(todayISO().slice(0,7));
 
-  const config = site.configRemuneration || { prixUnitRepassage: 0, zones: [] };
+  const config = site.configRemuneration || { tarifsRepassage: [], zones: [] };
+  const tarifsRepassage = config.tarifsRepassage || [];
   const remunerations = site.remunerations || [];
 
-  // Trouver l'employé connecté via son mot de passe (stocké en session)
-  // On utilise le siteId pour identifier le contexte
   const filtered = useMemo(() => {
     return [...remunerations]
       .filter(r => r.date.slice(0,7) === filterMois)
@@ -2722,30 +2870,46 @@ function RemunerationView({ site, updateSite, db, siteId }){
     return [...mois].sort().reverse();
   }, [remunerations]);
 
+  function addArticle(tarifId){
+    setSelectedArticles(prev => {
+      const exist = prev.find(a=>a.tarifId===tarifId);
+      if(exist) return prev.map(a=>a.tarifId===tarifId ? {...a, qte:a.qte+1} : a);
+      return [...prev, {tarifId, qte:1}];
+    });
+  }
+  function setArticleQte(tarifId, qte){
+    setSelectedArticles(prev => prev.map(a=>a.tarifId===tarifId ? {...a, qte:Math.max(0,qte)} : a).filter(a=>a.qte>0));
+  }
+
+  const montantRepassage = selectedArticles.reduce((s,a) => {
+    const tarif = tarifsRepassage.find(t=>t.id===a.tarifId);
+    return s + (tarif ? tarif.prix * a.qte : 0);
+  }, 0);
+
   function calculerMontant(){
-    if(type === 'repassage'){
-      return Math.round(Number(unites) * Number(config.prixUnitRepassage));
-    } else {
-      const zone = config.zones?.find(z=>z.id===zoneId);
-      return zone ? Number(zone.montant) : 0;
-    }
+    if(type === 'repassage') return montantRepassage;
+    const zone = config.zones?.find(z=>z.id===zoneId);
+    return zone ? Number(zone.montant) : 0;
   }
 
   function enregistrer(){
     const montant = calculerMontant();
     if(montant <= 0 || !date) return;
     const zone = type === 'livraison' ? config.zones?.find(z=>z.id===zoneId) : null;
+    const detailRepassage = selectedArticles.map(a => {
+      const t = tarifsRepassage.find(t=>t.id===a.tarifId);
+      return t ? `${a.qte}x ${t.nom} (${fmtGNF(t.prix)})` : '';
+    }).filter(Boolean).join(', ');
+
     const rem = {
       id: uid('rem_'),
       date,
       type,
       montant,
-      detail: type === 'repassage'
-        ? `${unites} unité(s) × ${fmtGNF(config.prixUnitRepassage)}`
-        : `Livraison — ${zone?.nom || ''}`,
+      detail: type === 'repassage' ? detailRepassage : `Livraison — ${zone?.nom || ''}`,
     };
     updateSite({ ...site, remunerations: [rem, ...remunerations] });
-    setUnites('');
+    setSelectedArticles([]);
     setZoneId('');
   }
 
@@ -2755,21 +2919,19 @@ function RemunerationView({ site, updateSite, db, siteId }){
     <div>
       <PageHeader title="Ma rémunération" subtitle={`Total ${filterMois} : ${fmtGNF(totalMois)}`} />
 
-      {/* Résumé du mois */}
       <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20}}>
         <StatCard label="Total ce mois" value={fmtGNF(totalMois)} icon="euro" />
         <StatCard label="Repassage" value={fmtGNF(totalRepassage)} icon="shirt" />
         <StatCard label="Livraisons" value={fmtGNF(totalLivraison)} icon="arrowRight" />
       </div>
 
-      {/* Formulaire de saisie */}
       <div className="card" style={{padding:'1.5rem', marginBottom:20}}>
         <h3 style={{margin:'0 0 14px', fontSize:15}}>Enregistrer une prestation</h3>
 
         <div style={{display:'flex', gap:10, marginBottom:14}}>
-          <button className="btn btn-sm" onClick={()=>setType('repassage')}
+          <button className="btn btn-sm" onClick={()=>{ setType('repassage'); setSelectedArticles([]); }}
             style={{background: type==='repassage'?'var(--pine)':'transparent', color: type==='repassage'?'var(--white)':'var(--ink)', borderColor: type==='repassage'?'var(--pine)':'var(--line-strong)'}}>
-            👔 Repassage (par unité)
+            👔 Repassage (par article)
           </button>
           <button className="btn btn-sm" onClick={()=>setType('livraison')}
             style={{background: type==='livraison'?'var(--pine)':'transparent', color: type==='livraison'?'var(--white)':'var(--ink)', borderColor: type==='livraison'?'var(--pine)':'var(--line-strong)'}}>
@@ -2777,7 +2939,7 @@ function RemunerationView({ site, updateSite, db, siteId }){
           </button>
         </div>
 
-        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12, alignItems:'end'}}>
+        <div style={{display:'grid', gridTemplateColumns:'1fr 2fr 1fr', gap:12, alignItems:'start'}}>
           <div>
             <label>Date</label>
             <input type="date" value={date} onChange={e=>setDate(e.target.value)} max={todayISO()} />
@@ -2785,12 +2947,41 @@ function RemunerationView({ site, updateSite, db, siteId }){
 
           {type === 'repassage' ? (
             <div>
-              <label>Nombre d'unités repassées</label>
-              {config.prixUnitRepassage > 0 ? (
-                <input type="number" placeholder="Ex: 15" value={unites} onChange={e=>setUnites(e.target.value)} min={1} />
+              <label>Articles repassés</label>
+              {tarifsRepassage.length > 0 ? (
+                <>
+                  <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:6, marginBottom:8}}>
+                    {tarifsRepassage.map(t => (
+                      <button key={t.id} className="btn btn-sm"
+                        style={{justifyContent:'space-between', display:'flex', background: selectedArticles.find(a=>a.tarifId===t.id) ? 'var(--pine-light)' : 'transparent', borderColor: selectedArticles.find(a=>a.tarifId===t.id) ? 'var(--pine)' : 'var(--line-strong)'}}
+                        onClick={()=>addArticle(t.id)}>
+                        <span>{t.nom}</span><span className="mono" style={{color:'var(--steam)'}}>{fmtGNF(t.prix)}</span>
+                      </button>
+                    ))}
+                  </div>
+                  {selectedArticles.length > 0 && (
+                    <div style={{background:'var(--paper-2)', borderRadius:8, padding:'10px 12px'}}>
+                      {selectedArticles.map(a => {
+                        const t = tarifsRepassage.find(x=>x.id===a.tarifId);
+                        if(!t) return null;
+                        return (
+                          <div key={a.tarifId} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'4px 0'}}>
+                            <span style={{fontSize:13}}>{t.nom}</span>
+                            <div style={{display:'flex', alignItems:'center', gap:6}}>
+                              <button className="btn btn-sm" style={{padding:'1px 7px'}} onClick={()=>setArticleQte(a.tarifId, a.qte-1)}>−</button>
+                              <span className="mono" style={{fontSize:13}}>{a.qte}</span>
+                              <button className="btn btn-sm" style={{padding:'1px 7px'}} onClick={()=>setArticleQte(a.tarifId, a.qte+1)}>+</button>
+                              <span className="mono" style={{fontSize:12, color:'var(--pine)', minWidth:70, textAlign:'right'}}>{fmtGNF(t.prix*a.qte)}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
               ) : (
                 <div style={{padding:'9px 12px', background:'var(--warn-light)', borderRadius:8, fontSize:13, color:'var(--warn)'}}>
-                  ⚠️ Le gérant doit d'abord configurer le prix par unité dans Paramètres.
+                  ⚠️ Le gérant doit configurer les tarifs de repassage dans Paramètres.
                 </div>
               )}
             </div>
@@ -2815,7 +3006,7 @@ function RemunerationView({ site, updateSite, db, siteId }){
           <div>
             {montantPreview > 0 && (
               <div style={{marginBottom:8, fontSize:13, color:'var(--pine)', fontWeight:600}}>
-                💰 Montant : {fmtGNF(montantPreview)}
+                💰 Total : {fmtGNF(montantPreview)}
               </div>
             )}
             <button className="btn btn-rust" style={{width:'100%'}}
@@ -2826,7 +3017,7 @@ function RemunerationView({ site, updateSite, db, siteId }){
           </div>
         </div>
       </div>
-
+    const rem = {
       {/* Historique */}
       <div style={{display:'flex', gap:10, marginBottom:14, alignItems:'center'}}>
         <label style={{margin:0}}>Mois :</label>
