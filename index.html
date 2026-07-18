@@ -1491,6 +1491,7 @@ function ClientsView({ site, updateSite }){
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState(null);
   const [showNew, setShowNew] = useState(false);
+  const [editClient, setEditClient] = useState(null);
 
   const filtered = useMemo(() => {
     if(!search.trim()) return site.clients;
@@ -1503,6 +1504,11 @@ function ClientsView({ site, updateSite }){
     const total = cmds.reduce((s,c)=>s+calcCommandeTotal(c, site.services), 0);
     const impaye = cmds.filter(c=>c.paiement==='impaye').reduce((s,c)=>s+calcCommandeTotal(c, site.services), 0);
     return { count: cmds.length, total, impaye };
+  }
+
+  function saveEditClient(updated){
+    updateSite({ ...site, clients: site.clients.map(c => c.id===updated.id ? updated : c) });
+    setEditClient(null);
   }
 
   return (
@@ -1519,15 +1525,20 @@ function ClientsView({ site, updateSite }){
         {filtered.map(c => {
           const st = clientStats(c.id);
           return (
-            <div key={c.id} className="card" style={{padding:'1.1rem 1.25rem', cursor:'pointer'}} onClick={()=>setSelected(c)}>
+            <div key={c.id} className="card" style={{padding:'1.1rem 1.25rem'}}>
               <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start'}}>
-                <div>
+                <div style={{cursor:'pointer', flex:1}} onClick={()=>setSelected(c)}>
                   <div style={{fontWeight:600, fontSize:15}}>{c.nom}</div>
                   <div style={{fontSize:12.5, color:'var(--steam)'}}>{c.tel || 'Pas de téléphone'}</div>
                 </div>
-                {st.impaye > 0 && <span className="tag tag-impaye">{fmtGNF(st.impaye)}</span>}
+                <div style={{display:'flex', gap:4}}>
+                  {st.impaye > 0 && <span className="tag tag-impaye">{fmtGNF(st.impaye)}</span>}
+                  <button className="btn btn-ghost btn-sm" style={{padding:'4px 7px'}} onClick={()=>setEditClient(c)} title="Modifier">
+                    <Icon name="edit" size={13}/>
+                  </button>
+                </div>
               </div>
-              <div style={{display:'flex', gap:14, marginTop:12, fontSize:12.5, color:'var(--steam)'}}>
+              <div style={{display:'flex', gap:14, marginTop:12, fontSize:12.5, color:'var(--steam)', cursor:'pointer'}} onClick={()=>setSelected(c)}>
                 <span>{st.count} commande(s)</span>
                 <span className="mono">{fmtGNF(st.total)} cumulé</span>
               </div>
@@ -1538,7 +1549,8 @@ function ClientsView({ site, updateSite }){
       </div>
 
       {showNew && <NewClientModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
-      {selected && <ClientDetailModal client={selected} site={site} onClose={()=>setSelected(null)} />}
+      {selected && <ClientDetailModal client={selected} site={site} onClose={()=>setSelected(null)} onEdit={(c)=>{ setSelected(null); setEditClient(c); }} />}
+      {editClient && <EditClientModal client={editClient} onSave={saveEditClient} onClose={()=>setEditClient(null)} />}
     </div>
   );
 }
@@ -1578,15 +1590,20 @@ function NewClientModal({ site, updateSite, onClose }){
   );
 }
 
-function ClientDetailModal({ client, site, onClose }){
+function ClientDetailModal({ client, site, onClose, onEdit }){
   const cmds = site.commandes.filter(c => c.clientId === client.id).sort((a,b)=>new Date(b.dateCreation)-new Date(a.dateCreation));
   const total = cmds.reduce((s,c)=>s+calcCommandeTotal(c, site.services), 0);
   return (
     <ModalShell title={client.nom} onClose={onClose} width={560}>
-      <div style={{display:'flex', gap:20, marginBottom:18, fontSize:13.5, color:'var(--steam)'}}>
-        {client.tel && <span><Icon name="phone" size={13} style={{verticalAlign:-2, marginRight:4}}/>{client.tel}</span>}
-        {client.email && <span><Icon name="mail" size={13} style={{verticalAlign:-2, marginRight:4}}/>{client.email}</span>}
-        <span>Client depuis {fmtDate(client.dateInscription)}</span>
+      <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:18}}>
+        <div style={{display:'flex', gap:20, fontSize:13.5, color:'var(--steam)', flexWrap:'wrap'}}>
+          {client.tel && <span><Icon name="phone" size={13} style={{verticalAlign:-2, marginRight:4}}/>{client.tel}</span>}
+          {client.email && <span><Icon name="mail" size={13} style={{verticalAlign:-2, marginRight:4}}/>{client.email}</span>}
+          <span>Client depuis {fmtDate(client.dateInscription)}</span>
+        </div>
+        <button className="btn btn-sm" onClick={()=>onEdit(client)} style={{flexShrink:0, marginLeft:12}}>
+          <Icon name="edit" size={13}/> Modifier
+        </button>
       </div>
       <div style={{display:'flex', gap:14, marginBottom:18}}>
         <StatMini label="Commandes" value={cmds.length} />
@@ -1607,6 +1624,40 @@ function ClientDetailModal({ client, site, onClose }){
             </div>
           </div>
         ))}
+      </div>
+    </ModalShell>
+  );
+}
+
+function EditClientModal({ client, onSave, onClose }){
+  const [nom, setNom] = useState(client.nom || '');
+  const [tel, setTel] = useState(client.tel || '');
+  const [email, setEmail] = useState(client.email || '');
+  const [canalPref, setCanalPref] = useState(client.canalPref || 'SMS');
+
+  function submit(){
+    if(!nom.trim()) return;
+    onSave({ ...client, nom: nom.trim(), tel: tel.trim(), email: email.trim(), canalPref });
+  }
+
+  return (
+    <ModalShell title={`Modifier — ${client.nom}`} onClose={onClose} width={420}>
+      <div style={{display:'grid', gap:14}}>
+        <div><label>Nom complet</label><input type="text" value={nom} onChange={e=>setNom(e.target.value)} autoFocus/></div>
+        <div><label>Téléphone</label><input type="tel" value={tel} onChange={e=>setTel(e.target.value)} /></div>
+        <div><label>Email (optionnel)</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)} /></div>
+        <div>
+          <label>Canal de notification préféré</label>
+          <select value={canalPref} onChange={e=>setCanalPref(e.target.value)}>
+            <option value="SMS">SMS</option>
+            <option value="WhatsApp">WhatsApp</option>
+            <option value="Email">Email</option>
+          </select>
+        </div>
+        <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
+          <button className="btn" onClick={onClose}>Annuler</button>
+          <button className="btn btn-rust" disabled={!nom.trim()} onClick={submit}>Enregistrer</button>
+        </div>
       </div>
     </ModalShell>
   );
