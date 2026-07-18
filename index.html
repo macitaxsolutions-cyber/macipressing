@@ -224,14 +224,14 @@ function subscribeToDB(key, callback){
 function defaultServices(){
   return [
     { id: uid('svc_'), nom: 'Chemise', prix: 15000, categorie: 'Repassage' },
-    { id: uid('svc_'), nom: 'Pantalon', prix: 20000, categorie: 'Nettoyage' },
-    { id: uid('svc_'), nom: 'Costume 2 pièces', prix: 60000, categorie: 'Nettoyage' },
-    { id: uid('svc_'), nom: 'Robe simple', prix: 30000, categorie: 'Nettoyage' },
-    { id: uid('svc_'), nom: 'Robe de soirée', prix: 70000, categorie: 'Nettoyage' },
-    { id: uid('svc_'), nom: 'Manteau / Doudoune', prix: 50000, categorie: 'Nettoyage' },
+    { id: uid('svc_'), nom: 'Pantalon', prix: 20000, categorie: 'Nettoyage complet' },
+    { id: uid('svc_'), nom: 'Costume 2 pièces', prix: 60000, categorie: 'Nettoyage complet' },
+    { id: uid('svc_'), nom: 'Robe simple', prix: 30000, categorie: 'Nettoyage complet' },
+    { id: uid('svc_'), nom: 'Robe de soirée', prix: 70000, categorie: 'Nettoyage + Repassage' },
+    { id: uid('svc_'), nom: 'Manteau / Doudoune', prix: 50000, categorie: 'Nettoyage complet' },
     { id: uid('svc_'), nom: 'Couette (2 pers.)', prix: 80000, categorie: 'Maison' },
     { id: uid('svc_'), nom: 'Rideau (au mètre)', prix: 25000, categorie: 'Maison' },
-    { id: uid('svc_'), nom: 'Pull / Lainage', prix: 25000, categorie: 'Nettoyage' },
+    { id: uid('svc_'), nom: 'Pull / Lainage', prix: 25000, categorie: 'Nettoyage complet' },
     { id: uid('svc_'), nom: 'Retouche ourlet', prix: 25000, categorie: 'Retouche' },
   ];
 }
@@ -1163,6 +1163,11 @@ function NewCommandeModal({ site, updateSite, onClose }){
   const [notes, setNotes] = useState('');
   const [acompte, setAcompte] = useState('');
   const [acompteMode, setAcompteMode] = useState('none'); // 'none' | 'pourcent' | 'libre'
+  const [showAddService, setShowAddService] = useState(false);
+  const [newServiceNom, setNewServiceNom] = useState('');
+  const [newServicePrix, setNewServicePrix] = useState('');
+  const [newServiceCat, setNewServiceCat] = useState('Nettoyage complet');
+  const [editServiceId, setEditServiceId] = useState(null);
 
   const clientMatches = useMemo(() => {
     if(!clientSearch.trim()) return site.clients.slice(0,5);
@@ -1252,14 +1257,95 @@ function NewCommandeModal({ site, updateSite, onClose }){
         </div>
 
         <div>
-          <label>Articles</label>
-          <div style={{display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap:8}}>
-            {site.services.map(s => (
-              <button key={s.id} className="btn btn-sm" style={{justifyContent:'space-between', display:'flex'}} onClick={()=>addLigne(s.id)}>
-                <span>{s.nom}</span><span className="mono">{fmtGNF(s.prix)}</span>
-              </button>
-            ))}
+          <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8}}>
+            <label style={{margin:0}}>Articles</label>
+            <button className="btn btn-ghost btn-sm" style={{fontSize:12, color:'var(--pine)'}}
+              onClick={()=>setShowAddService(!showAddService)}>
+              {showAddService ? '← Masquer' : '+ Nouvel article / Modifier prix'}
+            </button>
           </div>
+
+          {/* Formulaire ajout/édition rapide d'un article */}
+          {showAddService && (
+            <div style={{background:'var(--paper-2)', borderRadius:8, padding:'12px', marginBottom:12}}>
+              <div style={{display:'grid', gridTemplateColumns:'1.5fr 0.8fr 1fr auto', gap:8, alignItems:'end'}}>
+                <div>
+                  <label>Nom de l'article</label>
+                  <input type="text" placeholder="Ex: Chemise, Pantalon…" value={newServiceNom} onChange={e=>setNewServiceNom(e.target.value)} />
+                </div>
+                <div>
+                  <label>Prix (GNF)</label>
+                  <input type="number" placeholder="0" value={newServicePrix} onChange={e=>setNewServicePrix(e.target.value)} />
+                </div>
+                <div>
+                  <label>Type de service</label>
+                  <select value={newServiceCat} onChange={e=>setNewServiceCat(e.target.value)}>
+                    <option>Nettoyage complet</option>
+                    <option>Repassage</option>
+                    <option>Nettoyage + Repassage</option>
+                    <option>Retouche</option>
+                    <option>Maison</option>
+                    <option>Autres</option>
+                  </select>
+                </div>
+                <button className="btn btn-rust btn-sm" style={{alignSelf:'end'}}
+                  disabled={!newServiceNom.trim()||!newServicePrix}
+                  onClick={()=>{
+                    if(editServiceId){
+                      updateSite({ ...site, services: site.services.map(s => s.id===editServiceId ? {...s, nom:newServiceNom.trim(), prix:Number(newServicePrix), categorie:newServiceCat} : s) });
+                      setEditServiceId(null);
+                    } else {
+                      updateSite({ ...site, services: [...site.services, { id: uid('svc_'), nom: newServiceNom.trim(), prix: Number(newServicePrix), categorie: newServiceCat }] });
+                    }
+                    setNewServiceNom(''); setNewServicePrix(''); setNewServiceCat('Nettoyage complet');
+                  }}>
+                  {editServiceId ? 'Modifier' : 'Ajouter'}
+                </button>
+              </div>
+              {editServiceId && (
+                <button className="btn btn-ghost btn-sm" style={{marginTop:8}} onClick={()=>{ setEditServiceId(null); setNewServiceNom(''); setNewServicePrix(''); }}>
+                  Annuler la modification
+                </button>
+              )}
+
+              {/* Liste des articles existants pour édition rapide */}
+              <div style={{marginTop:12, maxHeight:160, overflowY:'auto'}}>
+                <div style={{fontSize:12, color:'var(--steam)', marginBottom:6, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.03em'}}>Cliquez sur un article pour modifier son prix</div>
+                {site.services.map(s => (
+                  <div key={s.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'5px 0', borderBottom:'1px solid var(--line)', fontSize:13}}>
+                    <span>{s.nom} <span style={{color:'var(--steam)', fontSize:11}}>· {s.categorie}</span></span>
+                    <div style={{display:'flex', gap:8, alignItems:'center'}}>
+                      <span className="mono">{fmtGNF(s.prix)}</span>
+                      <button className="btn btn-ghost btn-sm" style={{padding:'3px 7px'}} onClick={()=>{
+                        setEditServiceId(s.id);
+                        setNewServiceNom(s.nom);
+                        setNewServicePrix(String(s.prix));
+                        setNewServiceCat(s.categorie);
+                      }}><Icon name="edit" size={12}/></button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Articles groupés par catégorie */}
+          {['Nettoyage complet','Repassage','Nettoyage + Repassage','Retouche','Maison','Autres','Nettoyage'].map(cat => {
+            const items = site.services.filter(s => s.categorie === cat);
+            if(items.length === 0) return null;
+            return (
+              <div key={cat} style={{marginBottom:10}}>
+                <div style={{fontSize:11.5, fontWeight:700, color:'var(--pine)', textTransform:'uppercase', letterSpacing:'0.04em', marginBottom:6, paddingBottom:4, borderBottom:'1px solid var(--line)'}}>{cat}</div>
+                <div style={{display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap:6}}>
+                  {items.map(s => (
+                    <button key={s.id} className="btn btn-sm" style={{justifyContent:'space-between', display:'flex', background: lignes.find(l=>l.serviceId===s.id) ? 'var(--pine-light)' : 'transparent', borderColor: lignes.find(l=>l.serviceId===s.id) ? 'var(--pine)' : 'var(--line-strong)'}} onClick={()=>addLigne(s.id)}>
+                      <span>{s.nom}</span><span className="mono" style={{color:'var(--steam)'}}>{fmtGNF(s.prix)}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
         </div>
 
         {lignes.length > 0 && (
@@ -2291,10 +2377,12 @@ function ServicesEditor({ site, updateSite }){
               <input type="text" value={editNom} onChange={e=>setEditNom(e.target.value)} style={{padding:'6px 8px', fontSize:13}} />
               <input type="number" value={editPrix} onChange={e=>setEditPrix(e.target.value)} style={{padding:'6px 8px', fontSize:13}} />
               <select value={editCategorie} onChange={e=>setEditCategorie(e.target.value)} style={{padding:'6px 8px', fontSize:13}}>
-                <option>Nettoyage</option>
+                <option>Nettoyage complet</option>
                 <option>Repassage</option>
+                <option>Nettoyage + Repassage</option>
                 <option>Retouche</option>
                 <option>Maison</option>
+                <option>Autres</option>
               </select>
               <button className="btn btn-sm" style={{padding:'5px 9px'}} onClick={saveEdit}><Icon name="check" size={13}/></button>
               <button className="btn btn-ghost btn-sm" style={{padding:'5px 9px'}} onClick={cancelEdit}><Icon name="x" size={13}/></button>
@@ -2315,10 +2403,12 @@ function ServicesEditor({ site, updateSite }){
         <input type="text" placeholder="Nom du service" value={nom} onChange={e=>setNom(e.target.value)} />
         <input type="number" placeholder="Prix (GNF)" value={prix} onChange={e=>setPrix(e.target.value)} />
         <select value={categorie} onChange={e=>setCategorie(e.target.value)}>
-          <option>Nettoyage</option>
+          <option>Nettoyage complet</option>
           <option>Repassage</option>
+          <option>Nettoyage + Repassage</option>
           <option>Retouche</option>
           <option>Maison</option>
+          <option>Autres</option>
         </select>
       </div>
       <button className="btn btn-rust btn-sm" style={{marginTop:10}} onClick={addService} disabled={!nom.trim()||!prix}>
@@ -2358,12 +2448,14 @@ function EmployeApp({ db, setDb, siteId, onLogout }){
     { key:'caisse', label:'Caisse', icon:'ticket' },
     { key:'clients', label:'Clients', icon:'users' },
     { key:'stock', label:'Stock', icon:'box' },
+    { key:'depenses', label:'Dépenses', icon:'euro' },
   ];
   return (
     <Shell title={site.nom} role="Espace employé" navItems={navItems} active={page} onNav={setPage} onLogout={onLogout}>
       {page === 'caisse' && <CommandesView site={site} updateSite={updateSite} editable={true} />}
       {page === 'clients' && <ClientsView site={site} updateSite={updateSite} />}
       {page === 'stock' && <StockView site={site} updateSite={updateSite} />}
+      {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} />}
     </Shell>
   );
 }
