@@ -258,6 +258,7 @@ function makeSite(nom, adresse, tel){
     commandes: [],
     notifications: [],
     employes: [],
+    depenses: [],
   };
 }
 
@@ -295,6 +296,7 @@ function migrateFromV1(oldRaw){
       commandes: old.commandes || [],
       notifications: old.notifications || [],
       employes: old.employes || [],
+      depenses: old.depenses || [],
     };
     return { sites: [site] };
   }catch(e){ return null; }
@@ -717,7 +719,9 @@ function GlobalDashboard({ db, onOpenSite }){
     const montantImpaye = impayes.reduce((s,c)=>s+calcCommandeTotal(c, site.services),0);
     const enCours = cmds.filter(c => c.statut === 'En cours' || c.statut === 'Reçu').length;
     const lowStock = site.stock.filter(s => s.quantite <= s.seuil).length;
-    return { site, caJour, caMois, montantImpaye, impayesCount: impayes.length, enCours, lowStock, clientsCount: site.clients.length };
+    const depensesMois = (site.depenses||[]).filter(d=>d.date.slice(0,7)===today.slice(0,7)).reduce((s,d)=>s+Number(d.montant),0);
+    const beneficeMois = caMois - depensesMois;
+    return { site, caJour, caMois, montantImpaye, impayesCount: impayes.length, enCours, lowStock, clientsCount: site.clients.length, depensesMois, beneficeMois };
   });
 
   const totals = perSite.reduce((acc, p) => ({
@@ -760,6 +764,8 @@ function GlobalDashboard({ db, onOpenSite }){
               <MiniMetric label="Impayés" value={fmtGNF(p.montantImpaye)} danger={p.impayesCount>0} />
               <MiniMetric label="À traiter" value={p.enCours} />
               <MiniMetric label="Stock bas" value={p.lowStock} danger={p.lowStock>0} />
+              <MiniMetric label="Dépenses mois" value={fmtGNF(p.depensesMois)} danger={p.depensesMois>0} />
+              <MiniMetric label="Bénéfice net" value={fmtGNF(p.beneficeMois)} danger={p.beneficeMois<0} />
             </div>
           </div>
         ))}
@@ -779,6 +785,7 @@ function MiniMetric({ label, value, danger }){
 
 function SitesManager({ db, addSite, removeSite, onOpenSite }){
   const [showNew, setShowNew] = useState(false);
+  const [confirmSite, setConfirmSite] = useState(null);
   return (
     <div>
       <PageHeader title="Mes pressings" subtitle="Créez, supprimez ou ouvrez un établissement"
@@ -795,11 +802,13 @@ function SitesManager({ db, addSite, removeSite, onOpenSite }){
               </div>
               <span className="mono" style={{fontSize:11, color:'var(--steam)'}}>{s.code}</span>
             </div>
-            <div style={{display:'flex', gap:8, marginTop:16}}>
-              <button className="btn btn-sm" onClick={()=>onOpenSite(s.id)}>Ouvrir</button>
-              <button className="btn btn-ghost btn-sm btn-danger" disabled={db.sites.length<=1} onClick={()=>{
-                if(window.confirm(`Supprimer définitivement « ${s.nom} » et toutes ses données ?`)) removeSite(s.id);
-              }}>
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:16}}>
+              <button className="btn btn-sm btn-primary" onClick={()=>onOpenSite(s.id)} style={{background:'var(--pine)', color:'var(--white)', borderColor:'var(--pine)'}}>
+                Ouvrir ce pressing →
+              </button>
+              <button className="btn btn-ghost btn-sm" disabled={db.sites.length<=1}
+                style={{color:'var(--danger)', borderColor:'var(--danger)', marginLeft:24}}
+                onClick={()=>setConfirmSite(s)}>
                 <Icon name="trash" size={13}/> Supprimer
               </button>
             </div>
@@ -808,6 +817,11 @@ function SitesManager({ db, addSite, removeSite, onOpenSite }){
       </div>
 
       {showNew && <NewSiteModal onClose={()=>setShowNew(false)} onCreate={(nom,adresse,tel)=>{ addSite(nom,adresse,tel); setShowNew(false); }} />}
+      {confirmSite && <ConfirmDelete
+        message={`Supprimer définitivement « ${confirmSite.nom} » et TOUTES ses données (commandes, clients, stock) ? Cette action est irréversible.`}
+        onConfirm={()=>{ removeSite(confirmSite.id); setConfirmSite(null); }}
+        onCancel={()=>setConfirmSite(null)}
+      />}
     </div>
   );
 }
@@ -845,6 +859,7 @@ function SiteDetailForGerant({ site, db, updateSite, onBack }){
     { key:'stock', label:'Stock', icon:'box' },
     { key:'employes', label:'Équipe', icon:'users' },
     { key:'notifications', label:'Notifications', icon:'bell' },
+    { key:'depenses', label:'Dépenses', icon:'euro' },
     { key:'parametres', label:'Paramètres', icon:'edit' },
   ];
   return (
@@ -865,6 +880,7 @@ function SiteDetailForGerant({ site, db, updateSite, onBack }){
       {page === 'stock' && <StockView site={site} updateSite={updateSite} />}
       {page === 'employes' && <EquipeView site={site} updateSite={updateSite} />}
       {page === 'notifications' && <NotificationsView site={site} />}
+      {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} />}
       {page === 'parametres' && <ParametresView site={site} updateSite={updateSite} />}
     </div>
   );
@@ -897,7 +913,12 @@ function Dashboard({ site, updateSite }){
     });
     const maxCa = Math.max(...last7.map(d=>d.ca), 1);
 
-    return { caJour, caMois, montantImpaye, impayesCount: impayes.length, enCours, pretsNonRecuperes, topServices, last7, maxCa, totalClients: site.clients.length };
+    const depenses = (site.depenses||[]);
+    const depensesJour = depenses.filter(d=>d.date===today).reduce((s,d)=>s+Number(d.montant),0);
+    const depensesMois = depenses.filter(d=>d.date.slice(0,7)===today.slice(0,7)).reduce((s,d)=>s+Number(d.montant),0);
+    const beneficeMois = caMois - depensesMois;
+
+    return { caJour, caMois, montantImpaye, impayesCount: impayes.length, enCours, pretsNonRecuperes, topServices, last7, maxCa, totalClients: site.clients.length, depensesJour, depensesMois, beneficeMois };
   }, [site, today]);
 
   const lowStock = site.stock.filter(s => s.quantite <= s.seuil);
@@ -906,11 +927,16 @@ function Dashboard({ site, updateSite }){
     <div>
       <PageHeader title={site.nom} subtitle={`Aujourd'hui, ${fmtDate(today)}`} />
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:14, marginBottom:24}}>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:14, marginBottom:14}}>
         <StatCard label="CA aujourd'hui" value={fmtGNF(stats.caJour)} icon="euro" />
         <StatCard label="CA ce mois" value={fmtGNF(stats.caMois)} icon="chart" />
         <StatCard label="Impayés" value={fmtGNF(stats.montantImpaye)} sub={`${stats.impayesCount} commande(s)`} icon="alert" tone={stats.impayesCount>0 ? 'danger':'default'} />
         <StatCard label="Clients" value={stats.totalClients} icon="users" />
+      </div>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:14, marginBottom:24}}>
+        <StatCard label="Dépenses aujourd'hui" value={fmtGNF(stats.depensesJour)} icon="trash" tone="danger" />
+        <StatCard label="Dépenses ce mois" value={fmtGNF(stats.depensesMois)} icon="trash" tone="danger" />
+        <StatCard label="Bénéfice net ce mois" value={fmtGNF(stats.beneficeMois)} icon="chart" tone={stats.beneficeMois>=0?'default':'danger'} sub="CA − Dépenses" />
       </div>
 
       <div style={{display:'grid', gridTemplateColumns:'1.4fr 1fr', gap:16, marginBottom:24}}>
@@ -1081,13 +1107,27 @@ function CommandesView({ site, updateSite, editable }){
                   <td style={{...td}}><span className="mono" style={{fontWeight:600}}>{cmd.numero}</span></td>
                   <td style={td}>{client ? client.nom : '—'}</td>
                   <td style={td}>{cmd.lignes.reduce((s,l)=>s+l.qte,0)} article(s)</td>
-                  <td style={td} className="mono">{fmtGNF(total)}</td>
+                  <td style={td}>
+                    <div className="mono">{fmtGNF(total)}</div>
+                    {Number(cmd.acompte) > 0 && total > Number(cmd.acompte) && (
+                      <div style={{fontSize:11.5, color:'var(--danger)'}}>Solde: {fmtGNF(total - Number(cmd.acompte))}</div>
+                    )}
+                  </td>
                   <td style={td}><span className={`tag ${STATUT_TAG_CLASS[cmd.statut]}`}>{cmd.statut}</span></td>
-                  <td style={td}><span className={`tag ${cmd.paiement==='paye'?'tag-paye':'tag-impaye'}`}>{cmd.paiement==='paye'?'Payé':'Impayé'}</span></td>
+                  <td style={td}><span className={`tag ${cmd.paiement==='paye'?'tag-paye':'tag-impaye'}`}>{cmd.paiement==='paye'?'Payé':Number(cmd.acompte)>0?'Partiel':'Impayé'}</span></td>
                   <td style={td}>{fmtDate(cmd.dateCreation.slice(0,10))}</td>
                   <td style={{...td, textAlign:'right'}}>
-                    <div style={{display:'flex', gap:6, justifyContent:'flex-end'}}>
+                    <div style={{display:'flex', gap:6, justifyContent:'flex-end', flexWrap:'wrap'}}>
                       <button className="btn btn-ghost btn-sm" onClick={()=>setOpenTicket(cmd)}>Voir</button>
+                      {editable && client && client.tel && (
+                        <button className="btn btn-sm" style={{background:'#25D366', color:'white', borderColor:'#25D366', padding:'6px 10px'}}
+                          onClick={()=>{
+                            const tel = client.tel.replace(/\D/g,'');
+                            const solde = total - (Number(cmd.acompte)||0);
+                            const msg = encodeURIComponent(`Bonjour ${client.nom}, votre commande ${cmd.numero} chez ${site.nom} est prete.${solde>0?` Solde a regler : ${fmtGNF(solde)}.`:' Entierement payee.'} Merci !`);
+                            window.open(`https://wa.me/${tel}?text=${msg}`, '_blank');
+                          }}>📱</button>
+                      )}
                       {editable && cmd.statut !== 'Récupéré' && (
                         <button className="btn btn-sm" onClick={()=>advanceStatut(cmd)}>→ {nextStatut(cmd.statut)}</button>
                       )}
@@ -1121,6 +1161,8 @@ function NewCommandeModal({ site, updateSite, onClose }){
   const [lignes, setLignes] = useState([]);
   const [dateRetrait, setDateRetrait] = useState('');
   const [notes, setNotes] = useState('');
+  const [acompte, setAcompte] = useState('');
+  const [acompteMode, setAcompteMode] = useState('none'); // 'none' | 'pourcent' | 'libre'
 
   const clientMatches = useMemo(() => {
     if(!clientSearch.trim()) return site.clients.slice(0,5);
@@ -1156,13 +1198,15 @@ function NewCommandeModal({ site, updateSite, onClose }){
     if(!finalClientId || lignes.length === 0) return;
 
     const seq = site.seq;
+    const montantAcompte = Number(acompte) || 0;
     const cmd = {
       id: uid('cmd_'),
       numero: ticketNumber(site.code, seq),
       clientId: finalClientId,
       lignes,
       statut: 'Reçu',
-      paiement: 'impaye',
+      paiement: montantAcompte >= total ? 'paye' : 'impaye',
+      acompte: montantAcompte,
       dateCreation: new Date().toISOString(),
       dateRetraitPrevue: dateRetrait || null,
       notes: notes.trim(),
@@ -1252,12 +1296,102 @@ function NewCommandeModal({ site, updateSite, onClose }){
           </div>
         </div>
 
+        {/* PAIEMENT PARTIEL */}
+        {total > 0 && (
+          <div>
+            <label>Paiement à la dépose</label>
+            <div style={{display:'flex', gap:8, marginBottom:10, flexWrap:'wrap'}}>
+              {[{label:'Pas de paiement', val:'none'}, {label:'Acompte %', val:'pourcent'}, {label:'Montant libre', val:'libre'}].map(opt => (
+                <button key={opt.val} className="btn btn-sm" onClick={()=>{ setAcompteMode(opt.val); setAcompte(''); }}
+                  style={{background: acompteMode===opt.val ? 'var(--pine)' : 'transparent', color: acompteMode===opt.val ? 'var(--white)' : 'var(--ink)', borderColor: acompteMode===opt.val ? 'var(--pine)' : 'var(--line-strong)'}}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            {acompteMode === 'pourcent' && (
+              <div style={{display:'flex', gap:8, flexWrap:'wrap'}}>
+                {[25, 50, 75].map(p => {
+                  const montant = Math.round(total * p / 100);
+                  return (
+                    <button key={p} className="btn btn-sm" onClick={()=>setAcompte(String(montant))}
+                      style={{background: acompte===String(montant) ? 'var(--rust)' : 'transparent', color: acompte===String(montant) ? 'var(--white)' : 'var(--ink)', borderColor: acompte===String(montant) ? 'var(--rust)' : 'var(--line-strong)'}}>
+                      {p}% — {fmtGNF(montant)}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {acompteMode === 'libre' && (
+              <input type="number" placeholder="Montant payé maintenant (GNF)" value={acompte} onChange={e=>setAcompte(e.target.value)} max={total} />
+            )}
+            {acompte && Number(acompte) > 0 && (
+              <div style={{marginTop:8, padding:'8px 12px', background:'var(--warn-light)', borderRadius:8, fontSize:13}}>
+                <div style={{display:'flex', justifyContent:'space-between'}}>
+                  <span>Acompte reçu :</span><span className="mono" style={{fontWeight:700}}>{fmtGNF(Number(acompte))}</span>
+                </div>
+                <div style={{display:'flex', justifyContent:'space-between', color:'var(--danger)'}}>
+                  <span>Solde restant dû :</span><span className="mono" style={{fontWeight:700}}>{fmtGNF(total - Number(acompte))}</span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
           <button className="btn" onClick={onClose}>Annuler</button>
           <button className="btn btn-rust" disabled={(!clientId && !newClientMode) || lignes.length===0} onClick={handleSubmit}>Créer le ticket</button>
         </div>
       </div>
     </ModalShell>
+  );
+}
+
+/* ===================== CONFIRMATION SUPPRESSION AVEC MOT DE PASSE ===================== */
+
+function ConfirmDelete({ message, onConfirm, onCancel }){
+  const [pass, setPass] = useState('');
+  const [error, setError] = useState('');
+
+  function handleConfirm(){
+    if(pass === PASS_GERANT){
+      onConfirm();
+    } else {
+      setError('Mot de passe incorrect.');
+      setPass('');
+    }
+  }
+
+  return (
+    <div style={{
+      position:'fixed', inset:0, background:'rgba(27,31,28,0.55)',
+      display:'flex', alignItems:'center', justifyContent:'center', zIndex:100, padding:20
+    }}>
+      <div className="card" style={{width:380, maxWidth:'92vw', padding:'1.5rem'}}>
+        <div style={{display:'flex', alignItems:'center', gap:10, marginBottom:14, color:'var(--danger)'}}>
+          <Icon name="alert" size={22} />
+          <h2 style={{margin:0, fontSize:18, color:'var(--danger)'}}>Confirmer la suppression</h2>
+        </div>
+        <p style={{fontSize:14, color:'var(--ink)', marginBottom:16, lineHeight:1.5}}>{message}</p>
+        <div style={{marginBottom:14}}>
+          <label>Mot de passe gérant pour confirmer</label>
+          <input
+            type="password"
+            placeholder="Entrez votre mot de passe…"
+            value={pass}
+            onChange={e=>{ setPass(e.target.value); setError(''); }}
+            onKeyDown={e=>{ if(e.key==='Enter') handleConfirm(); }}
+            autoFocus
+          />
+          {error && <p style={{color:'var(--danger)', fontSize:13, margin:'6px 0 0'}}>{error}</p>}
+        </div>
+        <div style={{display:'flex', gap:10, justifyContent:'flex-end'}}>
+          <button className="btn" onClick={onCancel}>Annuler</button>
+          <button className="btn" style={{background:'var(--danger)', borderColor:'var(--danger)', color:'var(--white)'}} onClick={handleConfirm}>
+            Supprimer
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1281,6 +1415,18 @@ function ModalShell({ title, children, onClose, width=520 }){
 function TicketModal({ cmd, site, onClose }){
   const client = site.clients.find(c => c.id === cmd.clientId);
   const total = calcCommandeTotal(cmd, site.services);
+  const acompte = Number(cmd.acompte) || 0;
+  const solde = total - acompte;
+
+  function ouvrirWhatsApp(){
+    if(!client || !client.tel) return;
+    const tel = client.tel.replace(/\D/g,'');
+    const msg = encodeURIComponent(
+      `Bonjour ${client.nom}, votre commande ${cmd.numero} chez ${site.nom} est prête à récupérer.\nTotal : ${fmtGNF(total)}${solde > 0 ? `\nSolde restant : ${fmtGNF(solde)}` : ' (Payé)'}\nMerci !`
+    );
+    window.open(`https://wa.me/${tel}?text=${msg}`, '_blank');
+  }
+
   return (
     <ModalShell title={`Ticket ${cmd.numero}`} onClose={onClose} width={420}>
       <div className="ticket-perfo" style={{background:'var(--paper-2)', borderRadius:10, padding:'1.25rem'}}>
@@ -1307,6 +1453,17 @@ function TicketModal({ cmd, site, onClose }){
         <div style={{borderTop:'1px dashed var(--line-strong)', marginTop:10, paddingTop:10, display:'flex', justifyContent:'space-between', fontWeight:700}}>
           <span>Total</span><span className="mono">{fmtGNF(total)}</span>
         </div>
+        {acompte > 0 && (
+          <>
+            <div style={{display:'flex', justifyContent:'space-between', fontSize:13, color:'var(--ok)', paddingTop:4}}>
+              <span>Acompte versé</span><span className="mono">{fmtGNF(acompte)}</span>
+            </div>
+            <div style={{display:'flex', justifyContent:'space-between', fontSize:13.5, fontWeight:700, color: solde > 0 ? 'var(--danger)' : 'var(--ok)', paddingTop:4, borderTop:'1px dashed var(--line)'}}>
+              <span>{solde > 0 ? 'Solde restant dû' : 'Entièrement payé ✓'}</span>
+              <span className="mono">{solde > 0 ? fmtGNF(solde) : ''}</span>
+            </div>
+          </>
+        )}
         <div style={{marginTop:10, display:'flex', justifyContent:'space-between', fontSize:12.5}}>
           <span className={`tag ${STATUT_TAG_CLASS[cmd.statut]}`}>{cmd.statut}</span>
           <span className={`tag ${cmd.paiement==='paye'?'tag-paye':'tag-impaye'}`}>{cmd.paiement==='paye'?'Payé':'Impayé'}</span>
@@ -1314,9 +1471,15 @@ function TicketModal({ cmd, site, onClose }){
         {cmd.dateRetraitPrevue && <div style={{fontSize:12, color:'var(--steam)', marginTop:8}}>Retrait prévu : {fmtDate(cmd.dateRetraitPrevue)}</div>}
         {cmd.notes && <div style={{fontSize:12, color:'var(--steam)', marginTop:4}}>Note : {cmd.notes}</div>}
       </div>
-      <div className="no-print" style={{display:'flex', justifyContent:'flex-end', gap:8, marginTop:16}}>
-        <button className="btn btn-sm" onClick={()=>window.print()}><Icon name="print" size={14}/> Imprimer</button>
-        <button className="btn btn-rust btn-sm" onClick={onClose}>Fermer</button>
+      <div className="no-print" style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:16}}>
+        <button className="btn btn-sm" style={{background:'#25D366', color:'white', borderColor:'#25D366'}}
+          onClick={ouvrirWhatsApp} disabled={!client || !client.tel}>
+          📱 WhatsApp
+        </button>
+        <div style={{display:'flex', gap:8}}>
+          <button className="btn btn-sm" onClick={()=>window.print()}><Icon name="print" size={14}/> Imprimer</button>
+          <button className="btn btn-rust btn-sm" onClick={onClose}>Fermer</button>
+        </div>
       </div>
     </ModalShell>
   );
@@ -1462,12 +1625,19 @@ function StatMini({ label, value }){
 
 function StockView({ site, updateSite }){
   const [showNew, setShowNew] = useState(false);
+  const [confirmItem, setConfirmItem] = useState(null);
+  const [editItem, setEditItem] = useState(null);
 
   function adjust(id, delta){
     updateSite({ ...site, stock: site.stock.map(s => s.id===id ? {...s, quantite: Math.max(0, s.quantite+delta)} : s) });
   }
   function removeItem(id){
     updateSite({ ...site, stock: site.stock.filter(s => s.id !== id) });
+  }
+  function saveEdit(){
+    if(!editItem) return;
+    updateSite({ ...site, stock: site.stock.map(s => s.id===editItem.id ? editItem : s) });
+    setEditItem(null);
   }
 
   return (
@@ -1491,7 +1661,7 @@ function StockView({ site, updateSite }){
               const low = s.quantite <= s.seuil;
               return (
                 <tr key={s.id} style={{borderTop:'1px solid var(--line)'}}>
-                  <td style={td}>{s.nom}</td>
+                  <td style={td}>{s.nom} <span style={{fontSize:11.5, color:'var(--steam)'}}>({s.unite})</span></td>
                   <td style={td}>
                     <div style={{display:'flex', alignItems:'center', gap:8}}>
                       <button className="btn btn-sm" style={{padding:'2px 9px'}} onClick={()=>adjust(s.id,-1)}>−</button>
@@ -1501,7 +1671,12 @@ function StockView({ site, updateSite }){
                   </td>
                   <td style={td} className="mono">{s.seuil} {s.unite}</td>
                   <td style={td}>{low ? <span className="tag tag-impaye">Stock bas</span> : <span className="tag tag-paye">OK</span>}</td>
-                  <td style={{...td, textAlign:'right'}}><button className="btn btn-ghost btn-sm" onClick={()=>removeItem(s.id)}><Icon name="trash" size={14}/></button></td>
+                  <td style={{...td, textAlign:'right'}}>
+                    <div style={{display:'flex', gap:6, justifyContent:'flex-end'}}>
+                      <button className="btn btn-ghost btn-sm" onClick={()=>setEditItem({...s})} title="Modifier"><Icon name="edit" size={14}/></button>
+                      <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>setConfirmItem(site.stock.find(x=>x.id===s.id))} title="Supprimer"><Icon name="trash" size={14}/></button>
+                    </div>
+                  </td>
                 </tr>
               );
             })}
@@ -1510,6 +1685,37 @@ function StockView({ site, updateSite }){
       </div>
 
       {showNew && <NewStockModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
+
+      {confirmItem && <ConfirmDelete
+        message={`Supprimer « ${confirmItem.nom} » du stock ?`}
+        onConfirm={()=>{ removeItem(confirmItem.id); setConfirmItem(null); }}
+        onCancel={()=>setConfirmItem(null)}
+      />}
+
+      {editItem && (
+        <ModalShell title="Modifier l'article" onClose={()=>setEditItem(null)} width={400}>
+          <div style={{display:'grid', gap:14}}>
+            <div><label>Nom de l'article</label>
+              <input type="text" value={editItem.nom} onChange={e=>setEditItem({...editItem, nom:e.target.value})} autoFocus/>
+            </div>
+            <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:10}}>
+              <div><label>Quantité actuelle</label>
+                <input type="number" value={editItem.quantite} onChange={e=>setEditItem({...editItem, quantite:Number(e.target.value)})} />
+              </div>
+              <div><label>Unité</label>
+                <input type="text" value={editItem.unite} onChange={e=>setEditItem({...editItem, unite:e.target.value})} />
+              </div>
+            </div>
+            <div><label>Seuil d'alerte</label>
+              <input type="number" value={editItem.seuil} onChange={e=>setEditItem({...editItem, seuil:Number(e.target.value)})} />
+            </div>
+            <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
+              <button className="btn" onClick={()=>setEditItem(null)}>Annuler</button>
+              <button className="btn btn-rust" disabled={!editItem.nom.trim()} onClick={saveEdit}>Enregistrer</button>
+            </div>
+          </div>
+        </ModalShell>
+      )}
     </div>
   );
 }
@@ -1549,8 +1755,11 @@ function NewStockModal({ site, updateSite, onClose }){
 function EquipeView({ site, updateSite }){
   const [showNew, setShowNew] = useState(false);
   const [showPass, setShowPass] = useState({});
+  const [confirmEmp, setConfirmEmp] = useState(null);
 
-  function removeEmp(id){ updateSite({ ...site, employes: site.employes.filter(e=>e.id!==id) }); }
+  function removeEmp(id){
+    updateSite({ ...site, employes: site.employes.filter(e=>e.id!==id) });
+  }
   function togglePass(id){ setShowPass(prev => ({...prev, [id]: !prev[id]})); }
 
   return (
@@ -1565,7 +1774,7 @@ function EquipeView({ site, updateSite }){
                 <div style={{fontWeight:600, fontSize:14.5}}>{e.nom}</div>
                 <div style={{fontSize:12.5, color:'var(--steam)'}}>{e.role}</div>
               </div>
-              <button className="btn btn-ghost btn-sm" onClick={()=>removeEmp(e.id)}><Icon name="trash" size={14}/></button>
+              <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>setConfirmEmp(e)}><Icon name="trash" size={14}/></button>
             </div>
             <div style={{marginTop:10, display:'flex', alignItems:'center', gap:8}}>
               <span className="mono" style={{fontSize:12, color:'var(--pine)', background:'var(--pine-light)', padding:'3px 8px', borderRadius:6}}>
@@ -1580,6 +1789,11 @@ function EquipeView({ site, updateSite }){
         {site.employes.length === 0 && <p style={{color:'var(--steam)'}}>Aucun employé enregistré pour ce site.</p>}
       </div>
       {showNew && <NewEmployeModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
+      {confirmEmp && <ConfirmDelete
+        message={`Supprimer définitivement l'employé « ${confirmEmp.nom} » ? Il ne pourra plus se connecter.`}
+        onConfirm={()=>{ removeEmp(confirmEmp.id); setConfirmEmp(null); }}
+        onCancel={()=>setConfirmEmp(null)}
+      />}
     </div>
   );
 }
@@ -1603,9 +1817,14 @@ function NewEmployeModal({ site, updateSite, onClose }){
           <label>Rôle</label>
           <select value={role} onChange={e=>setRole(e.target.value)}>
             <option>Caissier</option>
+            <option>Repasseur</option>
+            <option>Nettoyeur</option>
             <option>Pressing</option>
             <option>Livreur</option>
+            <option>Retoucheur</option>
+            <option>Réceptionniste</option>
             <option>Gérant adjoint</option>
+            <option>Autre</option>
           </select>
         </div>
         <div>
@@ -1629,6 +1848,160 @@ function NewEmployeModal({ site, updateSite, onClose }){
         <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
           <button className="btn" onClick={onClose}>Annuler</button>
           <button className="btn btn-rust" disabled={!nom.trim()||!motdepasse.trim()} onClick={submit}>Ajouter</button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ===================== DEPENSES ===================== */
+
+const CATEGORIES_DEPENSES = ['Salaires', 'Électricité', 'Loyer', 'Fournitures', 'Autres'];
+
+function DepensesView({ site, updateSite }){
+  const [showNew, setShowNew] = useState(false);
+  const [filterMois, setFilterMois] = useState(todayISO().slice(0,7));
+  const [confirmDep, setConfirmDep] = useState(null);
+
+  const depenses = (site.depenses || []);
+
+  const filtered = useMemo(() => {
+    return [...depenses]
+      .filter(d => d.date.slice(0,7) === filterMois)
+      .sort((a,b) => new Date(b.date) - new Date(a.date));
+  }, [depenses, filterMois]);
+
+  const totalMois = filtered.reduce((s,d) => s + Number(d.montant), 0);
+
+  const parCategorie = useMemo(() => {
+    const acc = {};
+    filtered.forEach(d => {
+      acc[d.categorie] = (acc[d.categorie]||0) + Number(d.montant);
+    });
+    return acc;
+  }, [filtered]);
+
+  function removeDepense(id){
+    updateSite({ ...site, depenses: depenses.filter(d=>d.id!==id) });
+  }
+
+  // Liste des mois disponibles
+  const moisDisponibles = useMemo(() => {
+    const mois = new Set(depenses.map(d=>d.date.slice(0,7)));
+    mois.add(todayISO().slice(0,7));
+    return [...mois].sort().reverse();
+  }, [depenses]);
+
+  return (
+    <div>
+      <PageHeader title="Dépenses" subtitle={`Total ${filterMois} : ${fmtGNF(totalMois)}`}
+        right={<button className="btn btn-rust" onClick={()=>setShowNew(true)}><Icon name="plus" size={15}/> Nouvelle dépense</button>} />
+
+      {/* Filtre par mois */}
+      <div style={{display:'flex', gap:10, marginBottom:18, alignItems:'center', flexWrap:'wrap'}}>
+        <select value={filterMois} onChange={e=>setFilterMois(e.target.value)} style={{width:'auto', minWidth:160}}>
+          {moisDisponibles.map(m => (
+            <option key={m} value={m}>{new Date(m+'-01').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Résumé par catégorie */}
+      {filtered.length > 0 && (
+        <div style={{display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:10, marginBottom:20}}>
+          {CATEGORIES_DEPENSES.map(cat => (
+            <div key={cat} className="card" style={{padding:'0.9rem 1rem'}}>
+              <div style={{fontSize:11.5, color:'var(--steam)', fontWeight:600, textTransform:'uppercase'}}>{cat}</div>
+              <div className="mono" style={{fontSize:15, fontWeight:700, color:'var(--pine)', marginTop:4}}>{fmtGNF(parCategorie[cat]||0)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Liste des dépenses */}
+      <div className="card" style={{overflow:'hidden'}}>
+        <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+          <thead>
+            <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+              <th style={th}>Date</th>
+              <th style={th}>Description</th>
+              <th style={th}>Catégorie</th>
+              <th style={th}>Montant</th>
+              <th style={th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 && (
+              <tr><td colSpan={5} style={{...td, textAlign:'center', color:'var(--steam)', padding:'2rem'}}>Aucune dépense enregistrée pour ce mois.</td></tr>
+            )}
+            {filtered.map(d => (
+              <tr key={d.id} style={{borderTop:'1px solid var(--line)'}}>
+                <td style={td}>{fmtDate(d.date)}</td>
+                <td style={td}>{d.description}</td>
+                <td style={td}><span className="tag tag-recu">{d.categorie}</span></td>
+                <td style={td} className="mono" style={{...td, color:'var(--danger)', fontWeight:600}}>{fmtGNF(d.montant)}</td>
+                <td style={{...td, textAlign:'right'}}>
+                  <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>setConfirmDep(d)}>
+                    <Icon name="trash" size={14}/>
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {filtered.length > 0 && (
+              <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
+                <td colSpan={3} style={{...td, fontWeight:700}}>Total {new Date(filterMois+'-01').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})}</td>
+                <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalMois)}</td>
+                <td></td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {showNew && <NewDepenseModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
+      {confirmDep && <ConfirmDelete
+        message={`Supprimer la dépense « ${confirmDep.description} » (${fmtGNF(confirmDep.montant)}) ?`}
+        onConfirm={()=>{ removeDepense(confirmDep.id); setConfirmDep(null); }}
+        onCancel={()=>setConfirmDep(null)}
+      />}
+    </div>
+  );
+}
+
+function NewDepenseModal({ site, updateSite, onClose }){
+  const [date, setDate] = useState(todayISO());
+  const [description, setDescription] = useState('');
+  const [montant, setMontant] = useState('');
+  const [categorie, setCategorie] = useState('Salaires');
+
+  function submit(){
+    if(!description.trim() || !montant || !date) return;
+    const dep = {
+      id: uid('dep_'),
+      date,
+      description: description.trim(),
+      montant: Number(montant),
+      categorie,
+    };
+    updateSite({ ...site, depenses: [dep, ...(site.depenses||[])] });
+    onClose();
+  }
+
+  return (
+    <ModalShell title="Nouvelle dépense" onClose={onClose} width={420}>
+      <div style={{display:'grid', gap:14}}>
+        <div><label>Date</label><input type="date" value={date} onChange={e=>setDate(e.target.value)} max={todayISO()} /></div>
+        <div>
+          <label>Catégorie</label>
+          <select value={categorie} onChange={e=>setCategorie(e.target.value)}>
+            {CATEGORIES_DEPENSES.map(c => <option key={c}>{c}</option>)}
+          </select>
+        </div>
+        <div><label>Description</label><input type="text" placeholder="Ex : Salaire Mamadou Alpha, Facture électricité…" value={description} onChange={e=>setDescription(e.target.value)} autoFocus/></div>
+        <div><label>Montant (GNF)</label><input type="number" placeholder="0" value={montant} onChange={e=>setMontant(e.target.value)} /></div>
+        <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
+          <button className="btn" onClick={onClose}>Annuler</button>
+          <button className="btn btn-rust" disabled={!description.trim()||!montant||!date} onClick={submit}>Enregistrer</button>
         </div>
       </div>
     </ModalShell>
@@ -1669,17 +2042,70 @@ function ParametresView({ site, updateSite }){
   const [tel, setTel] = useState(site.tel);
   const [savedFlash, setSavedFlash] = useState(false);
 
+  // Config SMS — stockée dans le site
+  const smsConfig = site.smsConfig || { provider: 'none', apiKey: '', apiSecret: '', senderId: '' };
+  const [smsProvider, setSmsProvider] = useState(smsConfig.provider || 'none');
+  const [smsApiKey, setSmsApiKey] = useState(smsConfig.apiKey || '');
+  const [smsApiSecret, setSmsApiSecret] = useState(smsConfig.apiSecret || '');
+  const [smsSenderId, setSmsSenderId] = useState(smsConfig.senderId || '');
+  const [smsFlash, setSmsFlash] = useState(false);
+  const [smsTest, setSmsTest] = useState('');
+  const [smsTestResult, setSmsTestResult] = useState('');
+
   function save(){
     updateSite({ ...site, nom, adresse, tel });
     setSavedFlash(true);
     setTimeout(()=>setSavedFlash(false), 1800);
   }
 
+  function saveSMS(){
+    updateSite({ ...site, smsConfig: { provider: smsProvider, apiKey: smsApiKey, apiSecret: smsApiSecret, senderId: smsSenderId } });
+    setSmsFlash(true);
+    setTimeout(()=>setSmsFlash(false), 1800);
+  }
+
+  async function testSMS(){
+    if(!smsTest.trim()) return;
+    setSmsTestResult('Envoi en cours…');
+    try {
+      if(smsProvider === 'africas_talking'){
+        const resp = await fetch('https://api.africastalking.com/version1/messaging', {
+          method: 'POST',
+          headers: { 'apiKey': smsApiKey, 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+          body: new URLSearchParams({ username: smsApiSecret, to: smsTest, message: `Test SMS Maci Pressing - ${site.nom}`, from: smsSenderId || undefined })
+        });
+        const data = await resp.json();
+        setSmsTestResult(data.SMSMessageData?.Message || 'Envoyé !');
+      } else if(smsProvider === 'twilio'){
+        const creds = btoa(`${smsApiKey}:${smsApiSecret}`);
+        const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${smsApiKey}/Messages.json`, {
+          method: 'POST',
+          headers: { 'Authorization': `Basic ${creds}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ To: smsTest, From: smsSenderId, Body: `Test SMS Maci Pressing - ${site.nom}` })
+        });
+        const data = await resp.json();
+        setSmsTestResult(data.status || data.message || 'Envoyé !');
+      } else {
+        setSmsTestResult('Aucun fournisseur SMS configuré.');
+      }
+    } catch(e) {
+      setSmsTestResult('Erreur : ' + e.message);
+    }
+  }
+
+  const providers = [
+    { val: 'none', label: 'Désactivé', desc: 'Pas de SMS automatique' },
+    { val: 'whatsapp', label: 'WhatsApp', desc: 'Gratuit — déjà actif via les boutons 📱', active: true },
+    { val: 'africas_talking', label: "Africa's Talking", desc: 'Spécialisé Afrique — plan test gratuit disponible sur africastalking.com' },
+    { val: 'twilio', label: 'Twilio', desc: 'International — ~0.01$/SMS, essai gratuit sur twilio.com' },
+    { val: 'orange', label: 'Orange SMS API', desc: 'Orange Guinée — nécessite un contrat professionnel avec Orange Business' },
+  ];
+
   return (
     <div>
-      <PageHeader title="Paramètres" subtitle="Informations de l'établissement et services" />
+      <PageHeader title="Paramètres" subtitle="Informations de l'établissement, services et SMS" />
 
-      <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:18}}>
+      <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:18, marginBottom:18}}>
         <div className="card" style={{padding:'1.5rem'}}>
           <h3 style={{margin:'0 0 16px', fontSize:15}}>Établissement</h3>
           <div style={{display:'grid', gap:12}}>
@@ -1694,6 +2120,76 @@ function ParametresView({ site, updateSite }){
 
         <ServicesEditor site={site} updateSite={updateSite} />
       </div>
+
+      {/* Section SMS */}
+      <div className="card" style={{padding:'1.5rem'}}>
+        <h3 style={{margin:'0 0 6px', fontSize:15, display:'flex', alignItems:'center', gap:8}}>
+          <Icon name="phone" size={16}/> Configuration SMS
+        </h3>
+        <p style={{fontSize:13, color:'var(--steam)', margin:'0 0 16px', lineHeight:1.5}}>
+          WhatsApp est déjà actif (bouton 📱 sur chaque commande). Pour envoyer de vrais SMS automatiques, choisissez un fournisseur et entrez vos clés API.
+        </p>
+
+        {/* Choix du fournisseur */}
+        <label>Fournisseur SMS</label>
+        <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:16}}>
+          {providers.map(p => (
+            <button key={p.val} onClick={()=>setSmsProvider(p.val)}
+              className="card"
+              style={{padding:'0.9rem', textAlign:'left', border: smsProvider===p.val ? '2px solid var(--pine)' : '1px solid var(--line)', background: smsProvider===p.val ? 'var(--pine-light)' : 'var(--white)', cursor:'pointer'}}>
+              <div style={{fontWeight:600, fontSize:13.5, color: smsProvider===p.val ? 'var(--pine)' : 'var(--ink)'}}>{p.label}</div>
+              <div style={{fontSize:11.5, color:'var(--steam)', marginTop:4, lineHeight:1.4}}>{p.desc}</div>
+              {p.active && <span className="tag tag-paye" style={{marginTop:6, fontSize:10}}>Actif</span>}
+            </button>
+          ))}
+        </div>
+
+        {/* Champs de configuration selon le fournisseur */}
+        {smsProvider === 'africas_talking' && (
+          <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:14}}>
+            <div><label>API Key</label><input type="password" value={smsApiKey} onChange={e=>setSmsApiKey(e.target.value)} placeholder="Votre clé API Africa's Talking"/></div>
+            <div><label>Username</label><input type="text" value={smsApiSecret} onChange={e=>setSmsApiSecret(e.target.value)} placeholder="Votre username"/></div>
+            <div><label>Sender ID (optionnel)</label><input type="text" value={smsSenderId} onChange={e=>setSmsSenderId(e.target.value)} placeholder="Ex: MaciPress"/></div>
+            <div style={{display:'flex', alignItems:'flex-end'}}>
+              <a href="https://africastalking.com" target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm">Créer un compte →</a>
+            </div>
+          </div>
+        )}
+        {smsProvider === 'twilio' && (
+          <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:14}}>
+            <div><label>Account SID</label><input type="password" value={smsApiKey} onChange={e=>setSmsApiKey(e.target.value)} placeholder="AC..."/></div>
+            <div><label>Auth Token</label><input type="password" value={smsApiSecret} onChange={e=>setSmsApiSecret(e.target.value)} placeholder="Votre Auth Token"/></div>
+            <div><label>Numéro Twilio expéditeur</label><input type="text" value={smsSenderId} onChange={e=>setSmsSenderId(e.target.value)} placeholder="+1..."/></div>
+            <div style={{display:'flex', alignItems:'flex-end'}}>
+              <a href="https://twilio.com" target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm">Créer un compte →</a>
+            </div>
+          </div>
+        )}
+        {smsProvider === 'orange' && (
+          <div style={{padding:'12px 16px', background:'var(--warn-light)', borderRadius:8, marginBottom:14, fontSize:13, lineHeight:1.6}}>
+            <strong>Orange SMS API</strong> — Pour activer ce service, vous devez contacter Orange Guinée Business et signer un contrat d'utilisation de l'API SMS. Une fois le contrat signé, Orange vous fournira des clés API à entrer ici.
+            <br/>Contact : <strong>Orange Business Guinée</strong>
+          </div>
+        )}
+
+        {/* Test SMS */}
+        {(smsProvider === 'africas_talking' || smsProvider === 'twilio') && (
+          <div style={{marginBottom:14}}>
+            <label>Tester l'envoi SMS</label>
+            <div style={{display:'flex', gap:8}}>
+              <input type="tel" placeholder="Numéro de test (ex: +224625633383)" value={smsTest} onChange={e=>setSmsTest(e.target.value)} />
+              <button className="btn btn-sm" onClick={testSMS} disabled={!smsApiKey}>Tester</button>
+            </div>
+            {smsTestResult && <p style={{fontSize:12.5, color:'var(--pine)', marginTop:6}}>{smsTestResult}</p>}
+          </div>
+        )}
+
+        {smsProvider !== 'none' && smsProvider !== 'whatsapp' && (
+          <button className="btn btn-rust" onClick={saveSMS} style={{justifySelf:'start'}}>
+            {smsFlash ? <><Icon name="check" size={14}/> Configuration sauvegardée !</> : 'Sauvegarder la configuration SMS'}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -1706,6 +2202,7 @@ function ServicesEditor({ site, updateSite }){
   const [editNom, setEditNom] = useState('');
   const [editPrix, setEditPrix] = useState('');
   const [editCategorie, setEditCategorie] = useState('Nettoyage');
+  const [confirmSvc, setConfirmSvc] = useState(null);
 
   function addService(){
     if(!nom.trim() || !prix) return;
@@ -1757,7 +2254,7 @@ function ServicesEditor({ site, updateSite }){
               <div style={{display:'flex', alignItems:'center', gap:6}}>
                 <span className="mono">{fmtGNF(s.prix)}</span>
                 <button className="btn btn-ghost btn-sm" style={{padding:'4px 7px'}} onClick={()=>startEdit(s)} aria-label="Modifier"><Icon name="edit" size={13}/></button>
-                <button className="btn btn-ghost btn-sm" style={{padding:'4px 7px'}} onClick={()=>removeService(s.id)} aria-label="Supprimer"><Icon name="trash" size={13}/></button>
+                <button className="btn btn-ghost btn-sm" style={{padding:'4px 7px', color:'var(--danger)'}} onClick={()=>setConfirmSvc(s)} aria-label="Supprimer"><Icon name="trash" size={13}/></button>
               </div>
             </div>
           )
@@ -1776,6 +2273,11 @@ function ServicesEditor({ site, updateSite }){
       <button className="btn btn-rust btn-sm" style={{marginTop:10}} onClick={addService} disabled={!nom.trim()||!prix}>
         <Icon name="plus" size={13}/> Ajouter
       </button>
+      {confirmSvc && <ConfirmDelete
+        message={`Supprimer le service « ${confirmSvc.nom} » (${fmtGNF(confirmSvc.prix)}) ?`}
+        onConfirm={()=>{ removeService(confirmSvc.id); setConfirmSvc(null); }}
+        onCancel={()=>setConfirmSvc(null)}
+      />}
     </div>
   );
 }
