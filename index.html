@@ -259,6 +259,15 @@ function makeSite(nom, adresse, tel){
     notifications: [],
     employes: [],
     depenses: [],
+    remunerations: [], // historique des saisies de rémunération employés
+    configRemuneration: {
+      prixUnitRepassage: 0, // GNF par unité repassée
+      zones: [ // zones de livraison
+        { id: uid('zone_'), nom: 'Zone 1 — Locale', montant: 15000 },
+        { id: uid('zone_'), nom: 'Zone 2 — Proche', montant: 25000 },
+        { id: uid('zone_'), nom: 'Zone 3 — Éloignée', montant: 40000 },
+      ]
+    },
   };
 }
 
@@ -699,7 +708,7 @@ function GerantApp({ db, setDb, onLogout }){
       ) : (
         <>
           {page === 'global' && <GlobalDashboard db={db} onOpenSite={setActiveSiteId} />}
-          {page === 'sites' && <SitesManager db={db} addSite={addSite} removeSite={removeSite} onOpenSite={setActiveSiteId} />}
+          {page === 'sites' && <SitesManager db={db} setDb={persist} addSite={addSite} removeSite={removeSite} onOpenSite={setActiveSiteId} />}
         </>
       )}
     </Shell>
@@ -783,13 +792,71 @@ function MiniMetric({ label, value, danger }){
   );
 }
 
-function SitesManager({ db, addSite, removeSite, onOpenSite }){
+function SitesManager({ db, addSite, removeSite, onOpenSite, setDb }){
   const [showNew, setShowNew] = useState(false);
   const [confirmSite, setConfirmSite] = useState(null);
+  const [showUniformiser, setShowUniformiser] = useState(false);
+  const [sourceSiteId, setSourceSiteId] = useState(db.sites[0]?.id || '');
+  const [uniformFlash, setUniformFlash] = useState(false);
+
+  function uniformiserPrix(){
+    const source = db.sites.find(s => s.id === sourceSiteId);
+    if(!source) return;
+    const updatedSites = db.sites.map(site => {
+      if(site.id === sourceSiteId) return site;
+      const newServices = source.services.map(srcSvc => {
+        const existing = site.services.find(s => s.nom === srcSvc.nom);
+        if(existing) return { ...existing, prix: srcSvc.prix, categorie: srcSvc.categorie };
+        return { ...srcSvc, id: uid('svc_') };
+      });
+      return { ...site, services: newServices };
+    });
+    setDb({ ...db, sites: updatedSites });
+    setUniformFlash(true);
+    setTimeout(()=>setUniformFlash(false), 2000);
+  }
+
   return (
     <div>
       <PageHeader title="Mes pressings" subtitle="Créez, supprimez ou ouvrez un établissement"
-        right={<button className="btn btn-rust" onClick={()=>setShowNew(true)}><Icon name="plus" size={15}/> Nouveau pressing</button>} />
+        right={<div style={{display:'flex', gap:10}}>
+          <button className="btn" onClick={()=>setShowUniformiser(!showUniformiser)}>
+            <Icon name="layers" size={15}/> Uniformiser les prix
+          </button>
+          <button className="btn btn-rust" onClick={()=>setShowNew(true)}><Icon name="plus" size={15}/> Nouveau pressing</button>
+        </div>} />
+
+      {showUniformiser && (
+        <div className="card" style={{padding:'1.25rem', marginBottom:18, background:'var(--pine-light)', border:'1.5px solid var(--pine)'}}>
+          <h3 style={{margin:'0 0 10px', fontSize:15, color:'var(--pine)'}}>Uniformiser les tarifs</h3>
+          <p style={{fontSize:13, color:'var(--pine)', margin:'0 0 14px', lineHeight:1.5}}>
+            Copie les services et prix d'un pressing vers <strong>tous les autres</strong>. Les prix existants seront mis à jour, les nouveaux services ajoutés.
+          </p>
+          <div style={{display:'flex', gap:12, alignItems:'flex-end', flexWrap:'wrap'}}>
+            <div style={{flex:1, minWidth:200}}>
+              <label>Pressing source (modèle)</label>
+              <select value={sourceSiteId} onChange={e=>setSourceSiteId(e.target.value)}>
+                {db.sites.map(s => <option key={s.id} value={s.id}>{s.nom}</option>)}
+              </select>
+            </div>
+            <button className="btn btn-rust" onClick={uniformiserPrix} style={{minWidth:200}}>
+              {uniformFlash ? <><Icon name="check" size={14}/> Prix uniformisés !</> : `Copier vers ${db.sites.length - 1} autre(s) pressing(s)`}
+            </button>
+          </div>
+          {sourceSiteId && (
+            <div style={{marginTop:12}}>
+              <div style={{fontSize:12, color:'var(--pine)', fontWeight:600, marginBottom:6}}>Services qui seront copiés :</div>
+              <div style={{display:'flex', flexWrap:'wrap', gap:6}}>
+                {db.sites.find(s=>s.id===sourceSiteId)?.services.map(svc => (
+                  <span key={svc.id} style={{fontSize:12, background:'var(--white)', padding:'3px 10px', borderRadius:100, border:'1px solid var(--pine)'}}>
+                    {svc.nom} — {fmtGNF(svc.prix)}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:14}}>
         {db.sites.map(s => (
@@ -802,7 +869,8 @@ function SitesManager({ db, addSite, removeSite, onOpenSite }){
               </div>
               <span className="mono" style={{fontSize:11, color:'var(--steam)'}}>{s.code}</span>
             </div>
-            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:16}}>
+            <div style={{fontSize:12, color:'var(--steam)', marginTop:8}}>{s.services.length} service(s) · {s.clients.length} client(s)</div>
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:12}}>
               <button className="btn btn-sm btn-primary" onClick={()=>onOpenSite(s.id)} style={{background:'var(--pine)', color:'var(--white)', borderColor:'var(--pine)'}}>
                 Ouvrir ce pressing →
               </button>
@@ -860,6 +928,7 @@ function SiteDetailForGerant({ site, db, updateSite, onBack }){
     { key:'employes', label:'Équipe', icon:'users' },
     { key:'notifications', label:'Notifications', icon:'bell' },
     { key:'depenses', label:'Dépenses', icon:'euro' },
+    { key:'remuneration', label:'Rémunérations', icon:'chart' },
     { key:'parametres', label:'Paramètres', icon:'edit' },
   ];
   return (
@@ -881,6 +950,7 @@ function SiteDetailForGerant({ site, db, updateSite, onBack }){
       {page === 'employes' && <EquipeView site={site} updateSite={updateSite} />}
       {page === 'notifications' && <NotificationsView site={site} />}
       {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} />}
+      {page === 'remuneration' && <RemunerationGerantView site={site} />}
       {page === 'parametres' && <ParametresView site={site} updateSite={updateSite} />}
     </div>
   );
@@ -1163,6 +1233,8 @@ function NewCommandeModal({ site, updateSite, onClose }){
   const [notes, setNotes] = useState('');
   const [acompte, setAcompte] = useState('');
   const [acompteMode, setAcompteMode] = useState('none'); // 'none' | 'pourcent' | 'libre'
+  const [rabaisMode, setRabaisMode] = useState('none'); // 'none' | 'pourcent' | 'fixe'
+  const [rabais, setRabais] = useState('');
   const [showAddService, setShowAddService] = useState(false);
   const [newServiceNom, setNewServiceNom] = useState('');
   const [newServicePrix, setNewServicePrix] = useState('');
@@ -1186,10 +1258,18 @@ function NewCommandeModal({ site, updateSite, onClose }){
     setLignes(prev => prev.map(l => l.serviceId===serviceId ? {...l, qte: Math.max(0,qte)} : l).filter(l=>l.qte>0));
   }
 
-  const total = lignes.reduce((s,l)=>{
+  const totalBrut = lignes.reduce((s,l)=>{
     const svc = site.services.find(x=>x.id===l.serviceId);
     return s + (svc ? svc.prix*l.qte : 0);
   }, 0);
+
+  const montantRabais = useMemo(() => {
+    if(rabaisMode === 'pourcent' && rabais) return Math.round(totalBrut * Number(rabais) / 100);
+    if(rabaisMode === 'fixe' && rabais) return Math.min(Number(rabais), totalBrut);
+    return 0;
+  }, [totalBrut, rabaisMode, rabais]);
+
+  const total = totalBrut - montantRabais;
 
   function handleSubmit(){
     let finalClientId = clientId;
@@ -1212,6 +1292,8 @@ function NewCommandeModal({ site, updateSite, onClose }){
       statut: 'Reçu',
       paiement: montantAcompte >= total ? 'paye' : 'impaye',
       acompte: montantAcompte,
+      rabais: montantRabais,
+      totalBrut: totalBrut,
       dateCreation: new Date().toISOString(),
       dateRetraitPrevue: dateRetrait || null,
       notes: notes.trim(),
@@ -1365,8 +1447,44 @@ function NewCommandeModal({ site, updateSite, onClose }){
                 </div>
               );
             })}
-            <div style={{display:'flex', justifyContent:'space-between', paddingTop:10, fontWeight:700}}>
-              <span>Total</span><span className="mono">{fmtGNF(total)}</span>
+            <div style={{display:'flex', justifyContent:'space-between', paddingTop:10, borderTop:'1px solid var(--line)'}}>
+              <span style={{color:'var(--steam)'}}>Sous-total</span><span className="mono" style={{color:'var(--steam)'}}>{fmtGNF(totalBrut)}</span>
+            </div>
+
+            {/* BLOC RABAIS */}
+            <div style={{paddingTop:8}}>
+              <div style={{display:'flex', gap:8, marginBottom:8, flexWrap:'wrap'}}>
+                {[{label:'Pas de rabais', val:'none'}, {label:'Rabais %', val:'pourcent'}, {label:'Montant fixe', val:'fixe'}].map(opt => (
+                  <button key={opt.val} className="btn btn-sm" onClick={()=>{ setRabaisMode(opt.val); setRabais(''); }}
+                    style={{background: rabaisMode===opt.val ? 'var(--rust)' : 'transparent', color: rabaisMode===opt.val ? 'var(--white)' : 'var(--ink)', borderColor: rabaisMode===opt.val ? 'var(--rust)' : 'var(--line-strong)', fontSize:12}}>
+                    🏷️ {opt.label}
+                  </button>
+                ))}
+              </div>
+              {rabaisMode === 'pourcent' && (
+                <div style={{display:'flex', gap:8, flexWrap:'wrap', marginBottom:6}}>
+                  {[5, 10, 15, 20, 25].map(p => (
+                    <button key={p} className="btn btn-sm" onClick={()=>setRabais(String(p))}
+                      style={{background: rabais===String(p) ? 'var(--rust)' : 'transparent', color: rabais===String(p) ? 'var(--white)' : 'var(--ink)', borderColor: rabais===String(p) ? 'var(--rust)' : 'var(--line-strong)'}}>
+                      {p}%
+                    </button>
+                  ))}
+                  <input type="number" placeholder="Autre %" value={rabais} onChange={e=>setRabais(e.target.value)} style={{width:80, padding:'5px 8px'}} max={100} min={0}/>
+                </div>
+              )}
+              {rabaisMode === 'fixe' && (
+                <input type="number" placeholder="Montant du rabais (GNF)" value={rabais} onChange={e=>setRabais(e.target.value)} max={totalBrut} min={0}/>
+              )}
+              {montantRabais > 0 && (
+                <div style={{display:'flex', justifyContent:'space-between', fontSize:13, color:'var(--rust)', marginTop:4}}>
+                  <span>Rabais {rabaisMode==='pourcent' ? `(${rabais}%)` : 'fixe'}</span>
+                  <span className="mono">− {fmtGNF(montantRabais)}</span>
+                </div>
+              )}
+            </div>
+
+            <div style={{display:'flex', justifyContent:'space-between', paddingTop:8, fontWeight:700, fontSize:16, borderTop:'2px solid var(--line-strong)'}}>
+              <span>Total à payer</span><span className="mono" style={{color:'var(--pine)'}}>{fmtGNF(total)}</span>
             </div>
           </div>
         )}
@@ -1536,8 +1654,18 @@ function TicketModal({ cmd, site, onClose }){
             </div>
           );
         })}
-        <div style={{borderTop:'1px dashed var(--line-strong)', marginTop:10, paddingTop:10, display:'flex', justifyContent:'space-between', fontWeight:700}}>
-          <span>Total</span><span className="mono">{fmtGNF(total)}</span>
+        {Number(cmd.rabais) > 0 && (
+          <>
+            <div style={{display:'flex', justifyContent:'space-between', fontSize:13, color:'var(--steam)', paddingTop:6}}>
+              <span>Sous-total</span><span className="mono">{fmtGNF(cmd.totalBrut || total + Number(cmd.rabais))}</span>
+            </div>
+            <div style={{display:'flex', justifyContent:'space-between', fontSize:13, color:'var(--rust)', paddingTop:2}}>
+              <span>🏷️ Rabais</span><span className="mono">− {fmtGNF(Number(cmd.rabais))}</span>
+            </div>
+          </>
+        )}
+        <div style={{borderTop:'1px dashed var(--line-strong)', marginTop:6, paddingTop:8, display:'flex', justifyContent:'space-between', fontWeight:700}}>
+          <span>Total à payer</span><span className="mono">{fmtGNF(total)}</span>
         </div>
         {acompte > 0 && (
           <>
@@ -2173,6 +2301,144 @@ function NotificationsView({ site }){
 
 /* ===================== PARAMETRES (avec édition des prix) ===================== */
 
+function RemunerationGerantView({ site }){
+  const [filterMois, setFilterMois] = useState(todayISO().slice(0,7));
+  const remunerations = site.remunerations || [];
+
+  const filtered = useMemo(() => {
+    return [...remunerations]
+      .filter(r => r.date.slice(0,7) === filterMois)
+      .sort((a,b) => new Date(b.date) - new Date(a.date));
+  }, [remunerations, filterMois]);
+
+  const totalMois = filtered.reduce((s,r)=>s+Number(r.montant),0);
+  const totalRepassage = filtered.filter(r=>r.type==='repassage').reduce((s,r)=>s+Number(r.montant),0);
+  const totalLivraison = filtered.filter(r=>r.type==='livraison').reduce((s,r)=>s+Number(r.montant),0);
+
+  const moisDisponibles = useMemo(() => {
+    const mois = new Set(remunerations.map(r=>r.date.slice(0,7)));
+    mois.add(todayISO().slice(0,7));
+    return [...mois].sort().reverse();
+  }, [remunerations]);
+
+  return (
+    <div>
+      <PageHeader title="Rémunérations" subtitle={`Total à payer ${filterMois} : ${fmtGNF(totalMois)}`} />
+
+      <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20}}>
+        <StatCard label="Total à payer" value={fmtGNF(totalMois)} icon="euro" />
+        <StatCard label="Repassage" value={fmtGNF(totalRepassage)} icon="shirt" />
+        <StatCard label="Livraisons" value={fmtGNF(totalLivraison)} icon="arrowRight" />
+      </div>
+
+      <div style={{display:'flex', gap:10, marginBottom:14, alignItems:'center'}}>
+        <label style={{margin:0}}>Mois :</label>
+        <select value={filterMois} onChange={e=>setFilterMois(e.target.value)} style={{width:'auto', minWidth:160}}>
+          {moisDisponibles.map(m => (
+            <option key={m} value={m}>{new Date(m+'-01').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="card" style={{overflow:'hidden'}}>
+        <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+          <thead>
+            <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+              <th style={th}>Date</th>
+              <th style={th}>Type</th>
+              <th style={th}>Détail</th>
+              <th style={th}>Montant</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 && (
+              <tr><td colSpan={4} style={{...td, textAlign:'center', color:'var(--steam)', padding:'2rem'}}>Aucune prestation enregistrée pour ce mois.</td></tr>
+            )}
+            {filtered.map(r => (
+              <tr key={r.id} style={{borderTop:'1px solid var(--line)'}}>
+                <td style={td}>{fmtDate(r.date)}</td>
+                <td style={td}><span className="tag tag-recu">{r.type === 'repassage' ? '👔 Repassage' : '🚗 Livraison'}</span></td>
+                <td style={td}>{r.detail}</td>
+                <td style={td} className="mono" style={{...td, fontWeight:700, color:'var(--ok)'}}>{fmtGNF(r.montant)}</td>
+              </tr>
+            ))}
+            {filtered.length > 0 && (
+              <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
+                <td colSpan={3} style={{...td, fontWeight:700}}>Total à payer</td>
+                <td style={{...td, fontWeight:700, color:'var(--rust)'}} className="mono">{fmtGNF(totalMois)}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ConfigRemunerationEditor({ site, updateSite }){
+  const config = site.configRemuneration || { prixUnitRepassage: 0, zones: [] };
+  const [prixUnit, setPrixUnit] = useState(String(config.prixUnitRepassage || 0));
+  const [zones, setZones] = useState(config.zones || []);
+  const [newZoneNom, setNewZoneNom] = useState('');
+  const [newZoneMontant, setNewZoneMontant] = useState('');
+  const [flash, setFlash] = useState(false);
+
+  function save(){
+    updateSite({ ...site, configRemuneration: { prixUnitRepassage: Number(prixUnit)||0, zones } });
+    setFlash(true);
+    setTimeout(()=>setFlash(false), 1800);
+  }
+  function addZone(){
+    if(!newZoneNom.trim()||!newZoneMontant) return;
+    setZones([...zones, { id: uid('zone_'), nom: newZoneNom.trim(), montant: Number(newZoneMontant) }]);
+    setNewZoneNom(''); setNewZoneMontant('');
+  }
+  function removeZone(id){ setZones(zones.filter(z=>z.id!==id)); }
+
+  return (
+    <div className="card" style={{padding:'1.5rem', marginTop:18}}>
+      <h3 style={{margin:'0 0 14px', fontSize:15, display:'flex', alignItems:'center', gap:8}}>
+        💰 Configuration des rémunérations employés
+      </h3>
+
+      {/* Prix par unité repassage */}
+      <div style={{marginBottom:18}}>
+        <label>Prix par unité repassée (GNF)</label>
+        <div style={{display:'flex', gap:10, alignItems:'center'}}>
+          <input type="number" value={prixUnit} onChange={e=>setPrixUnit(e.target.value)} placeholder="Ex: 500" style={{maxWidth:200}}/>
+          <span style={{fontSize:13, color:'var(--steam)'}}>par article repassé</span>
+        </div>
+      </div>
+
+      {/* Zones de livraison */}
+      <div>
+        <label>Zones de livraison et tarifs</label>
+        <div style={{marginBottom:10}}>
+          {zones.map(z => (
+            <div key={z.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'7px 0', borderBottom:'1px solid var(--line)', fontSize:13.5}}>
+              <span>{z.nom}</span>
+              <div style={{display:'flex', gap:10, alignItems:'center'}}>
+                <span className="mono">{fmtGNF(z.montant)}</span>
+                <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>removeZone(z.id)}><Icon name="trash" size={13}/></button>
+              </div>
+            </div>
+          ))}
+          {zones.length === 0 && <p style={{fontSize:13, color:'var(--steam)'}}>Aucune zone configurée.</p>}
+        </div>
+        <div style={{display:'grid', gridTemplateColumns:'2fr 1fr auto', gap:8}}>
+          <input type="text" placeholder="Nom de la zone (ex: Zone 1 — Kipé)" value={newZoneNom} onChange={e=>setNewZoneNom(e.target.value)} />
+          <input type="number" placeholder="Montant GNF" value={newZoneMontant} onChange={e=>setNewZoneMontant(e.target.value)} />
+          <button className="btn btn-sm" disabled={!newZoneNom.trim()||!newZoneMontant} onClick={addZone}><Icon name="plus" size={13}/> Ajouter</button>
+        </div>
+      </div>
+
+      <button className="btn btn-rust" style={{marginTop:16}} onClick={save}>
+        {flash ? <><Icon name="check" size={14}/> Enregistré !</> : 'Enregistrer la configuration'}
+      </button>
+    </div>
+  );
+}
+
 function ParametresView({ site, updateSite }){
   const [nom, setNom] = useState(site.nom);
   const [adresse, setAdresse] = useState(site.adresse);
@@ -2257,6 +2523,9 @@ function ParametresView({ site, updateSite }){
 
         <ServicesEditor site={site} updateSite={updateSite} />
       </div>
+
+      {/* Section Rémunération */}
+      <ConfigRemunerationEditor site={site} updateSite={updateSite} />
 
       {/* Section SMS */}
       <div className="card" style={{padding:'1.5rem'}}>
@@ -2423,6 +2692,186 @@ function ServicesEditor({ site, updateSite }){
   );
 }
 
+/* ===================== REMUNERATION EMPLOYES ===================== */
+
+function RemunerationView({ site, updateSite, db, siteId }){
+  const [type, setType] = useState('repassage'); // 'repassage' | 'livraison'
+  const [date, setDate] = useState(todayISO());
+  const [unites, setUnites] = useState('');
+  const [zoneId, setZoneId] = useState('');
+  const [filterMois, setFilterMois] = useState(todayISO().slice(0,7));
+
+  const config = site.configRemuneration || { prixUnitRepassage: 0, zones: [] };
+  const remunerations = site.remunerations || [];
+
+  // Trouver l'employé connecté via son mot de passe (stocké en session)
+  // On utilise le siteId pour identifier le contexte
+  const filtered = useMemo(() => {
+    return [...remunerations]
+      .filter(r => r.date.slice(0,7) === filterMois)
+      .sort((a,b) => new Date(b.date) - new Date(a.date));
+  }, [remunerations, filterMois]);
+
+  const totalMois = filtered.reduce((s,r) => s + Number(r.montant), 0);
+  const totalRepassage = filtered.filter(r=>r.type==='repassage').reduce((s,r)=>s+Number(r.montant),0);
+  const totalLivraison = filtered.filter(r=>r.type==='livraison').reduce((s,r)=>s+Number(r.montant),0);
+
+  const moisDisponibles = useMemo(() => {
+    const mois = new Set(remunerations.map(r=>r.date.slice(0,7)));
+    mois.add(todayISO().slice(0,7));
+    return [...mois].sort().reverse();
+  }, [remunerations]);
+
+  function calculerMontant(){
+    if(type === 'repassage'){
+      return Math.round(Number(unites) * Number(config.prixUnitRepassage));
+    } else {
+      const zone = config.zones?.find(z=>z.id===zoneId);
+      return zone ? Number(zone.montant) : 0;
+    }
+  }
+
+  function enregistrer(){
+    const montant = calculerMontant();
+    if(montant <= 0 || !date) return;
+    const zone = type === 'livraison' ? config.zones?.find(z=>z.id===zoneId) : null;
+    const rem = {
+      id: uid('rem_'),
+      date,
+      type,
+      montant,
+      detail: type === 'repassage'
+        ? `${unites} unité(s) × ${fmtGNF(config.prixUnitRepassage)}`
+        : `Livraison — ${zone?.nom || ''}`,
+    };
+    updateSite({ ...site, remunerations: [rem, ...remunerations] });
+    setUnites('');
+    setZoneId('');
+  }
+
+  const montantPreview = calculerMontant();
+
+  return (
+    <div>
+      <PageHeader title="Ma rémunération" subtitle={`Total ${filterMois} : ${fmtGNF(totalMois)}`} />
+
+      {/* Résumé du mois */}
+      <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20}}>
+        <StatCard label="Total ce mois" value={fmtGNF(totalMois)} icon="euro" />
+        <StatCard label="Repassage" value={fmtGNF(totalRepassage)} icon="shirt" />
+        <StatCard label="Livraisons" value={fmtGNF(totalLivraison)} icon="arrowRight" />
+      </div>
+
+      {/* Formulaire de saisie */}
+      <div className="card" style={{padding:'1.5rem', marginBottom:20}}>
+        <h3 style={{margin:'0 0 14px', fontSize:15}}>Enregistrer une prestation</h3>
+
+        <div style={{display:'flex', gap:10, marginBottom:14}}>
+          <button className="btn btn-sm" onClick={()=>setType('repassage')}
+            style={{background: type==='repassage'?'var(--pine)':'transparent', color: type==='repassage'?'var(--white)':'var(--ink)', borderColor: type==='repassage'?'var(--pine)':'var(--line-strong)'}}>
+            👔 Repassage (par unité)
+          </button>
+          <button className="btn btn-sm" onClick={()=>setType('livraison')}
+            style={{background: type==='livraison'?'var(--pine)':'transparent', color: type==='livraison'?'var(--white)':'var(--ink)', borderColor: type==='livraison'?'var(--pine)':'var(--line-strong)'}}>
+            🚗 Livraison (par zone)
+          </button>
+        </div>
+
+        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12, alignItems:'end'}}>
+          <div>
+            <label>Date</label>
+            <input type="date" value={date} onChange={e=>setDate(e.target.value)} max={todayISO()} />
+          </div>
+
+          {type === 'repassage' ? (
+            <div>
+              <label>Nombre d'unités repassées</label>
+              {config.prixUnitRepassage > 0 ? (
+                <input type="number" placeholder="Ex: 15" value={unites} onChange={e=>setUnites(e.target.value)} min={1} />
+              ) : (
+                <div style={{padding:'9px 12px', background:'var(--warn-light)', borderRadius:8, fontSize:13, color:'var(--warn)'}}>
+                  ⚠️ Le gérant doit d'abord configurer le prix par unité dans Paramètres.
+                </div>
+              )}
+            </div>
+          ) : (
+            <div>
+              <label>Zone de livraison</label>
+              {config.zones?.length > 0 ? (
+                <select value={zoneId} onChange={e=>setZoneId(e.target.value)}>
+                  <option value="">Choisir une zone…</option>
+                  {config.zones.map(z => (
+                    <option key={z.id} value={z.id}>{z.nom} — {fmtGNF(z.montant)}</option>
+                  ))}
+                </select>
+              ) : (
+                <div style={{padding:'9px 12px', background:'var(--warn-light)', borderRadius:8, fontSize:13, color:'var(--warn)'}}>
+                  ⚠️ Le gérant doit configurer les zones dans Paramètres.
+                </div>
+              )}
+            </div>
+          )}
+
+          <div>
+            {montantPreview > 0 && (
+              <div style={{marginBottom:8, fontSize:13, color:'var(--pine)', fontWeight:600}}>
+                💰 Montant : {fmtGNF(montantPreview)}
+              </div>
+            )}
+            <button className="btn btn-rust" style={{width:'100%'}}
+              disabled={montantPreview <= 0}
+              onClick={enregistrer}>
+              Enregistrer
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Historique */}
+      <div style={{display:'flex', gap:10, marginBottom:14, alignItems:'center'}}>
+        <label style={{margin:0}}>Mois :</label>
+        <select value={filterMois} onChange={e=>setFilterMois(e.target.value)} style={{width:'auto', minWidth:160}}>
+          {moisDisponibles.map(m => (
+            <option key={m} value={m}>{new Date(m+'-01').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="card" style={{overflow:'hidden'}}>
+        <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+          <thead>
+            <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+              <th style={th}>Date</th>
+              <th style={th}>Type</th>
+              <th style={th}>Détail</th>
+              <th style={th}>Montant</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 && (
+              <tr><td colSpan={4} style={{...td, textAlign:'center', color:'var(--steam)', padding:'2rem'}}>Aucune prestation enregistrée pour ce mois.</td></tr>
+            )}
+            {filtered.map(r => (
+              <tr key={r.id} style={{borderTop:'1px solid var(--line)'}}>
+                <td style={td}>{fmtDate(r.date)}</td>
+                <td style={td}><span className="tag tag-recu">{r.type === 'repassage' ? '👔 Repassage' : '🚗 Livraison'}</span></td>
+                <td style={td}>{r.detail}</td>
+                <td style={td} className="mono" style={{...td, fontWeight:700, color:'var(--ok)'}}>{fmtGNF(r.montant)}</td>
+              </tr>
+            ))}
+            {filtered.length > 0 && (
+              <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
+                <td colSpan={3} style={{...td, fontWeight:700}}>Total {new Date(filterMois+'-01').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})}</td>
+                <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalMois)}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 /* ===================== ESPACE EMPLOYE (lié à un site) ===================== */
 
 function EmployeApp({ db, setDb, siteId, onLogout }){
@@ -2449,6 +2898,7 @@ function EmployeApp({ db, setDb, siteId, onLogout }){
     { key:'clients', label:'Clients', icon:'users' },
     { key:'stock', label:'Stock', icon:'box' },
     { key:'depenses', label:'Dépenses', icon:'euro' },
+    { key:'remuneration', label:'Ma rémunération', icon:'chart' },
   ];
   return (
     <Shell title={site.nom} role="Espace employé" navItems={navItems} active={page} onNav={setPage} onLogout={onLogout}>
@@ -2456,6 +2906,7 @@ function EmployeApp({ db, setDb, siteId, onLogout }){
       {page === 'clients' && <ClientsView site={site} updateSite={updateSite} />}
       {page === 'stock' && <StockView site={site} updateSite={updateSite} />}
       {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} />}
+      {page === 'remuneration' && <RemunerationView site={site} updateSite={updateSite} db={db} siteId={siteId} />}
     </Shell>
   );
 }
