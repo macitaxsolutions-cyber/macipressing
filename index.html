@@ -708,7 +708,7 @@ function GerantApp({ db, setDb, onLogout }){
       ) : (
         <>
           {page === 'global' && <GlobalDashboard db={db} onOpenSite={setActiveSiteId} />}
-          {page === 'sites' && <SitesManager db={db} setDb={persist} addSite={addSite} removeSite={removeSite} onOpenSite={setActiveSiteId} />}
+          {page === 'sites' && <SitesManager db={db} setDb={setDb} addSite={addSite} removeSite={removeSite} onOpenSite={setActiveSiteId} />}
         </>
       )}
     </Shell>
