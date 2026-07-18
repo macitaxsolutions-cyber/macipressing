@@ -263,8 +263,17 @@ function makeSite(nom, adresse, tel){
 
 function emptyDB(){
   const site1 = makeSite('Maci Pressing — Kipé', 'Kipé, Conakry, République de Guinée', '625 63 33 83');
+  const site2 = makeSite('Maci Pressing — Lambanyi', 'Lambanyi, Conakry, République de Guinée', '625 63 33 83');
+  const site3 = makeSite('Maci Pressing — Hamdallaye', 'Hamdallaye, Conakry, République de Guinée', '625 63 33 83');
+
+  // Employés initiaux avec leurs mots de passe
+  site1.employes = [
+    { id: uid('emp_'), nom: 'Mamadou Alpha', role: 'Caissier', motdepasse: 'Maci2026_1' },
+    { id: uid('emp_'), nom: 'Nene Djiba', role: 'Caissier', motdepasse: 'Maci2026_2' },
+  ];
+
   return {
-    sites: [site1],
+    sites: [site1, site2, site3],
   };
 }
 
@@ -336,6 +345,25 @@ function nextStatut(s){
   return STATUTS[Math.min(i+1, STATUTS.length-1)];
 }
 
+/* ===================== MOTS DE PASSE ===================== */
+/* ===================== MOTS DE PASSE ===================== */
+const PASS_GERANT = "Dero1981@";
+
+// Les mots de passe employés sont stockés dans la base de données Firebase
+// et gérés par le gérant directement dans l'application.
+// Format : { [mot_de_passe]: { nom, siteId } }
+
+function checkEmployePass(db, password){
+  for(const site of db.sites){
+    for(const emp of (site.employes||[])){
+      if(emp.motdepasse && emp.motdepasse === password){
+        return { employe: emp, siteId: site.id };
+      }
+    }
+  }
+  return null;
+}
+
 /* ===================== APP ROOT ===================== */
 
 function App(){
@@ -399,8 +427,62 @@ function App(){
 /* ===================== ECRAN CHOIX DE ROLE ===================== */
 
 function RoleSelect({ db, setDb, onSelect }){
-  const [mode, setMode] = useState(null); // null | 'employe' | 'client'
-  const [search, setSearch] = useState('');
+  const [mode, setMode] = useState(null);
+  const [loginRole, setLoginRole] = useState(null); // 'gerant' | 'employe'
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+
+  function handleLogin(){
+    if(loginRole === 'gerant'){
+      if(password === PASS_GERANT){
+        onSelect('gerant');
+      } else {
+        setError('Mot de passe incorrect. Réessayez.');
+        setPassword('');
+      }
+    } else if(loginRole === 'employe'){
+      const result = checkEmployePass(db, password);
+      if(result){
+        onSelect('employe', result.siteId);
+        setLoginRole(null);
+        setPassword('');
+        setError('');
+      } else {
+        setError('Mot de passe incorrect. Réessayez.');
+        setPassword('');
+      }
+    }
+  }
+
+  if(loginRole){
+    return (
+      <div style={{minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'2rem'}}>
+        <div style={{textAlign:'center', marginBottom:'2rem'}}>
+          <Icon name="shirt" size={30} style={{color:'var(--pine)'}} />
+          <h1 style={{fontSize:28, margin:'10px 0 4px', color:'var(--pine)'}}>Maci Pressing</h1>
+          <p style={{color:'var(--steam)', fontSize:14, margin:0}}>
+            {loginRole === 'gerant' ? 'Espace Gérant' : 'Espace Employé'}
+          </p>
+        </div>
+        <div className="card" style={{padding:'1.75rem', width:340, maxWidth:'90vw'}}>
+          <label>Mot de passe</label>
+          <input
+            type="password"
+            placeholder="Entrez votre mot de passe…"
+            value={password}
+            onChange={e=>{ setPassword(e.target.value); setError(''); }}
+            onKeyDown={e=>{ if(e.key==='Enter') handleLogin(); }}
+            autoFocus
+          />
+          {error && <p style={{color:'var(--danger)', fontSize:13, margin:'8px 0 0'}}>{error}</p>}
+          <div style={{display:'flex', gap:10, marginTop:14}}>
+            <button className="btn" onClick={()=>{ setLoginRole(null); setPassword(''); setError(''); }} style={{flex:1}}>Retour</button>
+            <button className="btn btn-rust" onClick={handleLogin} style={{flex:1}}>Entrer</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'2rem'}}>
@@ -416,8 +498,8 @@ function RoleSelect({ db, setDb, onSelect }){
 
       {!mode && (
         <div style={{display:'flex', gap:18, flexWrap:'wrap', justifyContent:'center', maxWidth:760}}>
-          <RoleCard icon="home" title="Gérant" desc="Supervision de tous les sites, finances, stock" onClick={() => onSelect('gerant')} />
-          <RoleCard icon="ticket" title="Employé" desc="Caisse, création et suivi des commandes" onClick={() => setMode('employe')} />
+          <RoleCard icon="home" title="Gérant" desc="Supervision de tous les sites, finances, stock" onClick={() => setLoginRole('gerant')} />
+          <RoleCard icon="ticket" title="Employé" desc="Caisse, création et suivi des commandes" onClick={() => setLoginRole('employe')} />
           <RoleCard icon="users" title="Client" desc="Suivre mes commandes et factures" onClick={() => setMode('client')} />
         </div>
       )}
@@ -1466,20 +1548,33 @@ function NewStockModal({ site, updateSite, onClose }){
 
 function EquipeView({ site, updateSite }){
   const [showNew, setShowNew] = useState(false);
+  const [showPass, setShowPass] = useState({});
+
   function removeEmp(id){ updateSite({ ...site, employes: site.employes.filter(e=>e.id!==id) }); }
+  function togglePass(id){ setShowPass(prev => ({...prev, [id]: !prev[id]})); }
 
   return (
     <div>
-      <PageHeader title="Équipe" subtitle={`${site.employes.length} employé(s)`}
+      <PageHeader title="Équipe" subtitle={`${site.employes.length} employé(s) — ${site.nom}`}
         right={<button className="btn btn-rust" onClick={()=>setShowNew(true)}><Icon name="plus" size={15}/> Ajouter un employé</button>} />
       <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14}}>
         {site.employes.map(e => (
-          <div key={e.id} className="card" style={{padding:'1.1rem 1.25rem', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
-            <div>
-              <div style={{fontWeight:600, fontSize:14.5}}>{e.nom}</div>
-              <div style={{fontSize:12.5, color:'var(--steam)'}}>{e.role}</div>
+          <div key={e.id} className="card" style={{padding:'1.1rem 1.25rem'}}>
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start'}}>
+              <div>
+                <div style={{fontWeight:600, fontSize:14.5}}>{e.nom}</div>
+                <div style={{fontSize:12.5, color:'var(--steam)'}}>{e.role}</div>
+              </div>
+              <button className="btn btn-ghost btn-sm" onClick={()=>removeEmp(e.id)}><Icon name="trash" size={14}/></button>
             </div>
-            <button className="btn btn-ghost btn-sm" onClick={()=>removeEmp(e.id)}><Icon name="trash" size={14}/></button>
+            <div style={{marginTop:10, display:'flex', alignItems:'center', gap:8}}>
+              <span className="mono" style={{fontSize:12, color:'var(--pine)', background:'var(--pine-light)', padding:'3px 8px', borderRadius:6}}>
+                {showPass[e.id] ? (e.motdepasse || '—') : '••••••••'}
+              </span>
+              <button className="btn btn-ghost btn-sm" style={{padding:'3px 8px', fontSize:11}} onClick={()=>togglePass(e.id)}>
+                {showPass[e.id] ? 'Masquer' : 'Voir mdp'}
+              </button>
+            </div>
           </div>
         ))}
         {site.employes.length === 0 && <p style={{color:'var(--steam)'}}>Aucun employé enregistré pour ce site.</p>}
@@ -1492,13 +1587,16 @@ function EquipeView({ site, updateSite }){
 function NewEmployeModal({ site, updateSite, onClose }){
   const [nom, setNom] = useState('');
   const [role, setRole] = useState('Caissier');
+  const [motdepasse, setMotdepasse] = useState('');
+  const [showPass, setShowPass] = useState(false);
+
   function submit(){
-    if(!nom.trim()) return;
-    updateSite({ ...site, employes: [...site.employes, { id: uid('emp_'), nom: nom.trim(), role }] });
+    if(!nom.trim() || !motdepasse.trim()) return;
+    updateSite({ ...site, employes: [...site.employes, { id: uid('emp_'), nom: nom.trim(), role, motdepasse: motdepasse.trim() }] });
     onClose();
   }
   return (
-    <ModalShell title="Ajouter un employé" onClose={onClose} width={380}>
+    <ModalShell title="Ajouter un employé" onClose={onClose} width={400}>
       <div style={{display:'grid', gap:14}}>
         <div><label>Nom complet</label><input type="text" value={nom} onChange={e=>setNom(e.target.value)} autoFocus/></div>
         <div>
@@ -1510,9 +1608,27 @@ function NewEmployeModal({ site, updateSite, onClose }){
             <option>Gérant adjoint</option>
           </select>
         </div>
+        <div>
+          <label>Mot de passe de connexion</label>
+          <div style={{display:'flex', gap:8}}>
+            <input
+              type={showPass ? 'text' : 'password'}
+              placeholder="Mot de passe unique pour cet employé…"
+              value={motdepasse}
+              onChange={e=>setMotdepasse(e.target.value)}
+              style={{flex:1}}
+            />
+            <button className="btn btn-ghost btn-sm" type="button" onClick={()=>setShowPass(!showPass)}>
+              {showPass ? 'Masquer' : 'Voir'}
+            </button>
+          </div>
+          <p style={{fontSize:11.5, color:'var(--steam)', margin:'5px 0 0', lineHeight:1.4}}>
+            Ce mot de passe sera utilisé par l'employé pour se connecter à l'application.
+          </p>
+        </div>
         <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
           <button className="btn" onClick={onClose}>Annuler</button>
-          <button className="btn btn-rust" disabled={!nom.trim()} onClick={submit}>Ajouter</button>
+          <button className="btn btn-rust" disabled={!nom.trim()||!motdepasse.trim()} onClick={submit}>Ajouter</button>
         </div>
       </div>
     </ModalShell>
