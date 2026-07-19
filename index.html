@@ -1726,6 +1726,7 @@ function TicketModal({ cmd, site, onClose }){
   const total = calcCommandeTotal(cmd, site.services);
   const acompte = Number(cmd.acompte) || 0;
   const solde = total - acompte;
+  const caissier = cmd.caissierEmpId ? site.employes.find(e=>e.id===cmd.caissierEmpId) : null;
 
   function ouvrirWhatsApp(){
     if(!client || !client.tel) return;
@@ -1789,6 +1790,10 @@ function TicketModal({ cmd, site, onClose }){
         </div>
         {cmd.dateRetraitPrevue && <div style={{fontSize:12, color:'var(--steam)', marginTop:8}}>Retrait prévu : {fmtDate(cmd.dateRetraitPrevue)}</div>}
         {cmd.notes && <div style={{fontSize:12, color:'var(--steam)', marginTop:4}}>Note : {cmd.notes}</div>}
+        <div style={{borderTop:'1px dashed var(--line-strong)', marginTop:10, paddingTop:8, fontSize:11.5, color:'var(--steam)', display:'flex', justifyContent:'space-between'}}>
+          <span>Enregistré par : <strong style={{color:'var(--ink)'}}>{caissier ? caissier.nom : 'Caissier'}</strong></span>
+          <span className="mono">{new Date(cmd.dateCreation).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}</span>
+        </div>
       </div>
       <div className="no-print" style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:16}}>
         <button className="btn btn-sm" style={{background:'#25D366', color:'white', borderColor:'#25D366'}}
