@@ -1120,6 +1120,38 @@ function CommandesView({ site, updateSite, editable }){
     const solde = total - acompte;
     const nextSite = { ...site, commandes: site.commandes.map(c => c.id === updated.id ? updated : c) };
 
+    // CALCUL AUTOMATIQUE REPASSEUR quand statut -> Prêt
+    if(updated.statut === 'Prêt'){
+      const config = site.configRemuneration || {};
+      const tarifsRepassage = config.tarifsRepassage || [];
+      if(tarifsRepassage.length > 0){
+        const articlesRepasses = [];
+        cmd.lignes.forEach(l => {
+          const svc = site.services.find(s=>s.id===l.serviceId);
+          if(!svc) return;
+          const tarif = tarifsRepassage.find(t =>
+            svc.nom.toLowerCase().includes(t.nom.toLowerCase()) ||
+            t.nom.toLowerCase().includes(svc.nom.toLowerCase())
+          );
+          if(tarif) articlesRepasses.push({ nom: tarif.nom, prix: tarif.prix, qte: l.qte });
+        });
+        if(articlesRepasses.length > 0){
+          const montantRepasseur = articlesRepasses.reduce((s,a)=>s+(a.prix*a.qte),0);
+          const detailRepasseur = articlesRepasses.map(a=>`${a.qte}x ${a.nom} (${fmtGNF(a.prix)})`).join(', ');
+          const rem = {
+            id: uid('rem_'),
+            date: todayISO(),
+            type: 'repassage',
+            montant: montantRepasseur,
+            detail: detailRepasseur,
+            commandeNumero: cmd.numero,
+            auto: true,
+          };
+          nextSite.remunerations = [rem, ...(nextSite.remunerations||[])];
+        }
+      }
+    }
+
     if(client){
       let msg = '';
       if(updated.statut === 'Prêt'){
@@ -1134,7 +1166,6 @@ function CommandesView({ site, updateSite, editable }){
       if(msg){
         const notif = { id: uid('notif_'), clientId: client.id, message: msg, canal: client.canalPref || 'SMS', date: new Date().toISOString() };
         nextSite.notifications = [notif, ...nextSite.notifications].slice(0,300);
-        // Ouvrir WhatsApp automatiquement si le client a un numéro
         if(client.tel && (updated.statut === 'Prêt' || updated.statut === 'Récupéré')){
           const tel = client.tel.replace(/\D/g,'');
           setTimeout(() => window.open(`https://wa.me/${tel}?text=${encodeURIComponent(msg)}`, '_blank'), 300);
@@ -1143,7 +1174,6 @@ function CommandesView({ site, updateSite, editable }){
     }
     updateSite(nextSite);
   }
-
   function togglePaiement(cmd){
     updateCommande({ ...cmd, paiement: cmd.paiement === 'paye' ? 'impaye' : 'paye' });
   }
@@ -2454,8 +2484,10 @@ function ConfigRemunerationEditor({ site, updateSite }){
   const [zones, setZones] = useState(config.zones || []);
   const [newRepNom, setNewRepNom] = useState('');
   const [newRepPrix, setNewRepPrix] = useState('');
+  const [editingRepId, setEditingRepId] = useState(null);
   const [newZoneNom, setNewZoneNom] = useState('');
   const [newZoneMontant, setNewZoneMontant] = useState('');
+  const [editingZoneId, setEditingZoneId] = useState(null);
   const [flash, setFlash] = useState(false);
 
   function save(){
@@ -2469,12 +2501,24 @@ function ConfigRemunerationEditor({ site, updateSite }){
     setNewRepNom(''); setNewRepPrix('');
   }
   function removeTarifRepassage(id){ setTarifsRepassage(tarifsRepassage.filter(t=>t.id!==id)); }
+  function startEditTarif(t){ setNewRepNom(t.nom); setNewRepPrix(String(t.prix)); setEditingRepId(t.id); }
+  function saveEditTarif(){
+    if(!newRepNom.trim()||!newRepPrix) return;
+    setTarifsRepassage(tarifsRepassage.map(t => t.id===editingRepId ? {...t, nom:newRepNom.trim(), prix:Number(newRepPrix)} : t));
+    setNewRepNom(''); setNewRepPrix(''); setEditingRepId(null);
+  }
   function addZone(){
     if(!newZoneNom.trim()||!newZoneMontant) return;
     setZones([...zones, { id: uid('zone_'), nom: newZoneNom.trim(), montant: Number(newZoneMontant) }]);
     setNewZoneNom(''); setNewZoneMontant('');
   }
   function removeZone(id){ setZones(zones.filter(z=>z.id!==id)); }
+  function startEditZone(z){ setNewZoneNom(z.nom); setNewZoneMontant(String(z.montant)); setEditingZoneId(z.id); }
+  function saveEditZone(){
+    if(!newZoneNom.trim()||!newZoneMontant) return;
+    setZones(zones.map(z => z.id===editingZoneId ? {...z, nom:newZoneNom.trim(), montant:Number(newZoneMontant)} : z));
+    setNewZoneNom(''); setNewZoneMontant(''); setEditingZoneId(null);
+  }
 
   return (
     <div className="card" style={{padding:'1.5rem', marginTop:18}}>
@@ -2492,18 +2536,26 @@ function ConfigRemunerationEditor({ site, updateSite }){
           {tarifsRepassage.map(t => (
             <div key={t.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'7px 0', borderBottom:'1px solid var(--line)', fontSize:13.5}}>
               <span>👔 {t.nom}</span>
-              <div style={{display:'flex', gap:10, alignItems:'center'}}>
+              <div style={{display:'flex', gap:6, alignItems:'center'}}>
                 <span className="mono">{fmtGNF(t.prix)}</span>
-                <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>removeTarifRepassage(t.id)}><Icon name="trash" size={13}/></button>
+                <button className="btn btn-ghost btn-sm" style={{padding:'3px 7px'}} onClick={()=>startEditTarif(t)}><Icon name="edit" size={13}/></button>
+                <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)', padding:'3px 7px'}} onClick={()=>removeTarifRepassage(t.id)}><Icon name="trash" size={13}/></button>
               </div>
             </div>
           ))}
           {tarifsRepassage.length === 0 && <p style={{fontSize:13, color:'var(--steam)'}}>Aucun tarif configuré.</p>}
         </div>
-        <div style={{display:'grid', gridTemplateColumns:'2fr 1fr auto', gap:8}}>
+        <div style={{display:'grid', gridTemplateColumns:'2fr 1fr auto auto', gap:8}}>
           <input type="text" placeholder="Article (ex: Chemise, Pantalon, Robe…)" value={newRepNom} onChange={e=>setNewRepNom(e.target.value)} />
           <input type="number" placeholder="Prix GNF" value={newRepPrix} onChange={e=>setNewRepPrix(e.target.value)} />
-          <button className="btn btn-sm" disabled={!newRepNom.trim()||!newRepPrix} onClick={addTarifRepassage}><Icon name="plus" size={13}/> Ajouter</button>
+          {editingRepId ? (
+            <>
+              <button className="btn btn-sm" style={{background:'var(--pine)', color:'var(--white)', borderColor:'var(--pine)'}} disabled={!newRepNom.trim()||!newRepPrix} onClick={saveEditTarif}><Icon name="check" size={13}/></button>
+              <button className="btn btn-ghost btn-sm" onClick={()=>{ setEditingRepId(null); setNewRepNom(''); setNewRepPrix(''); }}><Icon name="x" size={13}/></button>
+            </>
+          ) : (
+            <button className="btn btn-sm" disabled={!newRepNom.trim()||!newRepPrix} onClick={addTarifRepassage} style={{gridColumn:'3/5'}}><Icon name="plus" size={13}/> Ajouter</button>
+          )}
         </div>
       </div>
 
@@ -2514,18 +2566,26 @@ function ConfigRemunerationEditor({ site, updateSite }){
           {zones.map(z => (
             <div key={z.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'7px 0', borderBottom:'1px solid var(--line)', fontSize:13.5}}>
               <span>{z.nom}</span>
-              <div style={{display:'flex', gap:10, alignItems:'center'}}>
+              <div style={{display:'flex', gap:6, alignItems:'center'}}>
                 <span className="mono">{fmtGNF(z.montant)}</span>
-                <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>removeZone(z.id)}><Icon name="trash" size={13}/></button>
+                <button className="btn btn-ghost btn-sm" style={{padding:'3px 7px'}} onClick={()=>startEditZone(z)}><Icon name="edit" size={13}/></button>
+                <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)', padding:'3px 7px'}} onClick={()=>removeZone(z.id)}><Icon name="trash" size={13}/></button>
               </div>
             </div>
           ))}
           {zones.length === 0 && <p style={{fontSize:13, color:'var(--steam)'}}>Aucune zone configurée.</p>}
         </div>
-        <div style={{display:'grid', gridTemplateColumns:'2fr 1fr auto', gap:8}}>
+        <div style={{display:'grid', gridTemplateColumns:'2fr 1fr auto auto', gap:8}}>
           <input type="text" placeholder="Nom de la zone (ex: Zone 1 — Kipé)" value={newZoneNom} onChange={e=>setNewZoneNom(e.target.value)} />
           <input type="number" placeholder="Montant GNF" value={newZoneMontant} onChange={e=>setNewZoneMontant(e.target.value)} />
-          <button className="btn btn-sm" disabled={!newZoneNom.trim()||!newZoneMontant} onClick={addZone}><Icon name="plus" size={13}/> Ajouter</button>
+          {editingZoneId ? (
+            <>
+              <button className="btn btn-sm" style={{background:'var(--pine)', color:'var(--white)', borderColor:'var(--pine)'}} disabled={!newZoneNom.trim()||!newZoneMontant} onClick={saveEditZone}><Icon name="check" size={13}/></button>
+              <button className="btn btn-ghost btn-sm" onClick={()=>{ setEditingZoneId(null); setNewZoneNom(''); setNewZoneMontant(''); }}><Icon name="x" size={13}/></button>
+            </>
+          ) : (
+            <button className="btn btn-sm" disabled={!newZoneNom.trim()||!newZoneMontant} onClick={addZone} style={{gridColumn:'3/5'}}><Icon name="plus" size={13}/> Ajouter</button>
+          )}
         </div>
       </div>
 
@@ -2846,13 +2906,95 @@ function ServicesEditor({ site, updateSite }){
 function RemunerationView({ site, updateSite, db, siteId }){
   const [type, setType] = useState('repassage');
   const [date, setDate] = useState(todayISO());
-  const [selectedArticles, setSelectedArticles] = useState([]); // [{tarifId, qte}]
+  const [selectedArticles, setSelectedArticles] = useState([]);
   const [zoneId, setZoneId] = useState('');
   const [filterMois, setFilterMois] = useState(todayISO().slice(0,7));
+  const [bilanView, setBilanView] = useState('jour'); // 'jour' | 'semaine' | 'mois'
 
   const config = site.configRemuneration || { tarifsRepassage: [], zones: [] };
   const tarifsRepassage = config.tarifsRepassage || [];
   const remunerations = site.remunerations || [];
+
+  const today = todayISO();
+
+  // Calcul de la semaine en cours (lundi → dimanche)
+  const getWeekDates = () => {
+    const d = new Date(today + 'T00:00:00');
+    const day = d.getDay() || 7; // lundi = 1
+    const monday = new Date(d); monday.setDate(d.getDate() - day + 1);
+    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+    const toISO = (dt) => dt.toISOString().slice(0,10);
+    return { start: toISO(monday), end: toISO(sunday) };
+  };
+  const week = getWeekDates();
+
+  // Remunerations repassage seulement pour le bilan
+  const repassageOnly = remunerations.filter(r => r.type === 'repassage');
+
+  // Bilan journalier
+  const bilanJour = useMemo(() => {
+    const rems = repassageOnly.filter(r => r.date === today);
+    const totalMontant = rems.reduce((s,r)=>s+Number(r.montant),0);
+    // Agréger les articles
+    const articlesCount = {};
+    rems.forEach(r => {
+      if(r.detail){
+        // Parser le détail : "2x Chemise (15 000 GNF), 1x Pantalon (20 000 GNF)"
+        r.detail.split(', ').forEach(part => {
+          const match = part.match(/(\d+)x (.+?) \(/);
+          if(match) {
+            const nom = match[2];
+            const qte = Number(match[1]);
+            articlesCount[nom] = (articlesCount[nom]||0) + qte;
+          }
+        });
+      }
+    });
+    return { rems, totalMontant, articlesCount };
+  }, [repassageOnly, today]);
+
+  // Bilan hebdomadaire
+  const bilanSemaine = useMemo(() => {
+    const rems = repassageOnly.filter(r => r.date >= week.start && r.date <= week.end);
+    const totalMontant = rems.reduce((s,r)=>s+Number(r.montant),0);
+    // Par jour de la semaine
+    const parJour = {};
+    rems.forEach(r => {
+      if(!parJour[r.date]) parJour[r.date] = { montant:0, articles:{} };
+      parJour[r.date].montant += Number(r.montant);
+      if(r.detail){
+        r.detail.split(', ').forEach(part => {
+          const match = part.match(/(\d+)x (.+?) \(/);
+          if(match){
+            const nom = match[2]; const qte = Number(match[1]);
+            parJour[r.date].articles[nom] = (parJour[r.date].articles[nom]||0) + qte;
+          }
+        });
+      }
+    });
+    const totalArticles = {};
+    rems.forEach(r => {
+      if(r.detail) r.detail.split(', ').forEach(part => {
+        const match = part.match(/(\d+)x (.+?) \(/);
+        if(match){ const nom=match[2]; const qte=Number(match[1]); totalArticles[nom]=(totalArticles[nom]||0)+qte; }
+      });
+    });
+    return { rems, totalMontant, parJour, totalArticles };
+  }, [repassageOnly, week]);
+
+  // Bilan mensuel
+  const bilanMois = useMemo(() => {
+    const rems = repassageOnly.filter(r => r.date.slice(0,7) === filterMois);
+    const totalMontant = rems.reduce((s,r)=>s+Number(r.montant),0);
+    const totalArticles = {};
+    rems.forEach(r => {
+      if(r.detail) r.detail.split(', ').forEach(part => {
+        const match = part.match(/(\d+)x (.+?) \(/);
+        if(match){ const nom=match[2]; const qte=Number(match[1]); totalArticles[nom]=(totalArticles[nom]||0)+qte; }
+      });
+    });
+    return { rems, totalMontant, totalArticles };
+  }, [repassageOnly, filterMois]);
 
   const filtered = useMemo(() => {
     return [...remunerations]
@@ -3017,6 +3159,135 @@ function RemunerationView({ site, updateSite, db, siteId }){
           </div>
         </div>
       </div>
+
+      {/* BILAN REPASSAGE */}
+      <div className="card" style={{padding:'1.5rem', marginBottom:20}}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14}}>
+          <h3 style={{margin:0, fontSize:15}}>📊 Bilan repassage</h3>
+          <div style={{display:'flex', gap:8}}>
+            {['jour','semaine','mois'].map(v => (
+              <button key={v} className="btn btn-sm" onClick={()=>setBilanView(v)}
+                style={{background:bilanView===v?'var(--pine)':'transparent', color:bilanView===v?'var(--white)':'var(--ink)', borderColor:bilanView===v?'var(--pine)':'var(--line-strong)', textTransform:'capitalize'}}>
+                {v === 'jour' ? "Aujourd'hui" : v === 'semaine' ? 'Cette semaine' : 'Ce mois'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {bilanView === 'jour' && (
+          <div>
+            <div style={{display:'flex', gap:14, marginBottom:12}}>
+              <div style={{background:'var(--paper-2)', borderRadius:8, padding:'10px 16px', flex:1}}>
+                <div style={{fontSize:11.5, color:'var(--steam)', textTransform:'uppercase', fontWeight:600}}>Articles repassés</div>
+                <div style={{fontSize:22, fontWeight:700, color:'var(--pine)'}}>
+                  {Object.values(bilanJour.articlesCount).reduce((s,v)=>s+v,0)}
+                </div>
+              </div>
+              <div style={{background:'var(--paper-2)', borderRadius:8, padding:'10px 16px', flex:1}}>
+                <div style={{fontSize:11.5, color:'var(--steam)', textTransform:'uppercase', fontWeight:600}}>Montant gagné</div>
+                <div style={{fontSize:22, fontWeight:700, color:'var(--ok)'}}>{fmtGNF(bilanJour.totalMontant)}</div>
+              </div>
+            </div>
+            {Object.keys(bilanJour.articlesCount).length > 0 ? (
+              <div>
+                <div style={{fontSize:12, color:'var(--steam)', fontWeight:600, textTransform:'uppercase', marginBottom:6}}>Détail par article</div>
+                {Object.entries(bilanJour.articlesCount).map(([nom, qte]) => (
+                  <div key={nom} style={{display:'flex', justifyContent:'space-between', padding:'5px 0', borderBottom:'1px solid var(--line)', fontSize:13.5}}>
+                    <span>👔 {nom}</span><span className="mono" style={{fontWeight:600}}>{qte} pièce(s)</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p style={{fontSize:13, color:'var(--steam)', margin:0}}>Aucun repassage enregistré aujourd'hui.</p>
+            )}
+          </div>
+        )}
+
+        {bilanView === 'semaine' && (
+          <div>
+            <div style={{display:'flex', gap:14, marginBottom:12}}>
+              <div style={{background:'var(--paper-2)', borderRadius:8, padding:'10px 16px', flex:1}}>
+                <div style={{fontSize:11.5, color:'var(--steam)', textTransform:'uppercase', fontWeight:600}}>Total articles</div>
+                <div style={{fontSize:22, fontWeight:700, color:'var(--pine)'}}>
+                  {Object.values(bilanSemaine.totalArticles).reduce((s,v)=>s+v,0)}
+                </div>
+              </div>
+              <div style={{background:'var(--paper-2)', borderRadius:8, padding:'10px 16px', flex:1}}>
+                <div style={{fontSize:11.5, color:'var(--steam)', textTransform:'uppercase', fontWeight:600}}>Montant semaine</div>
+                <div style={{fontSize:22, fontWeight:700, color:'var(--ok)'}}>{fmtGNF(bilanSemaine.totalMontant)}</div>
+              </div>
+            </div>
+            {/* Par jour */}
+            {Object.keys(bilanSemaine.parJour).length > 0 ? (
+              <div>
+                <div style={{fontSize:12, color:'var(--steam)', fontWeight:600, textTransform:'uppercase', marginBottom:6}}>Par jour</div>
+                {Object.entries(bilanSemaine.parJour).sort((a,b)=>b[0].localeCompare(a[0])).map(([dateKey, data]) => (
+                  <div key={dateKey} style={{padding:'8px 0', borderBottom:'1px solid var(--line)'}}>
+                    <div style={{display:'flex', justifyContent:'space-between', fontSize:13.5, fontWeight:600}}>
+                      <span>{fmtDate(dateKey)}</span>
+                      <span className="mono" style={{color:'var(--ok)'}}>{fmtGNF(data.montant)}</span>
+                    </div>
+                    <div style={{fontSize:12, color:'var(--steam)', marginTop:3}}>
+                      {Object.entries(data.articles).map(([nom,qte])=>`${qte}x ${nom}`).join(' · ')}
+                    </div>
+                  </div>
+                ))}
+                <div style={{fontSize:12, color:'var(--steam)', fontWeight:600, textTransform:'uppercase', marginTop:10, marginBottom:6}}>Total par article</div>
+                {Object.entries(bilanSemaine.totalArticles).map(([nom, qte]) => (
+                  <div key={nom} style={{display:'flex', justifyContent:'space-between', padding:'4px 0', fontSize:13}}>
+                    <span>👔 {nom}</span><span className="mono">{qte} pièce(s)</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p style={{fontSize:13, color:'var(--steam)', margin:0}}>Aucun repassage cette semaine.</p>
+            )}
+          </div>
+        )}
+
+        {bilanView === 'mois' && (
+          <div>
+            <div style={{display:'flex', gap:10, marginBottom:14, alignItems:'center'}}>
+              <select value={filterMois} onChange={e=>setFilterMois(e.target.value)} style={{width:'auto', minWidth:160}}>
+                {moisDisponibles.map(m => (
+                  <option key={m} value={m}>{new Date(m+'-01').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{display:'flex', gap:14, marginBottom:12}}>
+              <div style={{background:'var(--paper-2)', borderRadius:8, padding:'10px 16px', flex:1}}>
+                <div style={{fontSize:11.5, color:'var(--steam)', textTransform:'uppercase', fontWeight:600}}>Total articles</div>
+                <div style={{fontSize:22, fontWeight:700, color:'var(--pine)'}}>
+                  {Object.values(bilanMois.totalArticles).reduce((s,v)=>s+v,0)}
+                </div>
+              </div>
+              <div style={{background:'var(--paper-2)', borderRadius:8, padding:'10px 16px', flex:1}}>
+                <div style={{fontSize:11.5, color:'var(--steam)', textTransform:'uppercase', fontWeight:600}}>Montant du mois</div>
+                <div style={{fontSize:22, fontWeight:700, color:'var(--ok)'}}>{fmtGNF(bilanMois.totalMontant)}</div>
+              </div>
+            </div>
+            {Object.keys(bilanMois.totalArticles).length > 0 ? (
+              <div>
+                <div style={{fontSize:12, color:'var(--steam)', fontWeight:600, textTransform:'uppercase', marginBottom:6}}>Total par article ce mois</div>
+                {Object.entries(bilanMois.totalArticles).sort((a,b)=>b[1]-a[1]).map(([nom, qte]) => (
+                  <div key={nom} style={{display:'flex', justifyContent:'space-between', padding:'6px 0', borderBottom:'1px solid var(--line)', fontSize:13.5}}>
+                    <span>👔 {nom}</span>
+                    <div style={{display:'flex', gap:16}}>
+                      <span className="mono">{qte} pièce(s)</span>
+                      <span className="mono" style={{color:'var(--ok)'}}>
+                        {fmtGNF((tarifsRepassage.find(t=>t.nom===nom)?.prix||0)*qte)}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p style={{fontSize:13, color:'var(--steam)', margin:0}}>Aucun repassage ce mois.</p>
+            )}
+          </div>
+        )}
+      </div>
+
       <div style={{display:'flex', gap:10, marginBottom:14, alignItems:'center'}}>
         <label style={{margin:0}}>Mois :</label>
         <select value={filterMois} onChange={e=>setFilterMois(e.target.value)} style={{width:'auto', minWidth:160}}>
