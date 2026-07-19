@@ -384,6 +384,7 @@ function App(){
   const [role, setRole] = useState(null); // 'gerant' | 'employe' | 'client'
   const [currentSiteId, setCurrentSiteId] = useState(null);
   const [currentClientId, setCurrentClientId] = useState(null);
+  const [currentEmployeId, setCurrentEmployeId] = useState(null);
   const saveTimer = useRef(null);
 
   useEffect(() => {
@@ -426,11 +427,11 @@ function App(){
   }
 
   if(!role){
-    return <RoleSelect db={db} setDb={persist} onSelect={(r, siteId, clientId) => { setRole(r); setCurrentSiteId(siteId||null); setCurrentClientId(clientId||null); }} />;
+    return <RoleSelect db={db} setDb={persist} onSelect={(r, siteId, clientId, employeId) => { setRole(r); setCurrentSiteId(siteId||null); setCurrentClientId(clientId||null); setCurrentEmployeId(employeId||null); }} />;
   }
 
   if(role === 'gerant') return <GerantApp db={db} setDb={persist} onLogout={()=>{setRole(null); setCurrentSiteId(null);}} />;
-  if(role === 'employe') return <EmployeApp db={db} setDb={persist} siteId={currentSiteId} onLogout={()=>{setRole(null); setCurrentSiteId(null);}} />;
+  if(role === 'employe') return <EmployeApp db={db} setDb={persist} siteId={currentSiteId} employeId={currentEmployeId} onLogout={()=>{setRole(null); setCurrentSiteId(null); setCurrentEmployeId(null);}} />;
   if(role === 'client') return <ClientApp db={db} setDb={persist} siteId={currentSiteId} clientId={currentClientId} onLogout={()=>{setRole(null); setCurrentSiteId(null); setCurrentClientId(null);}} />;
 
   return null;
@@ -440,9 +441,21 @@ function App(){
 
 function RoleSelect({ db, setDb, onSelect }){
   const [mode, setMode] = useState(null);
-  const [loginRole, setLoginRole] = useState(null); // 'gerant' | 'employe'
+  const [loginRole, setLoginRole] = useState(null);
+  const [selectedEmp, setSelectedEmp] = useState(null); // {emp, siteId}
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+
+  // Tous les employés de tous les sites
+  const allEmployes = useMemo(() => {
+    const list = [];
+    db.sites.forEach(site => {
+      (site.employes||[]).forEach(emp => {
+        list.push({ emp, site });
+      });
+    });
+    return list;
+  }, [db]);
 
   function handleLogin(){
     if(loginRole === 'gerant'){
@@ -452,18 +465,41 @@ function RoleSelect({ db, setDb, onSelect }){
         setError('Mot de passe incorrect. Réessayez.');
         setPassword('');
       }
-    } else if(loginRole === 'employe'){
-      const result = checkEmployePass(db, password);
-      if(result){
-        onSelect('employe', result.siteId);
-        setLoginRole(null);
-        setPassword('');
-        setError('');
+    } else if(loginRole === 'employe' && selectedEmp){
+      if(password === selectedEmp.emp.motdepasse){
+        onSelect('employe', selectedEmp.site.id, null, selectedEmp.emp.id);
+        setLoginRole(null); setSelectedEmp(null); setPassword(''); setError('');
       } else {
         setError('Mot de passe incorrect. Réessayez.');
         setPassword('');
       }
     }
+  }
+
+  if(loginRole === 'employe' && !selectedEmp){
+    return (
+      <div style={{minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'2rem'}}>
+        <div style={{textAlign:'center', marginBottom:'2rem'}}>
+          <Icon name="shirt" size={30} style={{color:'var(--pine)'}} />
+          <h1 style={{fontSize:28, margin:'10px 0 4px', color:'var(--pine)'}}>Maci Pressing</h1>
+          <p style={{color:'var(--steam)', fontSize:14, margin:0}}>Espace Employé — Qui êtes-vous ?</p>
+        </div>
+        <div className="card" style={{padding:'1.75rem', width:400, maxWidth:'90vw'}}>
+          <label>Sélectionnez votre nom</label>
+          <div style={{display:'grid', gap:8, marginTop:6}}>
+            {allEmployes.map(({emp, site}) => (
+              <button key={emp.id} className="btn" style={{textAlign:'left', display:'flex', justifyContent:'space-between', alignItems:'center'}}
+                onClick={()=>setSelectedEmp({emp, site})}>
+                <span style={{fontWeight:600}}>{emp.nom}</span>
+                <span style={{fontSize:12, color:'var(--steam)'}}>{emp.role} · {site.nom}</span>
+              </button>
+            ))}
+            {allEmployes.length === 0 && <p style={{color:'var(--steam)', fontSize:13}}>Aucun employé enregistré. Le gérant doit d'abord créer des fiches employés.</p>}
+          </div>
+          <button className="btn btn-ghost btn-sm" style={{marginTop:12}} onClick={()=>{ setLoginRole(null); setError(''); }}>← Retour</button>
+        </div>
+      </div>
+    );
   }
 
   if(loginRole){
@@ -472,9 +508,11 @@ function RoleSelect({ db, setDb, onSelect }){
         <div style={{textAlign:'center', marginBottom:'2rem'}}>
           <Icon name="shirt" size={30} style={{color:'var(--pine)'}} />
           <h1 style={{fontSize:28, margin:'10px 0 4px', color:'var(--pine)'}}>Maci Pressing</h1>
-          <p style={{color:'var(--steam)', fontSize:14, margin:0}}>
-            {loginRole === 'gerant' ? 'Espace Gérant' : 'Espace Employé'}
-          </p>
+          {selectedEmp ? (
+            <p style={{color:'var(--steam)', fontSize:14, margin:0}}>Bonjour <strong>{selectedEmp.emp.nom}</strong> — {selectedEmp.site.nom}</p>
+          ) : (
+            <p style={{color:'var(--steam)', fontSize:14, margin:0}}>Espace Gérant</p>
+          )}
         </div>
         <div className="card" style={{padding:'1.75rem', width:340, maxWidth:'90vw'}}>
           <label>Mot de passe</label>
@@ -488,7 +526,7 @@ function RoleSelect({ db, setDb, onSelect }){
           />
           {error && <p style={{color:'var(--danger)', fontSize:13, margin:'8px 0 0'}}>{error}</p>}
           <div style={{display:'flex', gap:10, marginTop:14}}>
-            <button className="btn" onClick={()=>{ setLoginRole(null); setPassword(''); setError(''); }} style={{flex:1}}>Retour</button>
+            <button className="btn" onClick={()=>{ setSelectedEmp(null); setPassword(''); setError(''); if(loginRole==='gerant') setLoginRole(null); }} style={{flex:1}}>Retour</button>
             <button className="btn btn-rust" onClick={handleLogin} style={{flex:1}}>Entrer</button>
           </div>
         </div>
@@ -1089,7 +1127,7 @@ function StatCard({ label, value, sub, icon, tone='default' }){
 
 /* ===================== COMMANDES ===================== */
 
-function CommandesView({ site, updateSite, editable }){
+function CommandesView({ site, updateSite, editable, employeId }){
   const [filter, setFilter] = useState('Toutes');
   const [search, setSearch] = useState('');
   const [showNew, setShowNew] = useState(false);
@@ -1145,6 +1183,7 @@ function CommandesView({ site, updateSite, editable }){
             montant: montantRepasseur,
             detail: detailRepasseur,
             commandeNumero: cmd.numero,
+            employeId: employeId || null,
             auto: true,
           };
           nextSite.remunerations = [rem, ...(nextSite.remunerations||[])];
@@ -1262,7 +1301,7 @@ function CommandesView({ site, updateSite, editable }){
         </table>
       </div>
 
-      {showNew && <NewCommandeModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
+      {showNew && <NewCommandeModal site={site} updateSite={updateSite} employeId={employeId} onClose={()=>setShowNew(false)} />}
       {openTicket && <TicketModal cmd={openTicket} site={site} onClose={()=>setOpenTicket(null)} />}
     </div>
   );
@@ -1271,7 +1310,7 @@ function CommandesView({ site, updateSite, editable }){
 const th = { padding:'10px 14px', fontSize:12, fontWeight:700, color:'var(--pine)', textTransform:'uppercase', letterSpacing:'0.03em' };
 const td = { padding:'10px 14px' };
 
-function NewCommandeModal({ site, updateSite, onClose }){
+function NewCommandeModal({ site, updateSite, onClose, employeId }){
   const [clientId, setClientId] = useState('');
   const [clientSearch, setClientSearch] = useState('');
   const [newClientMode, setNewClientMode] = useState(false);
@@ -1337,6 +1376,7 @@ function NewCommandeModal({ site, updateSite, onClose }){
       id: uid('cmd_'),
       numero: ticketNumber(site.code, seq),
       clientId: finalClientId,
+      caissierEmpId: employeId || null,
       lignes,
       statut: 'Reçu',
       paiement: montantAcompte >= total ? 'paye' : 'impaye',
@@ -2406,74 +2446,191 @@ function NotificationsView({ site }){
 
 function RemunerationGerantView({ site }){
   const [filterMois, setFilterMois] = useState(todayISO().slice(0,7));
+  const [onglet, setOnglet] = useState('repasseurs'); // 'repasseurs' | 'caissiers' | 'tout'
   const remunerations = site.remunerations || [];
-
-  const filtered = useMemo(() => {
-    return [...remunerations]
-      .filter(r => r.date.slice(0,7) === filterMois)
-      .sort((a,b) => new Date(b.date) - new Date(a.date));
-  }, [remunerations, filterMois]);
-
-  const totalMois = filtered.reduce((s,r)=>s+Number(r.montant),0);
-  const totalRepassage = filtered.filter(r=>r.type==='repassage').reduce((s,r)=>s+Number(r.montant),0);
-  const totalLivraison = filtered.filter(r=>r.type==='livraison').reduce((s,r)=>s+Number(r.montant),0);
+  const commandes = site.commandes || [];
+  const employes = site.employes || [];
+  const today = todayISO();
 
   const moisDisponibles = useMemo(() => {
     const mois = new Set(remunerations.map(r=>r.date.slice(0,7)));
-    mois.add(todayISO().slice(0,7));
+    mois.add(today.slice(0,7));
     return [...mois].sort().reverse();
   }, [remunerations]);
 
+  // Bilan repasseurs — par employé
+  const bilanRepasseurs = useMemo(() => {
+    const filtered = remunerations.filter(r => r.date.slice(0,7) === filterMois && r.type === 'repassage');
+    const parEmploye = {};
+    filtered.forEach(r => {
+      const empId = r.employeId || 'inconnu';
+      if(!parEmploye[empId]) parEmploye[empId] = { montant: 0, articles: {}, entrees: [] };
+      parEmploye[empId].montant += Number(r.montant);
+      parEmploye[empId].entrees.push(r);
+      if(r.detail) r.detail.split(', ').forEach(part => {
+        const match = part.match(/(\d+)x (.+?) \(/);
+        if(match){ const nom=match[2]; const qte=Number(match[1]); parEmploye[empId].articles[nom]=(parEmploye[empId].articles[nom]||0)+qte; }
+      });
+    });
+    return parEmploye;
+  }, [remunerations, filterMois]);
+
+  // Bilan caissiers — par employé
+  const bilanCaissiers = useMemo(() => {
+    const filtered = commandes.filter(c => c.dateCreation.slice(0,7) === filterMois);
+    const parEmploye = {};
+    filtered.forEach(c => {
+      const empId = c.caissierEmpId || 'inconnu';
+      if(!parEmploye[empId]) parEmploye[empId] = { commandes: [], ca: 0, acomptes: 0 };
+      const total = c.lignes.reduce((s,l) => {
+        const svc = site.services.find(x=>x.id===l.serviceId);
+        return s + (svc ? svc.prix*l.qte : 0);
+      }, 0) - (Number(c.rabais)||0);
+      parEmploye[empId].commandes.push(c);
+      parEmploye[empId].ca += total;
+      parEmploye[empId].acomptes += Number(c.acompte)||0;
+    });
+    return parEmploye;
+  }, [commandes, filterMois, site.services]);
+
+  function getEmpNom(empId){
+    if(empId === 'inconnu') return 'Non identifié';
+    const emp = employes.find(e=>e.id===empId);
+    return emp ? emp.nom : `Employé inconnu`;
+  }
+
+  const totalRem = Object.values(bilanRepasseurs).reduce((s,b)=>s+b.montant,0);
+
   return (
     <div>
-      <PageHeader title="Rémunérations" subtitle={`Total à payer ${filterMois} : ${fmtGNF(totalMois)}`} />
+      <PageHeader title="Rémunérations & Traçabilité" subtitle={`${filterMois}`} />
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20}}>
-        <StatCard label="Total à payer" value={fmtGNF(totalMois)} icon="euro" />
-        <StatCard label="Repassage" value={fmtGNF(totalRepassage)} icon="shirt" />
-        <StatCard label="Livraisons" value={fmtGNF(totalLivraison)} icon="arrowRight" />
-      </div>
-
-      <div style={{display:'flex', gap:10, marginBottom:14, alignItems:'center'}}>
-        <label style={{margin:0}}>Mois :</label>
+      {/* Filtres */}
+      <div style={{display:'flex', gap:10, marginBottom:18, flexWrap:'wrap', alignItems:'center'}}>
         <select value={filterMois} onChange={e=>setFilterMois(e.target.value)} style={{width:'auto', minWidth:160}}>
           {moisDisponibles.map(m => (
             <option key={m} value={m}>{new Date(m+'-01').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})}</option>
           ))}
         </select>
+        {['repasseurs','caissiers','tout'].map(o => (
+          <button key={o} className="btn btn-sm" onClick={()=>setOnglet(o)}
+            style={{background:onglet===o?'var(--pine)':'transparent', color:onglet===o?'var(--white)':'var(--ink)', borderColor:onglet===o?'var(--pine)':'var(--line-strong)'}}>
+            {o === 'repasseurs' ? '👔 Repasseurs' : o === 'caissiers' ? '🧾 Caissiers' : '📋 Tout'}
+          </button>
+        ))}
       </div>
 
-      <div className="card" style={{overflow:'hidden'}}>
-        <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
-          <thead>
-            <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
-              <th style={th}>Date</th>
-              <th style={th}>Type</th>
-              <th style={th}>Détail</th>
-              <th style={th}>Montant</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.length === 0 && (
-              <tr><td colSpan={4} style={{...td, textAlign:'center', color:'var(--steam)', padding:'2rem'}}>Aucune prestation enregistrée pour ce mois.</td></tr>
-            )}
-            {filtered.map(r => (
-              <tr key={r.id} style={{borderTop:'1px solid var(--line)'}}>
-                <td style={td}>{fmtDate(r.date)}</td>
-                <td style={td}><span className="tag tag-recu">{r.type === 'repassage' ? '👔 Repassage' : '🚗 Livraison'}</span></td>
-                <td style={td}>{r.detail}</td>
-                <td style={{...td, fontWeight:700, color:'var(--ok)'}} className="mono">{fmtGNF(r.montant)}</td>
-              </tr>
-            ))}
-            {filtered.length > 0 && (
-              <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
-                <td colSpan={3} style={{...td, fontWeight:700}}>Total à payer</td>
-                <td style={{...td, fontWeight:700, color:'var(--rust)'}} className="mono">{fmtGNF(totalMois)}</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      {/* BILAN REPASSEURS */}
+      {(onglet === 'repasseurs' || onglet === 'tout') && (
+        <div style={{marginBottom:24}}>
+          <h2 style={{fontSize:16, color:'var(--pine)', marginBottom:12}}>👔 Bilan par repasseur</h2>
+          {Object.keys(bilanRepasseurs).length === 0 ? (
+            <div className="card" style={{padding:'1.25rem', color:'var(--steam)', fontSize:13}}>Aucun repassage enregistré ce mois.</div>
+          ) : (
+            <div style={{display:'grid', gap:14}}>
+              {Object.entries(bilanRepasseurs).map(([empId, bilan]) => (
+                <div key={empId} className="card" style={{padding:'1.25rem 1.5rem'}}>
+                  <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:12}}>
+                    <div>
+                      <div style={{fontWeight:700, fontSize:15}}>{getEmpNom(empId)}</div>
+                      <div style={{fontSize:12.5, color:'var(--steam)'}}>{bilan.entrees.length} prestation(s)</div>
+                    </div>
+                    <div style={{textAlign:'right'}}>
+                      <div className="mono" style={{fontSize:18, fontWeight:700, color:'var(--ok)'}}>{fmtGNF(bilan.montant)}</div>
+                      <div style={{fontSize:11.5, color:'var(--steam)'}}>à payer ce mois</div>
+                    </div>
+                  </div>
+                  {/* Articles repassés */}
+                  <div style={{display:'flex', flexWrap:'wrap', gap:8, marginBottom:10}}>
+                    {Object.entries(bilan.articles).map(([nom, qte]) => (
+                      <span key={nom} style={{background:'var(--pine-light)', color:'var(--pine)', fontSize:12, padding:'3px 10px', borderRadius:100, fontWeight:600}}>
+                        {qte}x {nom}
+                      </span>
+                    ))}
+                  </div>
+                  {/* Bilan journalier */}
+                  <div style={{marginTop:8}}>
+                    <div style={{fontSize:11.5, color:'var(--steam)', fontWeight:600, textTransform:'uppercase', marginBottom:6}}>Détail journalier</div>
+                    {(() => {
+                      const parJour = {};
+                      bilan.entrees.forEach(r => {
+                        if(!parJour[r.date]) parJour[r.date] = { montant:0, articles:{} };
+                        parJour[r.date].montant += Number(r.montant);
+                        if(r.detail) r.detail.split(', ').forEach(part => {
+                          const match = part.match(/(\d+)x (.+?) \(/);
+                          if(match){ parJour[r.date].articles[match[2]]=(parJour[r.date].articles[match[2]]||0)+Number(match[1]); }
+                        });
+                      });
+                      return Object.entries(parJour).sort((a,b)=>b[0].localeCompare(a[0])).map(([date, data]) => (
+                        <div key={date} style={{display:'flex', justifyContent:'space-between', padding:'5px 0', borderBottom:'1px solid var(--line)', fontSize:13}}>
+                          <div>
+                            <span style={{fontWeight:600}}>{fmtDate(date)}</span>
+                            <span style={{color:'var(--steam)', marginLeft:8, fontSize:12}}>
+                              {Object.entries(data.articles).map(([n,q])=>`${q}x ${n}`).join(' · ')}
+                            </span>
+                          </div>
+                          <span className="mono" style={{color:'var(--ok)'}}>{fmtGNF(data.montant)}</span>
+                        </div>
+                      ));
+                    })()}
+                  </div>
+                </div>
+              ))}
+              <div className="card" style={{padding:'1rem 1.5rem', background:'var(--pine-light)', borderColor:'var(--pine)'}}>
+                <div style={{display:'flex', justifyContent:'space-between', fontWeight:700}}>
+                  <span>Total rémunérations repassage ce mois</span>
+                  <span className="mono" style={{color:'var(--pine)', fontSize:16}}>{fmtGNF(totalRem)}</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* BILAN CAISSIERS */}
+      {(onglet === 'caissiers' || onglet === 'tout') && (
+        <div>
+          <h2 style={{fontSize:16, color:'var(--pine)', marginBottom:12}}>🧾 Bilan par caissier</h2>
+          {Object.keys(bilanCaissiers).length === 0 ? (
+            <div className="card" style={{padding:'1.25rem', color:'var(--steam)', fontSize:13}}>Aucune commande ce mois.</div>
+          ) : (
+            <div style={{display:'grid', gap:14}}>
+              {Object.entries(bilanCaissiers).map(([empId, bilan]) => (
+                <div key={empId} className="card" style={{padding:'1.25rem 1.5rem'}}>
+                  <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:12}}>
+                    <div>
+                      <div style={{fontWeight:700, fontSize:15}}>{getEmpNom(empId)}</div>
+                      <div style={{fontSize:12.5, color:'var(--steam)'}}>{bilan.commandes.length} commande(s) créée(s)</div>
+                    </div>
+                    <div style={{textAlign:'right', display:'flex', gap:16}}>
+                      <div>
+                        <div className="mono" style={{fontSize:16, fontWeight:700, color:'var(--pine)'}}>{fmtGNF(bilan.ca)}</div>
+                        <div style={{fontSize:11.5, color:'var(--steam)'}}>CA total</div>
+                      </div>
+                      <div>
+                        <div className="mono" style={{fontSize:16, fontWeight:700, color:'var(--ok)'}}>{fmtGNF(bilan.acomptes)}</div>
+                        <div style={{fontSize:11.5, color:'var(--steam)'}}>Acomptes reçus</div>
+                      </div>
+                    </div>
+                  </div>
+                  {/* 5 dernières commandes */}
+                  <div style={{fontSize:11.5, color:'var(--steam)', fontWeight:600, textTransform:'uppercase', marginBottom:6}}>Dernières commandes</div>
+                  {bilan.commandes.slice(0,5).map(c => (
+                    <div key={c.id} style={{display:'flex', justifyContent:'space-between', padding:'4px 0', borderBottom:'1px solid var(--line)', fontSize:13}}>
+                      <div>
+                        <span className="mono" style={{fontWeight:600}}>{c.numero}</span>
+                        <span style={{color:'var(--steam)', marginLeft:8}}>{fmtDate(c.dateCreation.slice(0,10))}</span>
+                      </div>
+                      <span className={`tag ${STATUT_TAG_CLASS[c.statut]}`}>{c.statut}</span>
+                    </div>
+                  ))}
+                  {bilan.commandes.length > 5 && <div style={{fontSize:12, color:'var(--steam)', marginTop:6}}>+ {bilan.commandes.length - 5} autre(s)</div>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -3334,7 +3491,7 @@ function RemunerationView({ site, updateSite, db, siteId }){
 
 /* ===================== ESPACE EMPLOYE (lié à un site) ===================== */
 
-function EmployeApp({ db, setDb, siteId, onLogout }){
+function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
   const [page, setPage] = useState('caisse');
   const site = db.sites.find(s => s.id === siteId);
 
@@ -3362,11 +3519,11 @@ function EmployeApp({ db, setDb, siteId, onLogout }){
   ];
   return (
     <Shell title={site.nom} role="Espace employé" navItems={navItems} active={page} onNav={setPage} onLogout={onLogout}>
-      {page === 'caisse' && <CommandesView site={site} updateSite={updateSite} editable={true} />}
+      {page === 'caisse' && <CommandesView site={site} updateSite={updateSite} editable={true} employeId={employeId} />}
       {page === 'clients' && <ClientsView site={site} updateSite={updateSite} />}
       {page === 'stock' && <StockView site={site} updateSite={updateSite} />}
       {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} />}
-      {page === 'remuneration' && <RemunerationView site={site} updateSite={updateSite} db={db} siteId={siteId} />}
+      {page === 'remuneration' && <RemunerationView site={site} updateSite={updateSite} db={db} siteId={siteId} employeId={employeId} />}
     </Shell>
   );
 }
