@@ -207,7 +207,7 @@ function ticketNumber(siteCode, seq){
 
 function siteCodeFromName(nom){
   const letters = nom.replace(/[^a-zA-Z]/g,'').toUpperCase();
-  return (letters.slice(0,3) || 'PSG');
+  return (letters.slice(0,4) || 'MACI');
 }
 
 /* ===================== STORAGE LAYER (Firebase) ===================== */
@@ -241,14 +241,14 @@ function subscribeToDB(key, callback){
 function defaultServices(){
   return [
     { id: uid('svc_'), nom: 'Chemise', prix: 15000, categorie: 'Repassage' },
-    { id: uid('svc_'), nom: 'Pantalon', prix: 20000, categorie: 'Nettoyage complet' },
-    { id: uid('svc_'), nom: 'Costume 2 pièces', prix: 60000, categorie: 'Nettoyage complet' },
-    { id: uid('svc_'), nom: 'Robe simple', prix: 30000, categorie: 'Nettoyage complet' },
+    { id: uid('svc_'), nom: 'Pantalon', prix: 20000, categorie: 'Nettoyage' },
+    { id: uid('svc_'), nom: 'Costume 2 pièces', prix: 60000, categorie: 'Nettoyage' },
+    { id: uid('svc_'), nom: 'Robe simple', prix: 30000, categorie: 'Nettoyage' },
     { id: uid('svc_'), nom: 'Robe de soirée', prix: 70000, categorie: 'Nettoyage + Repassage' },
-    { id: uid('svc_'), nom: 'Manteau / Doudoune', prix: 50000, categorie: 'Nettoyage complet' },
+    { id: uid('svc_'), nom: 'Manteau / Doudoune', prix: 50000, categorie: 'Nettoyage' },
     { id: uid('svc_'), nom: 'Couette (2 pers.)', prix: 80000, categorie: 'Maison' },
     { id: uid('svc_'), nom: 'Rideau (au mètre)', prix: 25000, categorie: 'Maison' },
-    { id: uid('svc_'), nom: 'Pull / Lainage', prix: 25000, categorie: 'Nettoyage complet' },
+    { id: uid('svc_'), nom: 'Pull / Lainage', prix: 25000, categorie: 'Nettoyage' },
     { id: uid('svc_'), nom: 'Retouche ourlet', prix: 25000, categorie: 'Retouche' },
   ];
 }
@@ -931,12 +931,19 @@ function SitesManager({ db, addSite, removeSite, onOpenSite, setDb }){
     if(!source) return;
     const updatedSites = db.sites.map(site => {
       if(site.id === sourceSiteId) return site;
+      // Uniformiser les services
       const newServices = source.services.map(srcSvc => {
         const existing = site.services.find(s => s.nom === srcSvc.nom);
         if(existing) return { ...existing, prix: srcSvc.prix, categorie: srcSvc.categorie };
         return { ...srcSvc, id: uid('svc_') };
       });
-      return { ...site, services: newServices };
+      // Uniformiser les tarifs de rémunération
+      const sourceConfig = source.configRemuneration || { tarifsRepassage: [], zones: [] };
+      const newConfigRemuneration = {
+        tarifsRepassage: sourceConfig.tarifsRepassage.map(t => ({ ...t, id: uid('rep_') })),
+        zones: sourceConfig.zones.map(z => ({ ...z, id: uid('zone_') })),
+      };
+      return { ...site, services: newServices, configRemuneration: newConfigRemuneration };
     });
     setDb({ ...db, sites: updatedSites });
     setUniformFlash(true);
@@ -973,13 +980,47 @@ function SitesManager({ db, addSite, removeSite, onOpenSite, setDb }){
           {sourceSiteId && (
             <div style={{marginTop:12}}>
               <div style={{fontSize:12, color:'var(--pine)', fontWeight:600, marginBottom:6}}>Services qui seront copiés :</div>
-              <div style={{display:'flex', flexWrap:'wrap', gap:6}}>
+              <div style={{display:'flex', flexWrap:'wrap', gap:6, marginBottom:10}}>
                 {db.sites.find(s=>s.id===sourceSiteId)?.services.map(svc => (
                   <span key={svc.id} style={{fontSize:12, background:'var(--white)', padding:'3px 10px', borderRadius:100, border:'1px solid var(--pine)'}}>
                     {svc.nom} — {fmtGNF(svc.prix)}
                   </span>
                 ))}
               </div>
+              {(() => {
+                const srcConfig = db.sites.find(s=>s.id===sourceSiteId)?.configRemuneration;
+                const tarifs = srcConfig?.tarifsRepassage || [];
+                const zones = srcConfig?.zones || [];
+                if(tarifs.length === 0 && zones.length === 0) return null;
+                return (
+                  <div>
+                    {tarifs.length > 0 && (
+                      <>
+                        <div style={{fontSize:12, color:'var(--pine)', fontWeight:600, marginBottom:6}}>👔 Tarifs repassage :</div>
+                        <div style={{display:'flex', flexWrap:'wrap', gap:6, marginBottom:8}}>
+                          {tarifs.map(t => (
+                            <span key={t.id} style={{fontSize:12, background:'var(--white)', padding:'3px 10px', borderRadius:100, border:'1px solid var(--pine)'}}>
+                              {t.nom} — {fmtGNF(t.prix)}
+                            </span>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    {zones.length > 0 && (
+                      <>
+                        <div style={{fontSize:12, color:'var(--pine)', fontWeight:600, marginBottom:6}}>🚗 Zones de livraison :</div>
+                        <div style={{display:'flex', flexWrap:'wrap', gap:6}}>
+                          {zones.map(z => (
+                            <span key={z.id} style={{fontSize:12, background:'var(--white)', padding:'3px 10px', borderRadius:100, border:'1px solid var(--pine)'}}>
+                              {z.nom} — {fmtGNF(z.montant)}
+                            </span>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           )}
         </div>
@@ -1220,6 +1261,16 @@ function CommandesView({ site, updateSite, editable, employeId }){
   const [search, setSearch] = useState('');
   const [showNew, setShowNew] = useState(false);
   const [openTicket, setOpenTicket] = useState(null);
+  const [editCmd, setEditCmd] = useState(null);
+  const [confirmDeleteCmd, setConfirmDeleteCmd] = useState(null);
+
+  const monProfil = employeId ? site.employes.find(e=>e.id===employeId) : null;
+  const isRepasseur = monProfil && monProfil.role === 'Repasseur';
+  const isCaissier = !monProfil || monProfil.role !== 'Repasseur'; // gérant ou caissier
+
+  function deleteCommande(id){
+    updateSite({ ...site, commandes: site.commandes.filter(c=>c.id!==id) });
+  }
 
   const filtered = useMemo(() => {
     let list = [...site.commandes].sort((a,b)=> new Date(b.dateCreation) - new Date(a.dateCreation));
@@ -1365,6 +1416,12 @@ function CommandesView({ site, updateSite, editable, employeId }){
                   <td style={{...td, textAlign:'right'}}>
                     <div style={{display:'flex', gap:6, justifyContent:'flex-end', flexWrap:'wrap'}}>
                       <button className="btn btn-ghost btn-sm" onClick={()=>setOpenTicket(cmd)}>Voir</button>
+                      {editable && cmd.statut === 'Reçu' && (
+                        <button className="btn btn-ghost btn-sm" style={{color:'var(--pine)'}} onClick={()=>setEditCmd(cmd)}><Icon name="edit" size={13}/></button>
+                      )}
+                      {editable && (
+                        <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>setConfirmDeleteCmd(cmd)}><Icon name="trash" size={13}/></button>
+                      )}
                       {editable && client && client.tel && (
                         <button className="btn btn-sm" style={{background:'#25D366', color:'white', borderColor:'#25D366', padding:'6px 10px'}}
                           onClick={()=>{
@@ -1375,7 +1432,12 @@ function CommandesView({ site, updateSite, editable, employeId }){
                           }}>📱</button>
                       )}
                       {editable && cmd.statut !== 'Récupéré' && (
-                        <button className="btn btn-sm" onClick={()=>advanceStatut(cmd)}>→ {nextStatut(cmd.statut)}</button>
+                        // Le caissier ne peut PAS marquer "Prêt" — seul le repasseur peut
+                        nextStatut(cmd.statut) !== 'Prêt' ? (
+                          <button className="btn btn-sm" onClick={()=>advanceStatut(cmd)}>→ {nextStatut(cmd.statut)}</button>
+                        ) : (
+                          !employeId && <button className="btn btn-sm" onClick={()=>advanceStatut(cmd)}>→ Prêt</button>
+                        )
                       )}
                       {editable && (
                         <button className="btn btn-sm" onClick={()=>togglePaiement(cmd)}>{cmd.paiement==='paye' ? 'Marquer impayé' : 'Marquer payé'}</button>
@@ -1391,6 +1453,10 @@ function CommandesView({ site, updateSite, editable, employeId }){
 
       {showNew && <NewCommandeModal site={site} updateSite={updateSite} employeId={employeId} onClose={()=>setShowNew(false)} />}
       {openTicket && <TicketModal cmd={openTicket} site={site} onClose={()=>setOpenTicket(null)} />}
+      {editCmd && <EditCommandeModal cmd={editCmd} site={site} updateSite={updateSite} onClose={()=>setEditCmd(null)} />}
+      {confirmDeleteCmd && <ConfirmDelete db={site} message={`Supprimer définitivement la commande ${confirmDeleteCmd.numero} ? Cette action est irréversible.`}
+        onConfirm={()=>{ deleteCommande(confirmDeleteCmd.id); setConfirmDeleteCmd(null); }}
+        onCancel={()=>setConfirmDeleteCmd(null)} />}
     </div>
   );
 }
@@ -1407,14 +1473,16 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
   const [lignes, setLignes] = useState([]);
   const [dateRetrait, setDateRetrait] = useState('');
   const [notes, setNotes] = useState('');
+  const [dateRdv, setDateRdv] = useState('');
+  const [heureRdv, setHeureRdv] = useState('');
   const [acompte, setAcompte] = useState('');
-  const [acompteMode, setAcompteMode] = useState('none'); // 'none' | 'pourcent' | 'libre'
+  const [acompteMode, setAcompteMode] = useState('none');
   const [rabaisMode, setRabaisMode] = useState('none'); // 'none' | 'pourcent' | 'fixe'
   const [rabais, setRabais] = useState('');
   const [showAddService, setShowAddService] = useState(false);
   const [newServiceNom, setNewServiceNom] = useState('');
   const [newServicePrix, setNewServicePrix] = useState('');
-  const [newServiceCat, setNewServiceCat] = useState('Nettoyage complet');
+  const [newServiceCat, setNewServiceCat] = useState('Nettoyage');
   const [editServiceId, setEditServiceId] = useState(null);
 
   const clientMatches = useMemo(() => {
@@ -1473,6 +1541,8 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
       totalBrut: totalBrut,
       dateCreation: new Date().toISOString(),
       dateRetraitPrevue: dateRetrait || null,
+      dateRdvRecuperation: dateRdv || null,
+      heureRdvRecuperation: heureRdv || null,
       notes: notes.trim(),
     };
     const client = workingClients.find(c=>c.id===finalClientId);
@@ -1483,7 +1553,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
       return svc ? `${l.qte}x ${svc.nom} (${fmtGNF(svc.prix*l.qte)})` : '';
     }).filter(Boolean).join('\n');
 
-    const msgDepose = `🧺 Reçu de dépôt — ${site.nom}\nCommande : ${cmd.numero}\n\n${lignesDetail}${montantRabais>0?`\nRabais : -${fmtGNF(montantRabais)}`:''}\nTotal : ${fmtGNF(total)}${montantAcompte>0?`\nAcompte versé : ${fmtGNF(montantAcompte)}\nSolde restant : ${fmtGNF(total-montantAcompte)}`:'\nPaiement : À la récupération'}${cmd.dateRetraitPrevue?`\nRetrait prévu : ${fmtDate(cmd.dateRetraitPrevue)}`:''}\n\nMerci pour votre confiance !`;
+    const msgDepose = `🧺 Reçu de dépôt — ${site.nom}\nCommande : ${cmd.numero}\n\n${lignesDetail}${montantRabais>0?`\nRabais : -${fmtGNF(montantRabais)}`:''}\nTotal : ${fmtGNF(total)}${montantAcompte>0?`\nAcompte versé : ${fmtGNF(montantAcompte)}\nSolde restant : ${fmtGNF(total-montantAcompte)}`:'\nPaiement : À la récupération'}${cmd.dateRetraitPrevue?`\nRDV : ${fmtDate(cmd.dateRetraitPrevue)}`:''}\n\nMerci pour votre confiance !`;
 
     const notif = { id: uid('notif_'), clientId: finalClientId, message: msgDepose, canal: client.canalPref || 'SMS', date: new Date().toISOString() };
 
@@ -1572,7 +1642,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
                     } else {
                       updateSite({ ...site, services: [...site.services, { id: uid('svc_'), nom: newServiceNom.trim(), prix: Number(newServicePrix), categorie: newServiceCat }] });
                     }
-                    setNewServiceNom(''); setNewServicePrix(''); setNewServiceCat('Nettoyage complet');
+                    setNewServiceNom(''); setNewServicePrix(''); setNewServiceCat('Nettoyage');
                   }}>
                   {editServiceId ? 'Modifier' : 'Ajouter'}
                 </button>
@@ -1605,7 +1675,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
           )}
 
           {/* Articles groupés par catégorie */}
-          {['Nettoyage complet','Repassage','Nettoyage + Repassage','Retouche','Maison','Autres','Nettoyage'].map(cat => {
+          {['Nettoyage','Nettoyage + Repassage','Repassage','Retouche','Autres'].map(cat => {
             const items = site.services.filter(s => s.categorie === cat);
             if(items.length === 0) return null;
             return (
@@ -1631,9 +1701,18 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
               return (
                 <div key={l.serviceId} style={{display:'flex', alignItems:'center', justifyContent:'space-between', padding:'6px 0', borderBottom:'1px solid var(--line)'}}>
                   <span style={{fontSize:13.5}}>{svc.nom}</span>
-                  <div style={{display:'flex', alignItems:'center', gap:8}}>
+                  <div style={{display:'flex', alignItems:'center', gap:6}}>
                     <button className="btn btn-sm" style={{padding:'2px 9px'}} onClick={()=>setQte(l.serviceId, l.qte-1)}>−</button>
-                    <span className="mono" style={{minWidth:18, textAlign:'center'}}>{l.qte}</span>
+                    <input
+                      type="number"
+                      value={l.qte}
+                      min={1}
+                      onChange={e=>{
+                        const v = parseInt(e.target.value);
+                        if(!isNaN(v) && v > 0) setQte(l.serviceId, v);
+                      }}
+                      style={{width:48, textAlign:'center', padding:'3px 4px', fontFamily:'monospace', fontSize:13}}
+                    />
                     <button className="btn btn-sm" style={{padding:'2px 9px'}} onClick={()=>setQte(l.serviceId, l.qte+1)}>+</button>
                     <span className="mono" style={{minWidth:90, textAlign:'right'}}>{fmtGNF(svc.prix*l.qte)}</span>
                   </div>
@@ -1682,13 +1761,17 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
           </div>
         )}
 
-        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:10}}>
+        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10}}>
           <div>
-            <label>Date de retrait prévue</label>
-            <input type="date" value={dateRetrait} onChange={e=>setDateRetrait(e.target.value)} min={todayISO()} />
+            <label>RDV de récupération</label>
+            <input type="date" value={dateRdv||''} onChange={e=>setDateRdv(e.target.value)} min={todayISO()} />
           </div>
           <div>
-            <label>Notes (optionnel)</label>
+            <label>Heure du RDV</label>
+            <input type="time" value={heureRdv||''} onChange={e=>setHeureRdv(e.target.value)} />
+          </div>
+          <div>
+            <label>Notes</label>
             <input type="text" placeholder="Tache, bouton manquant…" value={notes} onChange={e=>setNotes(e.target.value)} />
           </div>
         </div>
@@ -1809,6 +1892,120 @@ function ModalShell({ title, children, onClose, width=520 }){
   );
 }
 
+function EditCommandeModal({ cmd, site, updateSite, onClose }){
+  const [notes, setNotes] = useState(cmd.notes || '');
+  const [dateRetrait, setDateRetrait] = useState(cmd.dateRetraitPrevue || '');
+  const [dateRdv, setDateRdv] = useState(cmd.dateRdvRecuperation || '');
+  const [heureRdv, setHeureRdv] = useState(cmd.heureRdvRecuperation || '');
+
+  function save(){
+    updateSite({
+      ...site,
+      commandes: site.commandes.map(c => c.id===cmd.id ? {
+        ...c, notes: notes.trim(),
+        dateRetraitPrevue: dateRetrait || null,
+        dateRdvRecuperation: dateRdv || null,
+        heureRdvRecuperation: heureRdv || null,
+      } : c)
+    });
+    onClose();
+  }
+
+  return (
+    <ModalShell title={`Modifier commande ${cmd.numero}`} onClose={onClose} width={440}>
+      <div style={{display:'grid', gap:14}}>
+        <div><label>RDV de récupération</label>
+          <input type="date" value={dateRetrait} onChange={e=>setDateRetrait(e.target.value)} min={todayISO()} />
+        </div>
+        <div>
+          <label>Rendez-vous de récupération</label>
+          <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:10}}>
+            <input type="date" value={dateRdv} onChange={e=>setDateRdv(e.target.value)} min={todayISO()} />
+            <input type="time" value={heureRdv} onChange={e=>setHeureRdv(e.target.value)} />
+          </div>
+        </div>
+        <div><label>Notes</label>
+          <input type="text" value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Tache, bouton manquant…" />
+        </div>
+        <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
+          <button className="btn" onClick={onClose}>Annuler</button>
+          <button className="btn btn-rust" onClick={save}>Enregistrer</button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ===================== IMPRESSION TICKET PDF ===================== */
+
+function imprimerTicket(cmd, site, client, total, acompte, solde, caissier){
+  const lignesHTML = cmd.lignes.map(l => {
+    const svc = site.services.find(s=>s.id===l.serviceId);
+    if(!svc) return '';
+    return `<tr><td style="padding:4px 0">${l.qte}x ${svc.nom}</td><td style="padding:4px 0;text-align:right;font-family:monospace">${fmtGNF(svc.prix*l.qte)}</td></tr>`;
+  }).join('');
+
+  const rabaisHTML = cmd.rabais > 0 ? `
+    <tr><td style="padding:4px 0;color:#666">Sous-total</td><td style="padding:4px 0;text-align:right;font-family:monospace;color:#666">${fmtGNF(cmd.totalBrut||total)}</td></tr>
+    <tr><td style="padding:4px 0;color:#c05c2c">🏷️ Rabais</td><td style="padding:4px 0;text-align:right;font-family:monospace;color:#c05c2c">− ${fmtGNF(cmd.rabais)}</td></tr>` : '';
+
+  const paiementHTML = acompte > 0 ? `
+    <tr><td style="padding:4px 0;color:#2d6a4f">Acompte versé</td><td style="padding:4px 0;text-align:right;font-family:monospace;color:#2d6a4f">${fmtGNF(acompte)}</td></tr>
+    <tr style="font-weight:700;color:${solde>0?'#c0392b':'#2d6a4f'}"><td style="padding:4px 0">${solde>0?'Solde restant':'✔️ Entièrement payé'}</td><td style="padding:4px 0;text-align:right;font-family:monospace">${solde>0?fmtGNF(solde):''}</td></tr>` : '';
+
+  const rdvHTML = cmd.dateRdvRecuperation ? `<p style="margin:4px 0;font-size:12px;color:#2d4a3e;font-weight:600">🕐 RDV : ${fmtDate(cmd.dateRdvRecuperation)}${cmd.heureRdvRecuperation?' à '+cmd.heureRdvRecuperation:''}</p>` : '';
+  const retraitHTML = cmd.dateRetraitPrevue ? `<p style="margin:4px 0;font-size:12px;color:#666">📅 RDV : ${fmtDate(cmd.dateRetraitPrevue)}</p>` : '';
+
+  const html = `<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8">
+<title>Ticket ${cmd.numero}</title>
+<style>
+  @page { size: 80mm auto; margin: 8mm; }
+  @media print { body { margin:0; } button { display:none; } }
+  body { font-family: Arial, sans-serif; font-size: 13px; color: #1a1a1a; max-width: 280px; margin: 0 auto; padding: 8px; }
+  h2 { text-align:center; font-size:16px; margin:0 0 4px; }
+  .center { text-align:center; }
+  .mono { font-family:monospace; }
+  .sep { border-top: 1px dashed #999; margin: 8px 0; }
+  table { width:100%; border-collapse:collapse; }
+  .total-row td { font-weight:700; font-size:15px; border-top:1px dashed #999; padding-top:6px; }
+  .disclaimer { font-size:10px; color:#7a5c00; background:#fef3c7; padding:6px; border-radius:4px; margin-top:8px; line-height:1.4; }
+  .footer { font-size:10px; color:#666; margin-top:6px; display:flex; justify-content:space-between; }
+  .btn-print { display:block; width:100%; padding:10px; background:#2d4a3e; color:white; border:none; font-size:14px; cursor:pointer; border-radius:6px; margin-top:12px; }
+</style>
+</head><body>
+<h2>${site.nom}</h2>
+<p class="center" style="margin:2px 0;font-size:11px;color:#666">${site.adresse}</p>
+<p class="center" style="margin:2px 0;font-size:11px;color:#666">${site.tel}</p>
+<div class="sep"></div>
+<p class="center mono" style="font-size:15px;font-weight:700;margin:4px 0">${cmd.numero}</p>
+<p class="center" style="font-size:11px;color:#666;margin:2px 0">${new Date(cmd.dateCreation).toLocaleString('fr-FR')}</p>
+<p style="margin:6px 0"><strong>${client ? client.nom : 'Client'}</strong>${client&&client.tel?' — '+client.tel:''}</p>
+<div class="sep"></div>
+<table>
+  ${lignesHTML}
+  ${rabaisHTML}
+  <tr class="total-row"><td>Total à payer</td><td style="text-align:right;font-family:monospace">${fmtGNF(total)}</td></tr>
+  ${paiementHTML}
+</table>
+<div class="sep"></div>
+${retraitHTML}
+${rdvHTML}
+${cmd.notes ? `<p style="font-size:11px;color:#666;margin:4px 0">📝 ${cmd.notes}</p>` : ''}
+<div class="footer">
+  <span>Par : ${caissier ? caissier.nom : 'Caissier'}</span>
+  <span>${new Date(cmd.dateCreation).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}</span>
+</div>
+<div class="disclaimer">⚠️ Maci Pressing ne sera pas responsable des articles non récupérés après <strong>45 jours</strong> de dépôt. Passé ce délai, les articles seront considérés comme abandonnés.</div>
+<button class="btn-print" onclick="window.print()">🖨️ Imprimer</button>
+</body></html>`;
+
+  const win = window.open('', '_blank', 'width=350,height=600');
+  win.document.write(html);
+  win.document.close();
+}
+
 function TicketModal({ cmd, site, onClose }){
   const client = site.clients.find(c => c.id === cmd.clientId);
   const total = calcCommandeTotal(cmd, site.services);
@@ -1876,11 +2073,15 @@ function TicketModal({ cmd, site, onClose }){
           <span className={`tag ${STATUT_TAG_CLASS[cmd.statut]}`}>{cmd.statut}</span>
           <span className={`tag ${cmd.paiement==='paye'?'tag-paye':'tag-impaye'}`}>{cmd.paiement==='paye'?'Payé':'Impayé'}</span>
         </div>
-        {cmd.dateRetraitPrevue && <div style={{fontSize:12, color:'var(--steam)', marginTop:8}}>Retrait prévu : {fmtDate(cmd.dateRetraitPrevue)}</div>}
-        {cmd.notes && <div style={{fontSize:12, color:'var(--steam)', marginTop:4}}>Note : {cmd.notes}</div>}
+        {cmd.dateRetraitPrevue && <div style={{fontSize:12, color:'var(--steam)', marginTop:8}}>📅 RDV : {fmtDate(cmd.dateRetraitPrevue)}</div>}
+        {cmd.dateRdvRecuperation && <div style={{fontSize:12, color:'var(--pine)', marginTop:4, fontWeight:600}}>🕐 RDV récupération : {fmtDate(cmd.dateRdvRecuperation)}{cmd.heureRdvRecuperation ? ` à ${cmd.heureRdvRecuperation}` : ''}</div>}
+        {cmd.notes && <div style={{fontSize:12, color:'var(--steam)', marginTop:4}}>📝 {cmd.notes}</div>}
         <div style={{borderTop:'1px dashed var(--line-strong)', marginTop:10, paddingTop:8, fontSize:11.5, color:'var(--steam)', display:'flex', justifyContent:'space-between'}}>
           <span>Enregistré par : <strong style={{color:'var(--ink)'}}>{caissier ? caissier.nom : 'Caissier'}</strong></span>
           <span className="mono">{new Date(cmd.dateCreation).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}</span>
+        </div>
+        <div style={{marginTop:10, padding:'8px 10px', background:'#FEF3C7', borderRadius:6, fontSize:10.5, color:'#92400E', lineHeight:1.5}}>
+          ⚠️ <strong>Avis important :</strong> Maci Pressing ne sera pas responsable des articles non récupérés après <strong>45 jours</strong> de dépôt. Passé ce délai, les articles seront considérés comme abandonnés.
         </div>
       </div>
       <div className="no-print" style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:16}}>
@@ -1889,7 +2090,9 @@ function TicketModal({ cmd, site, onClose }){
           📱 WhatsApp
         </button>
         <div style={{display:'flex', gap:8}}>
-          <button className="btn btn-sm" onClick={()=>window.print()}><Icon name="print" size={14}/> Imprimer</button>
+          <button className="btn btn-sm" onClick={()=>imprimerTicket(cmd, site, client, total, acompte, solde, caissier)}>
+            <Icon name="print" size={14}/> Imprimer / PDF
+          </button>
           <button className="btn btn-rust btn-sm" onClick={onClose}>Fermer</button>
         </div>
       </div>
@@ -2363,6 +2566,7 @@ function DepensesView({ site, updateSite }){
   const [showNew, setShowNew] = useState(false);
   const [filterMois, setFilterMois] = useState(todayISO().slice(0,7));
   const [confirmDep, setConfirmDep] = useState(null);
+  const [editDep, setEditDep] = useState(null);
 
   const depenses = (site.depenses || []);
 
@@ -2386,6 +2590,11 @@ function DepensesView({ site, updateSite }){
     updateSite({ ...site, depenses: depenses.filter(d=>d.id!==id) });
   }
 
+  function saveEditDepense(updated){
+    updateSite({ ...site, depenses: depenses.map(d => d.id===updated.id ? updated : d) });
+    setEditDep(null);
+  }
+
   // Liste des mois disponibles
   const moisDisponibles = useMemo(() => {
     const mois = new Set(depenses.map(d=>d.date.slice(0,7)));
@@ -2402,7 +2611,7 @@ function DepensesView({ site, updateSite }){
       <div style={{display:'flex', gap:10, marginBottom:18, alignItems:'center', flexWrap:'wrap'}}>
         <select value={filterMois} onChange={e=>setFilterMois(e.target.value)} style={{width:'auto', minWidth:160}}>
           {moisDisponibles.map(m => (
-            <option key={m} value={m}>{new Date(m+'-01').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})}</option>
+            <option key={m} value={m}>{new Date(m + '-15T12:00:00').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})}</option>
           ))}
         </select>
       </div>
@@ -2442,9 +2651,14 @@ function DepensesView({ site, updateSite }){
                 <td style={td}><span className="tag tag-recu">{d.categorie}</span></td>
                 <td style={{...td, color:'var(--danger)', fontWeight:600}} className="mono">{fmtGNF(d.montant)}</td>
                 <td style={{...td, textAlign:'right'}}>
-                  <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>setConfirmDep(d)}>
-                    <Icon name="trash" size={14}/>
-                  </button>
+                  <div style={{display:'flex', gap:6, justifyContent:'flex-end'}}>
+                    <button className="btn btn-ghost btn-sm" style={{color:'var(--pine)'}} onClick={()=>setEditDep({...d})}>
+                      <Icon name="edit" size={14}/>
+                    </button>
+                    <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>setConfirmDep(d)}>
+                      <Icon name="trash" size={14}/>
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -2460,11 +2674,29 @@ function DepensesView({ site, updateSite }){
       </div>
 
       {showNew && <NewDepenseModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
-      {confirmDep && <ConfirmDelete db={db}
-        message={`Supprimer la dépense « ${confirmDep.description} » (${fmtGNF(confirmDep.montant)}) ?`}
+      {showNew && <NewDepenseModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
+      {confirmDep && <ConfirmDelete db={site} message={`Supprimer la dépense « ${confirmDep.description} » (${fmtGNF(confirmDep.montant)}) ?`}
         onConfirm={()=>{ removeDepense(confirmDep.id); setConfirmDep(null); }}
-        onCancel={()=>setConfirmDep(null)}
-      />}
+        onCancel={()=>setConfirmDep(null)} />}
+      {editDep && (
+        <ModalShell title="Modifier la dépense" onClose={()=>setEditDep(null)} width={420}>
+          <div style={{display:'grid', gap:14}}>
+            <div><label>Date</label><input type="date" value={editDep.date} onChange={e=>setEditDep({...editDep, date:e.target.value})} /></div>
+            <div>
+              <label>Catégorie</label>
+              <select value={editDep.categorie} onChange={e=>setEditDep({...editDep, categorie:e.target.value})}>
+                {CATEGORIES_DEPENSES.map(c => <option key={c}>{c}</option>)}
+              </select>
+            </div>
+            <div><label>Description</label><input type="text" value={editDep.description} onChange={e=>setEditDep({...editDep, description:e.target.value})} /></div>
+            <div><label>Montant (GNF)</label><input type="number" value={editDep.montant} onChange={e=>setEditDep({...editDep, montant:Number(e.target.value)})} /></div>
+            <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
+              <button className="btn" onClick={()=>setEditDep(null)}>Annuler</button>
+              <button className="btn btn-rust" onClick={()=>saveEditDepense(editDep)} disabled={!editDep.description||!editDep.montant}>Enregistrer</button>
+            </div>
+          </div>
+        </ModalShell>
+      )}
     </div>
   );
 }
@@ -2602,7 +2834,7 @@ function RemunerationGerantView({ site }){
       <div style={{display:'flex', gap:10, marginBottom:18, flexWrap:'wrap', alignItems:'center'}}>
         <select value={filterMois} onChange={e=>setFilterMois(e.target.value)} style={{width:'auto', minWidth:160}}>
           {moisDisponibles.map(m => (
-            <option key={m} value={m}>{new Date(m+'-01').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})}</option>
+            <option key={m} value={m}>{new Date(m + '-15T12:00:00').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})}</option>
           ))}
         </select>
         {['repasseurs','caissiers','tout'].map(o => (
@@ -3503,7 +3735,7 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
             <div style={{display:'flex', gap:10, marginBottom:14, alignItems:'center'}}>
               <select value={filterMois} onChange={e=>setFilterMois(e.target.value)} style={{width:'auto', minWidth:160}}>
                 {moisDisponibles.map(m => (
-                  <option key={m} value={m}>{new Date(m+'-01').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})}</option>
+                  <option key={m} value={m}>{new Date(m + '-15T12:00:00').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})}</option>
                 ))}
               </select>
             </div>
@@ -3545,7 +3777,7 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
         <label style={{margin:0}}>Mois :</label>
         <select value={filterMois} onChange={e=>setFilterMois(e.target.value)} style={{width:'auto', minWidth:160}}>
           {moisDisponibles.map(m => (
-            <option key={m} value={m}>{new Date(m+'-01').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})}</option>
+            <option key={m} value={m}>{new Date(m + '-15T12:00:00').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})}</option>
           ))}
         </select>
       </div>
@@ -3587,6 +3819,99 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
 
 /* ===================== ESPACE EMPLOYE (lié à un site) ===================== */
 
+/* ===================== VUE REPASSEUR (limitée) ===================== */
+
+function RepasseurView({ site, updateSite, employeId }){
+  const [confirmPret, setConfirmPret] = useState(null);
+
+  // Seulement les commandes En cours ou Reçu
+  const commandes = (site.commandes||[])
+    .filter(c => c.statut === 'Reçu' || c.statut === 'En cours')
+    .sort((a,b) => new Date(a.dateCreation) - new Date(b.dateCreation));
+
+  function marquerPret(cmd){
+    const config = site.configRemuneration || {};
+    const tarifsRepassage = config.tarifsRepassage || [];
+    const nextSite = { ...site, commandes: site.commandes.map(c => c.id===cmd.id ? {...c, statut:'Prêt'} : c) };
+
+    // Calcul automatique rémunération
+    if(tarifsRepassage.length > 0){
+      const articlesRepasses = [];
+      cmd.lignes.forEach(l => {
+        const svc = site.services.find(s=>s.id===l.serviceId);
+        if(!svc) return;
+        const tarif = tarifsRepassage.find(t =>
+          svc.nom.toLowerCase().includes(t.nom.toLowerCase()) ||
+          t.nom.toLowerCase().includes(svc.nom.toLowerCase())
+        );
+        if(tarif) articlesRepasses.push({ nom: tarif.nom, prix: tarif.prix, qte: l.qte });
+      });
+      if(articlesRepasses.length > 0){
+        const montant = articlesRepasses.reduce((s,a)=>s+(a.prix*a.qte),0);
+        const detail = articlesRepasses.map(a=>`${a.qte}x ${a.nom} (${fmtGNF(a.prix)})`).join(', ');
+        const rem = { id: uid('rem_'), date: todayISO(), type:'repassage', montant, detail, commandeNumero: cmd.numero, employeId, auto: true };
+        nextSite.remunerations = [rem, ...(nextSite.remunerations||[])];
+      }
+    }
+    updateSite(nextSite);
+    setConfirmPret(null);
+  }
+
+  return (
+    <div>
+      <PageHeader title="Commandes à repasser" subtitle={`${commandes.length} commande(s) en attente`} />
+
+      {commandes.length === 0 ? (
+        <div className="card" style={{padding:'2rem', textAlign:'center', color:'var(--steam)'}}>
+          <div style={{fontSize:32, marginBottom:8}}>✅</div>
+          <div style={{fontSize:15, fontWeight:600}}>Toutes les commandes sont repassées !</div>
+        </div>
+      ) : (
+        <div style={{display:'grid', gap:12}}>
+          {commandes.map(cmd => (
+            <div key={cmd.id} className="card" style={{padding:'1.1rem 1.25rem', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+              <div>
+                <div style={{fontWeight:700, fontSize:15}} className="mono">{cmd.numero}</div>
+                <div style={{fontSize:13, color:'var(--steam)', marginTop:3}}>
+                  {cmd.lignes.reduce((s,l)=>s+l.qte,0)} article(s) · {fmtDate(cmd.dateCreation.slice(0,10))}
+                </div>
+                <div style={{display:'flex', gap:6, marginTop:6, flexWrap:'wrap'}}>
+                  {cmd.lignes.map(l => {
+                    const svc = site.services.find(s=>s.id===l.serviceId);
+                    return svc ? (
+                      <span key={l.serviceId} style={{fontSize:12, background:'var(--paper-2)', padding:'2px 8px', borderRadius:6}}>
+                        {l.qte}x {svc.nom}
+                      </span>
+                    ) : null;
+                  })}
+                </div>
+                {cmd.notes && <div style={{fontSize:12, color:'var(--steam)', marginTop:4}}>📝 {cmd.notes}</div>}
+              </div>
+              <div style={{display:'flex', flexDirection:'column', gap:8, alignItems:'flex-end'}}>
+                <span className={`tag ${STATUT_TAG_CLASS[cmd.statut]}`}>{cmd.statut}</span>
+                <button className="btn btn-rust" onClick={()=>setConfirmPret(cmd)}>
+                  ✅ Marquer Prêt
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {confirmPret && (
+        <ModalShell title="Confirmer" onClose={()=>setConfirmPret(null)} width={360}>
+          <p style={{fontSize:14}}>Marquer la commande <strong>{confirmPret.numero}</strong> comme <strong>Prête</strong> ?</p>
+          <p style={{fontSize:13, color:'var(--steam)'}}>Cela enregistrera automatiquement votre rémunération pour cette commande.</p>
+          <div style={{display:'flex', gap:10, justifyContent:'flex-end', marginTop:16}}>
+            <button className="btn" onClick={()=>setConfirmPret(null)}>Annuler</button>
+            <button className="btn btn-rust" onClick={()=>marquerPret(confirmPret)}>Confirmer</button>
+          </div>
+        </ModalShell>
+      )}
+    </div>
+  );
+}
+
 function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
   const [page, setPage] = useState('caisse');
   const site = db.sites.find(s => s.id === siteId);
@@ -3606,6 +3931,23 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
     );
   }
 
+  const monProfil = employeId ? site.employes.find(e=>e.id===employeId) : null;
+  const isRepasseur = monProfil && monProfil.role === 'Repasseur';
+
+  // Espace repasseur — vue limitée
+  if(isRepasseur){
+    return (
+      <Shell title={site.nom} role={`Repasseur — ${monProfil.nom}`} navItems={[
+        { key:'repassage', label:'Repassage', icon:'shirt' },
+        { key:'remuneration', label:'Ma rémunération', icon:'chart' },
+      ]} active={page} onNav={setPage} onLogout={onLogout}>
+        {page === 'repassage' && <RepasseurView site={site} updateSite={updateSite} employeId={employeId} />}
+        {page === 'remuneration' && <RemunerationView site={site} updateSite={updateSite} db={db} siteId={siteId} employeId={employeId} />}
+      </Shell>
+    );
+  }
+
+  // Espace caissier/autre employé — vue complète
   const navItems = [
     { key:'caisse', label:'Caisse', icon:'ticket' },
     { key:'clients', label:'Clients', icon:'users' },
