@@ -445,19 +445,7 @@ function App(){
       }
     }
 
-    
-    const unsubscribe = subscribeToDB(DB_KEY, (data) => {
-      try{
-        const parsed = typeof data === 'string' ? JSON.parse(data) : data;
-        setDb(parsed);
-        // Sauvegarder localement pour le mode hors ligne
-        localStorage.setItem('maci-pressing-local', JSON.stringify(parsed));
-      }catch(e){ console.error('parse error', e); }
-      setLoading(false);
-    });
-
-    // Premier chargement : si pas de données, crée la base vide
-    (async () => {let unsubscribeDB = null;
+    let unsubscribeDB = null;
 
     // Sécurité Firebase : on s'authentifie (anonymement) avant de lire/écrire la base
     const unsubscribeAuth = firebaseAuth.onAuthStateChanged((user) => {
@@ -487,9 +475,7 @@ function App(){
     });
 
     return () => { unsubscribeAuth(); if(unsubscribeDB) unsubscribeDB(); };
-  }, []);
-
-  const persist = useCallback((next) => {
+  }, []);const persist = useCallback((next) => {
     setDb(next);
     if(saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
