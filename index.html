@@ -25,6 +25,7 @@
 <!-- Firebase SDK -->
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 <script>
   const firebaseConfig = {
     apiKey: "AIzaSyC9CbMGfZhcMIgOYwhywLdLqljIoPyCfGI",
@@ -37,6 +38,7 @@
   };
   firebase.initializeApp(firebaseConfig);
   const firebaseDB = firebase.database();
+  const firebaseAuth = firebase.auth();
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -443,7 +445,7 @@ function App(){
       }
     }
 
-    // En ligne : écoute en temps réel Firebase
+    
     const unsubscribe = subscribeToDB(DB_KEY, (data) => {
       try{
         const parsed = typeof data === 'string' ? JSON.parse(data) : data;
@@ -455,15 +457,36 @@ function App(){
     });
 
     // Premier chargement : si pas de données, crée la base vide
-    (async () => {
-      const raw = await storageGet(DB_KEY);
-      if(!raw){
-        const fresh = emptyDB();
-        await storageSet(DB_KEY, JSON.stringify(fresh));
-      }
-    })();
+    (async () => {let unsubscribeDB = null;
 
-    return unsubscribe;
+    // Sécurité Firebase : on s'authentifie (anonymement) avant de lire/écrire la base
+    const unsubscribeAuth = firebaseAuth.onAuthStateChanged((user) => {
+      if(!user){
+        firebaseAuth.signInAnonymously().catch(err => console.error('Erreur connexion sécurisée Firebase:', err));
+        return;
+      }
+
+      // En ligne et authentifié : écoute en temps réel Firebase
+      unsubscribeDB = subscribeToDB(DB_KEY, (data) => {
+        try{
+          const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+          setDb(parsed);
+          localStorage.setItem('maci-pressing-local', JSON.stringify(parsed));
+        }catch(e){ console.error('parse error', e); }
+        setLoading(false);
+      });
+
+      // Premier chargement : si pas de données, crée la base vide
+      (async () => {
+        const raw = await storageGet(DB_KEY);
+        if(!raw){
+          const fresh = emptyDB();
+          await storageSet(DB_KEY, JSON.stringify(fresh));
+        }
+      })();
+    });
+
+    return () => { unsubscribeAuth(); if(unsubscribeDB) unsubscribeDB(); };
   }, []);
 
   const persist = useCallback((next) => {
