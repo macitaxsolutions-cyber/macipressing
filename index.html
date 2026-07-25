@@ -1272,6 +1272,7 @@ function CommandesView({ site, updateSite, editable, employeId }){
   const [openTicket, setOpenTicket] = useState(null);
   const [editCmd, setEditCmd] = useState(null);
   const [confirmDeleteCmd, setConfirmDeleteCmd] = useState(null);
+  const [encaisserCmd, setEncaisserCmd] = useState(null);
 
   const monProfil = employeId ? site.employes.find(e=>e.id===employeId) : null;
   const isRepasseur = monProfil && monProfil.role === 'Repasseur';
@@ -1364,6 +1365,12 @@ function CommandesView({ site, updateSite, editable, employeId }){
   function togglePaiement(cmd){
     updateCommande({ ...cmd, paiement: cmd.paiement === 'paye' ? 'impaye' : 'paye' });
   }
+  function enregistrerPaiement(cmd, montant){
+    const total = calcCommandeTotal(cmd, site.services);
+    const nouvelAcompte = Math.min((Number(cmd.acompte)||0) + Number(montant), total);
+    const updated = { ...cmd, acompte: nouvelAcompte, paiement: nouvelAcompte >= total ? 'paye' : 'impaye' };
+    updateSite({ ...site, commandes: site.commandes.map(c => c.id === updated.id ? updated : c) });
+  }
 
   return (
     <div>
@@ -1451,6 +1458,48 @@ function CommandesView({ site, updateSite, editable, employeId }){
                       {editable && (
                         <button className="btn btn-sm" onClick={()=>togglePaiement(cmd)}>{cmd.paiement==='paye' ? 'Marquer impayé' : 'Marquer payé'}</button>
                       )}
+ {confirmDeleteCmd && <ConfirmDelete db={site} message={`Supprimer définitivement la commande ${confirmDeleteCmd.numero} ? Cette action est irréversible.`}
+        onConfirm={()=>{ deleteCommande(confirmDeleteCmd.id); setConfirmDeleteCmd(null); }}
+        onCancel={()=>setConfirmDeleteCmd(null)} />}
+      {encaisserCmd && <EncaisserModal cmd={encaisserCmd} site={site} onClose={()=>setEncaisserCmd(null)} onSave={(montant)=>enregistrerPaiement(encaisserCmd, montant)} />}
+    </div>
+  );
+}
+
+function EncaisserModal({ cmd, site, onClose, onSave }){
+  const total = calcCommandeTotal(cmd, site.services);
+  const soldeActuel = total - (Number(cmd.acompte)||0);
+  const [montant, setMontant] = useState(String(soldeActuel > 0 ? soldeActuel : 0));
+
+  return (
+    <ModalShell title={`Encaisser — ${cmd.numero}`} onClose={onClose} width={380}>
+      <div style={{display:'grid', gap:14}}>
+        <div style={{background:'var(--paper-2)', borderRadius:8, padding:'10px 14px', fontSize:13}}>
+          <div style={{display:'flex', justifyContent:'space-between'}}>
+            <span>Total commande</span><span className="mono">{fmtGNF(total)}</span>
+          </div>
+          <div style={{display:'flex', justifyContent:'space-between'}}>
+            <span>Déjà payé</span><span className="mono">{fmtGNF(Number(cmd.acompte)||0)}</span>
+          </div>
+          <div style={{display:'flex', justifyContent:'space-between', fontWeight:700, color: soldeActuel>0 ? 'var(--danger)' : 'var(--ok)', borderTop:'1px dashed var(--line-strong)', marginTop:6, paddingTop:6}}>
+            <span>Solde restant</span><span className="mono">{fmtGNF(soldeActuel)}</span>
+          </div>
+        </div>
+        <div>
+          <label>Montant que le client paie maintenant</label>
+          <input type="number" value={montant} onChange={e=>setMontant(e.target.value)} min={0} max={soldeActuel} autoFocus />
+          <p style={{fontSize:12, color:'var(--steam)', margin:'6px 0 0', lineHeight:1.4}}>
+            Si le client récupère ses articles sans tout régler, entrez ici seulement ce qu'il paie réellement — le reste restera enregistré comme solde dû.
+          </p>
+        </div>
+        <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
+          <button className="btn" onClick={onClose}>Annuler</button>
+          <button className="btn btn-rust" disabled={!montant || Number(montant)<=0} onClick={()=>{ onSave(Number(montant)); onClose(); }}>Enregistrer le paiement</button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}                     
                     </div>
                   </td>
                 </tr>
