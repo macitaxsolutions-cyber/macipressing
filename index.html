@@ -1308,6 +1308,7 @@ function CommandesView({ site, updateSite, editable, employeId }){
   const [editCmd, setEditCmd] = useState(null);
   const [confirmDeleteCmd, setConfirmDeleteCmd] = useState(null);
   const [encaisserCmd, setEncaisserCmd] = useState(null);
+  const [showNewClient, setShowNewClient] = useState(false);
 
   const monProfil = employeId ? site.employes.find(e=>e.id===employeId) : null;
   const isRepasseur = monProfil && monProfil.role === 'Repasseur';
@@ -1412,7 +1413,12 @@ function CommandesView({ site, updateSite, editable, employeId }){
       <PageHeader
         title="Commandes"
         subtitle={`${site.commandes.length} commande(s) au total`}
-        right={editable ? <button className="btn btn-rust" onClick={()=>setShowNew(true)}><Icon name="plus" size={15}/> Nouvelle commande</button> : null}
+        right={editable ? (
+          <div style={{display:'flex', gap:10}}>
+            <button className="btn" onClick={()=>setShowNewClient(true)}><Icon name="plus" size={15}/> Nouveau client</button>
+            <button className="btn btn-rust" onClick={()=>setShowNew(true)}><Icon name="plus" size={15}/> Nouvelle commande</button>
+          </div>
+        ) : null}
       />
 
       <div style={{display:'flex', gap:10, marginBottom:18, flexWrap:'wrap', alignItems:'center'}}>
@@ -1511,6 +1517,7 @@ function CommandesView({ site, updateSite, editable, employeId }){
       {confirmDeleteCmd && <ConfirmDelete db={site} message={`Supprimer définitivement la commande ${confirmDeleteCmd.numero} ? Cette action est irréversible.`}
         onConfirm={()=>{ deleteCommande(confirmDeleteCmd.id); setConfirmDeleteCmd(null); }}
         onCancel={()=>setConfirmDeleteCmd(null)} />}
+      {showNewClient && <NewClientModal site={site} updateSite={updateSite} onClose={()=>setShowNewClient(false)} />}
       {encaisserCmd && <EncaisserModal cmd={encaisserCmd} site={site} onClose={()=>setEncaisserCmd(null)} onSave={(montant)=>enregistrerPaiement(encaisserCmd, montant)} />}
     </div>
   );
@@ -3172,11 +3179,24 @@ function ParametresView({ site, updateSite, db, setDb }){
   const [adresse, setAdresse] = useState(site.adresse);
   const [tel, setTel] = useState(site.tel);
   const [savedFlash, setSavedFlash] = useState(false);
-  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [resetScope, setResetScope] = useState(null); // 'jour' | 'mois' | 'tout'
+
+  function countForScope(scope){
+    const today = todayISO();
+    if(scope === 'jour') return site.commandes.filter(c => c.dateCreation.slice(0,10) === today).length;
+    if(scope === 'mois') return site.commandes.filter(c => c.dateCreation.slice(0,7) === today.slice(0,7)).length;
+    return site.commandes.length;
+  }
 
   function resetCommandes(){
-    updateSite({ ...site, commandes: [], seq: 1 });
-    setShowResetConfirm(false);
+    if(!resetScope) return;
+    const today = todayISO();
+    let remaining;
+    if(resetScope === 'jour') remaining = site.commandes.filter(c => c.dateCreation.slice(0,10) !== today);
+    else if(resetScope === 'mois') remaining = site.commandes.filter(c => c.dateCreation.slice(0,7) !== today.slice(0,7));
+    else remaining = [];
+    updateSite({ ...site, commandes: remaining, seq: resetScope === 'tout' ? 1 : site.seq });
+    setResetScope(null);
   }
 
   // Changement mot de passe gérant
@@ -3316,19 +3336,27 @@ function ParametresView({ site, updateSite, db, setDb }){
           🗓️ Réinitialiser les commandes de ce site
         </h3>
         <p style={{fontSize:13, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.6}}>
-          Efface définitivement <strong>toutes les commandes</strong> de « {site.nom} » (historique, statuts, paiements) et remet la numérotation des tickets à zéro.
-          <strong> Vos clients, employés, services, stock et dépenses restent intacts.</strong> Utile pour repartir sur une nouvelle période (ex: début du mois d'août).
+          Choisissez la période à effacer pour « {site.nom} ».
+          <strong> Vos clients, employés, services, stock et dépenses restent toujours intacts.</strong>
         </p>
-        <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)'}} onClick={()=>setShowResetConfirm(true)}>
-          <Icon name="trash" size={14}/> Réinitialiser les commandes
-        </button>
+        <div style={{display:'flex', gap:10, flexWrap:'wrap'}}>
+          <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)'}} onClick={()=>setResetScope('jour')}>
+            <Icon name="trash" size={14}/> Aujourd'hui ({countForScope('jour')})
+          </button>
+          <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)'}} onClick={()=>setResetScope('mois')}>
+            <Icon name="trash" size={14}/> Ce mois-ci ({countForScope('mois')})
+          </button>
+          <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)'}} onClick={()=>setResetScope('tout')}>
+            <Icon name="trash" size={14}/> Toute la période ({countForScope('tout')})
+          </button>
+        </div>
       </div>
 
-      {showResetConfirm && (
+      {resetScope && (
         <ConfirmDelete db={db}
-          message={`Effacer TOUTES les commandes de « ${site.nom} » ? Les clients, employés, services et stock ne seront pas touchés. Cette action est irréversible.`}
+          message={`Effacer ${countForScope(resetScope)} commande(s) — ${resetScope==='jour' ? "celles d'aujourd'hui" : resetScope==='mois' ? 'celles de ce mois-ci' : 'TOUTES les commandes, toutes périodes confondues'} — de « ${site.nom} » ? Les clients, employés, services et stock ne seront pas touchés. Cette action est irréversible.`}
           onConfirm={resetCommandes}
-          onCancel={()=>setShowResetConfirm(false)}
+          onCancel={()=>setResetScope(null)}
         />
       )}
 
