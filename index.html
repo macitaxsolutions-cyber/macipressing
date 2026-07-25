@@ -171,6 +171,12 @@
   .ticket-perfo::before{left:-9px;}
   .ticket-perfo::after{right:-9px;}
 
+  @keyframes blinkUrgent {
+    0%, 100% { background-color: var(--danger-light); }
+    50% { background-color: #f3a5a5; }
+  }
+  .blink-urgent { animation: blinkUrgent 1s ease-in-out infinite; }
+
   @media print{
     .no-print{display:none !important;}
   }
@@ -200,6 +206,11 @@ const fmtDateTime = (iso) => {
   return d.toLocaleDateString('fr-FR',{day:'2-digit',month:'short'}) + ' à ' + d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
 };
 
+function formatMoisAnnee(m){
+  if(!m) return '';
+  return new Date(m + '-15T12:00:00').toLocaleDateString('fr-FR', {month:'long', year:'numeric'});
+}
+
 function ticketNumber(siteCode, seq){
   const d = new Date();
   const yy = String(d.getFullYear()).slice(2);
@@ -210,6 +221,12 @@ function ticketNumber(siteCode, seq){
 function siteCodeFromName(nom){
   const letters = nom.replace(/[^a-zA-Z]/g,'').toUpperCase();
   return (letters.slice(0,4) || 'MACI');
+}
+
+function capitalizeNom(str){
+  return (str||'').trim().split(/\s+/).filter(Boolean)
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
 }
 
 /* ===================== STORAGE LAYER (Firebase) ===================== */
@@ -278,6 +295,7 @@ function makeSite(nom, adresse, tel){
     notifications: [],
     employes: [],
     depenses: [],
+    corbeille: [], // éléments supprimés, conservés 30 jours
     remunerations: [], // historique des saisies de rémunération employés
     configRemuneration: {
       tarifsRepassage: [], // tarifs par article
@@ -303,6 +321,7 @@ function emptyDB(){
 
   return {
     sites: [site1, site2, site3],
+    corbeilleSites: [], // pressings supprimés, conservés 30 jours
   };
 }
 
@@ -395,6 +414,19 @@ function checkEmployePass(db, password){
   return null;
 }
 
+/* ===================== CORBEILLE (30 jours) ===================== */
+
+function purgeCorbeille(dbData){
+  if(!dbData || !dbData.sites) return dbData;
+  const cutoff = Date.now() - 30*24*60*60*1000;
+  const sites = dbData.sites.map(site => ({
+    ...site,
+    corbeille: (site.corbeille||[]).filter(e => new Date(e.dateSuppression).getTime() > cutoff)
+  }));
+  const corbeilleSites = (dbData.corbeilleSites||[]).filter(e => new Date(e.dateSuppression).getTime() > cutoff);
+  return { ...dbData, sites, corbeilleSites };
+}
+
 /* ===================== APP ROOT ===================== */
 
 function App(){
@@ -437,7 +469,7 @@ function App(){
       const localData = localStorage.getItem('maci-offline-db') || localStorage.getItem('maci-pressing-local');
       if(localData){
         try {
-          setDb(JSON.parse(localData));
+          setDb(purgeCorbeille(JSON.parse(localData)));
           setLoading(false);
           setPendingSync(true);
           return;
@@ -458,8 +490,9 @@ function App(){
       unsubscribeDB = subscribeToDB(DB_KEY, (data) => {
         try{
           const parsed = typeof data === 'string' ? JSON.parse(data) : data;
-          setDb(parsed);
-          localStorage.setItem('maci-pressing-local', JSON.stringify(parsed));
+          const purged = purgeCorbeille(parsed);
+          setDb(purged);
+          localStorage.setItem('maci-pressing-local', JSON.stringify(purged));
         }catch(e){ console.error('parse error', e); }
         setLoading(false);
       });
@@ -556,6 +589,24 @@ function RoleSelect({ db, setDb, onSelect }){
     return list;
   }, [db]);
 
+  function recordDailyCaissierExpense(siteId, emp){
+    const site = db.sites.find(s => s.id === siteId);
+    if(!site) return;
+    const today = todayISO();
+    const depenses = site.depenses || [];
+    const deja = depenses.some(d => d.autoCaissierId === emp.id && d.date === today);
+    if(deja) return;
+    const dep = {
+      id: uid('dep_'),
+      date: today,
+      description: `Salaire journalier — ${emp.nom}`,
+      montant: 50000,
+      categorie: 'Salaires',
+      autoCaissierId: emp.id,
+    };
+    setDb({ ...db, sites: db.sites.map(s => s.id === siteId ? { ...s, depenses: [dep, ...depenses] } : s) });
+  }
+
   function handleLogin(){
     if(loginRole === 'gerant'){
       if(password === getPassGerant(db)){
@@ -566,6 +617,9 @@ function RoleSelect({ db, setDb, onSelect }){
       }
     } else if(loginRole === 'employe' && selectedEmp){
       if(password === selectedEmp.emp.motdepasse){
+        if(selectedEmp.emp.role === 'Caissier'){
+          recordDailyCaissierExpense(selectedEmp.site.id, selectedEmp.emp);
+        }
         onSelect('employe', selectedEmp.site.id, null, selectedEmp.emp.id);
         setLoginRole(null); setSelectedEmp(null); setPassword(''); setError('');
       } else {
@@ -578,7 +632,7 @@ function RoleSelect({ db, setDb, onSelect }){
   function createClientAndLogin(siteId, nom, tel){
     const site = db.sites.find(s => s.id === siteId);
     if(!site || !nom.trim()) return;
-    const newClient = { id: uid('cli_'), nom: nom.trim(), tel: tel.trim(), canalPref:'SMS', dateInscription: todayISO() };
+    const newClient = { id: uid('cli_'), nom: capitalizeNom(nom), tel: tel.trim() ? `+224 ${tel.trim()}` : '', canalPref:'SMS', dateInscription: todayISO() };
     setDb({ ...db, sites: db.sites.map(s => s.id === siteId ? { ...s, clients: [...s.clients, newClient] } : s) });
     onSelect('client', siteId, newClient.id);
   }
@@ -713,7 +767,10 @@ function ClientLoginFlow({ db, onPick, onCreate, onBack }){
         <label>Créer ma fiche client — {site.nom}</label>
         <div style={{display:'grid', gap:10, marginTop:6}}>
           <input type="text" placeholder="Nom complet" value={newNom} onChange={e=>setNewNom(e.target.value)} autoFocus />
-          <input type="tel" placeholder="Téléphone" value={newTel} onChange={e=>setNewTel(e.target.value)} />
+          <div style={{display:'flex', gap:8, alignItems:'center'}}>
+            <span className="mono" style={{padding:'9px 10px', background:'var(--pine-light)', color:'var(--pine)', borderRadius:8, fontWeight:700, fontSize:13.5}}>+224</span>
+            <input type="tel" placeholder="6XX XX XX XX" value={newTel} onChange={e=>setNewTel(e.target.value)} style={{flex:1}} />
+          </div>
         </div>
         <p style={{fontSize:12, color:'var(--steam)', margin:'10px 0 0', lineHeight:1.4}}>
           Pas besoin de déposer un vêtement pour créer votre fiche — vous pourrez suivre vos futures commandes ici.
@@ -860,7 +917,9 @@ function GerantApp({ db, setDb, onLogout }){
   }
   function removeSite(id){
     if(db.sites.length <= 1) return;
-    setDb({ ...db, sites: db.sites.filter(s=>s.id!==id) });
+    const site = db.sites.find(s=>s.id===id);
+    const entry = { id: uid('trash_'), type:'site', label: site ? `Pressing : ${site.nom}` : 'Pressing', data: site, dateSuppression: new Date().toISOString() };
+    setDb({ ...db, sites: db.sites.filter(s=>s.id!==id), corbeilleSites: [entry, ...(db.corbeilleSites||[])] });
     if(activeSiteId === id) setActiveSiteId(null);
   }
 
@@ -1096,6 +1155,31 @@ function SitesManager({ db, addSite, removeSite, onOpenSite, setDb }){
         ))}
       </div>
 
+      {(db.corbeilleSites||[]).length > 0 && (
+        <div className="card" style={{padding:'1.25rem', marginTop:18, borderColor:'var(--danger)'}}>
+          <h3 style={{margin:'0 0 10px', fontSize:15, color:'var(--danger)', display:'flex', alignItems:'center', gap:8}}>
+            <Icon name="trash" size={15}/> Pressings supprimés — conservés 30 jours
+          </h3>
+          <div style={{display:'grid', gap:8}}>
+            {db.corbeilleSites.map(entry => {
+              const joursRestants = Math.max(0, 30 - Math.floor((Date.now() - new Date(entry.dateSuppression).getTime())/(24*60*60*1000)));
+              return (
+                <div key={entry.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 0', borderBottom:'1px solid var(--line)', flexWrap:'wrap', gap:8}}>
+                  <div>
+                    <div style={{fontWeight:600, fontSize:13.5}}>{entry.label}</div>
+                    <div style={{fontSize:11.5, color:'var(--steam)'}}>Supprimé le {fmtDateTime(entry.dateSuppression)} · {joursRestants} jour(s) restant(s)</div>
+                  </div>
+                  <div style={{display:'flex', gap:6}}>
+                    <button className="btn btn-sm" onClick={()=>setDb({ ...db, sites: [...db.sites, entry.data], corbeilleSites: db.corbeilleSites.filter(e=>e.id!==entry.id) })}>↩️ Restaurer</button>
+                    <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>setDb({ ...db, corbeilleSites: db.corbeilleSites.filter(e=>e.id!==entry.id) })}>Supprimer définitivement</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {showNew && <NewSiteModal onClose={()=>setShowNew(false)} onCreate={(nom,adresse,tel)=>{ addSite(nom,adresse,tel); setShowNew(false); }} />}
       {confirmSite && <ConfirmDelete db={db}
         message={`Supprimer définitivement « ${confirmSite.nom} » et TOUTES ses données (commandes, clients, stock) ? Cette action est irréversible.`}
@@ -1141,6 +1225,7 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
     { key:'notifications', label:'Notifications', icon:'bell' },
     { key:'depenses', label:'Dépenses', icon:'euro' },
     { key:'remuneration', label:'Rémunérations', icon:'chart' },
+    { key:'corbeille', label:'Corbeille', icon:'trash', badge: (site.corbeille||[]).length || undefined },
     { key:'parametres', label:'Paramètres', icon:'edit' },
   ];
   return (
@@ -1163,7 +1248,78 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
       {page === 'notifications' && <NotificationsView site={site} />}
       {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} />}
       {page === 'remuneration' && <RemunerationGerantView site={site} />}
+      {page === 'corbeille' && <CorbeilleView site={site} updateSite={updateSite} />}
       {page === 'parametres' && <ParametresView site={site} updateSite={updateSite} db={db} setDb={setDb} />}
+    </div>
+  );
+}
+
+/* ===================== CORBEILLE PAR SITE ===================== */
+
+const CORBEILLE_TYPE_LABELS = {
+  commande: '🎫 Commande',
+  commandes_reset: '🗓️ Réinitialisation de commandes',
+  stock: '📦 Article de stock',
+  service: '🧺 Service',
+  employe: '👤 Employé',
+  depense: '💸 Dépense',
+};
+
+function CorbeilleView({ site, updateSite }){
+  const corbeille = site.corbeille || [];
+  const sorted = [...corbeille].sort((a,b)=>new Date(b.dateSuppression)-new Date(a.dateSuppression));
+
+  function daysLeft(dateSuppression){
+    const elapsed = Date.now() - new Date(dateSuppression).getTime();
+    return Math.max(0, 30 - Math.floor(elapsed / (24*60*60*1000)));
+  }
+
+  function restore(entry){
+    let nextSite = { ...site, corbeille: corbeille.filter(e=>e.id!==entry.id) };
+    if(!entry.data){ updateSite(nextSite); return; }
+    if(entry.type === 'commande'){
+      nextSite.commandes = [entry.data, ...nextSite.commandes];
+    } else if(entry.type === 'commandes_reset' && Array.isArray(entry.data)){
+      nextSite.commandes = [...entry.data, ...nextSite.commandes];
+    } else if(entry.type === 'stock'){
+      nextSite.stock = [...nextSite.stock, entry.data];
+    } else if(entry.type === 'service'){
+      nextSite.services = [...nextSite.services, entry.data];
+    } else if(entry.type === 'employe'){
+      nextSite.employes = [...nextSite.employes, entry.data];
+    } else if(entry.type === 'depense'){
+      nextSite.depenses = [entry.data, ...nextSite.depenses];
+    }
+    updateSite(nextSite);
+  }
+
+  function purgeOne(entryId){
+    updateSite({ ...site, corbeille: corbeille.filter(e=>e.id!==entryId) });
+  }
+
+  return (
+    <div>
+      <PageHeader title="Corbeille" subtitle="Éléments supprimés — conservés 30 jours avant suppression définitive automatique" />
+      {sorted.length === 0 ? (
+        <div className="card" style={{padding:'2rem', textAlign:'center', color:'var(--steam)'}}>La corbeille est vide.</div>
+      ) : (
+        <div style={{display:'grid', gap:10}}>
+          {sorted.map(entry => (
+            <div key={entry.id} className="card" style={{padding:'1rem 1.25rem', display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10}}>
+              <div>
+                <div style={{fontWeight:600, fontSize:14}}>{CORBEILLE_TYPE_LABELS[entry.type] || entry.type} — {entry.label}</div>
+                <div style={{fontSize:12, color:'var(--steam)', marginTop:2}}>
+                  Supprimé le {fmtDateTime(entry.dateSuppression)} · <strong>{daysLeft(entry.dateSuppression)} jour(s)</strong> restant(s) avant suppression définitive
+                </div>
+              </div>
+              <div style={{display:'flex', gap:8}}>
+                <button className="btn btn-sm" onClick={()=>restore(entry)}>↩️ Restaurer</button>
+                <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>purgeOne(entry.id)}>Supprimer définitivement</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1300,6 +1456,15 @@ function StatCard({ label, value, sub, icon, tone='default' }){
 
 /* ===================== COMMANDES ===================== */
 
+function SortableTh({ label, field, sortBy, sortDir, onSort }){
+  const active = sortBy === field;
+  return (
+    <button onClick={()=>onSort(field)} style={{background:'none', border:'none', padding:0, cursor:'pointer', font:'inherit', fontWeight:'inherit', color: active ? 'var(--rust)' : 'inherit', display:'flex', alignItems:'center', gap:4}}>
+      {label} {active && (sortDir==='asc' ? '▲' : '▼')}
+    </button>
+  );
+}
+
 function CommandesView({ site, updateSite, editable, employeId }){
   const [filter, setFilter] = useState('Toutes');
   const [search, setSearch] = useState('');
@@ -1309,13 +1474,36 @@ function CommandesView({ site, updateSite, editable, employeId }){
   const [confirmDeleteCmd, setConfirmDeleteCmd] = useState(null);
   const [encaisserCmd, setEncaisserCmd] = useState(null);
   const [showNewClient, setShowNewClient] = useState(false);
+  const [sortBy, setSortBy] = useState(null); // 'ticket'|'client'|'total'|'statut'|'paiement'|'depot'|'rdv'
+  const [sortDir, setSortDir] = useState('asc');
+
+  function toggleSort(field){
+    if(sortBy === field) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortBy(field); setSortDir('asc'); }
+  }
+
+  function isRdvUrgent(cmd){
+    if(!cmd.dateRdvRecuperation || cmd.statut === 'Récupéré') return false;
+    const dt = new Date(cmd.dateRdvRecuperation + 'T' + (cmd.heureRdvRecuperation ? cmd.heureRdvRecuperation + ':00' : '23:59:00'));
+    const diffHours = (dt.getTime() - Date.now()) / 3600000;
+    return diffHours <= 24;
+  }
+
+  function isRdvCritical(cmd){
+    if(!cmd.dateRdvRecuperation || cmd.statut === 'Récupéré' || cmd.statut === 'Prêt') return false;
+    const dt = new Date(cmd.dateRdvRecuperation + 'T' + (cmd.heureRdvRecuperation ? cmd.heureRdvRecuperation + ':00' : '23:59:00'));
+    const diffHours = (dt.getTime() - Date.now()) / 3600000;
+    return diffHours <= 8;
+  }
 
   const monProfil = employeId ? site.employes.find(e=>e.id===employeId) : null;
   const isRepasseur = monProfil && monProfil.role === 'Repasseur';
   const isCaissier = !monProfil || monProfil.role !== 'Repasseur'; // gérant ou caissier
 
   function deleteCommande(id){
-    updateSite({ ...site, commandes: site.commandes.filter(c=>c.id!==id) });
+    const cmd = site.commandes.find(c=>c.id===id);
+    const entry = { id: uid('trash_'), type:'commande', label: cmd ? `Commande ${cmd.numero}` : 'Commande', data: cmd, dateSuppression: new Date().toISOString() };
+    updateSite({ ...site, commandes: site.commandes.filter(c=>c.id!==id), corbeille: [entry, ...(site.corbeille||[])] });
   }
 
   const filtered = useMemo(() => {
@@ -1328,8 +1516,39 @@ function CommandesView({ site, updateSite, editable, employeId }){
         return c.numero.toLowerCase().includes(q) || (client && client.nom.toLowerCase().includes(q));
       });
     }
+    if(sortBy){
+      const dir = sortDir === 'asc' ? 1 : -1;
+      list = [...list].sort((a,b) => {
+        if(sortBy === 'rdv'){
+          const aHas = !!a.dateRdvRecuperation, bHas = !!b.dateRdvRecuperation;
+          if(aHas !== bHas) return aHas ? -1 : 1;
+          if(!aHas && !bHas) return 0;
+          const va = new Date(a.dateRdvRecuperation + 'T' + (a.heureRdvRecuperation||'00:00')).getTime();
+          const vb = new Date(b.dateRdvRecuperation + 'T' + (b.heureRdvRecuperation||'00:00')).getTime();
+          return dir * (va - vb);
+        }
+        const getVal = (c) => {
+          switch(sortBy){
+            case 'ticket': return c.numero;
+            case 'client': {
+              const cl = site.clients.find(cl2 => cl2.id === c.clientId);
+              return cl ? cl.nom.toLowerCase() : '';
+            }
+            case 'total': return calcCommandeTotal(c, site.services);
+            case 'statut': return STATUTS.indexOf(c.statut);
+            case 'paiement': return c.paiement === 'paye' ? 2 : (Number(c.acompte)>0 ? 1 : 0);
+            case 'depot': return new Date(c.dateCreation).getTime();
+            default: return 0;
+          }
+        };
+        const va = getVal(a), vb = getVal(b);
+        if(va < vb) return -1*dir;
+        if(va > vb) return 1*dir;
+        return 0;
+      });
+    }
     return list;
-  }, [site.commandes, site.clients, filter, search]);
+  }, [site.commandes, site.clients, filter, search, sortBy, sortDir]);
 
   function updateCommande(updated){
     updateSite({ ...site, commandes: site.commandes.map(c => c.id === updated.id ? updated : c) });
@@ -1439,25 +1658,26 @@ function CommandesView({ site, updateSite, editable, employeId }){
         <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
           <thead>
             <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
-              <th style={th}>Ticket</th>
-              <th style={th}>Client</th>
+              <th style={th}><SortableTh label="Ticket" field="ticket" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} /></th>
+              <th style={th}><SortableTh label="Client" field="client" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} /></th>
               <th style={th}>Articles</th>
-              <th style={th}>Total</th>
-              <th style={th}>Statut</th>
-              <th style={th}>Paiement</th>
-              <th style={th}>Dépôt</th>
+              <th style={th}><SortableTh label="Total" field="total" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} /></th>
+              <th style={th}><SortableTh label="Statut" field="statut" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} /></th>
+              <th style={th}><SortableTh label="Paiement" field="paiement" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} /></th>
+              <th style={th}><SortableTh label="Dépôt" field="depot" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} /></th>
+              <th style={th}><SortableTh label="RDV récupération" field="rdv" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} /></th>
               <th style={th}></th>
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan={8} style={{...td, textAlign:'center', color:'var(--steam)', padding:'2rem'}}>Aucune commande ne correspond.</td></tr>
+              <tr><td colSpan={9} style={{...td, textAlign:'center', color:'var(--steam)', padding:'2rem'}}>Aucune commande ne correspond.</td></tr>
             )}
             {filtered.map(cmd => {
               const client = site.clients.find(c => c.id === cmd.clientId);
               const total = calcCommandeTotal(cmd, site.services);
               return (
-                <tr key={cmd.id} style={{borderTop:'1px solid var(--line)'}}>
+                <tr key={cmd.id} className={isRdvCritical(cmd) ? 'blink-urgent' : undefined} style={{borderTop:'1px solid var(--line)', background: !isRdvCritical(cmd) && isRdvUrgent(cmd) ? 'var(--danger-light)' : undefined}}>
                   <td style={{...td}}><span className="mono" style={{fontWeight:600}}>{cmd.numero}</span></td>
                   <td style={td}>{client ? client.nom : '—'}</td>
                   <td style={td}>{cmd.lignes.reduce((s,l)=>s+l.qte,0)} article(s)</td>
@@ -1470,6 +1690,13 @@ function CommandesView({ site, updateSite, editable, employeId }){
                   <td style={td}><span className={`tag ${STATUT_TAG_CLASS[cmd.statut]}`}>{cmd.statut}</span></td>
                   <td style={td}><span className={`tag ${cmd.paiement==='paye'?'tag-paye':'tag-impaye'}`}>{cmd.paiement==='paye'?'Payé':Number(cmd.acompte)>0?'Partiel':'Impayé'}</span></td>
                   <td style={td}>{fmtDate(cmd.dateCreation.slice(0,10))}</td>
+                  <td style={td}>
+                    {cmd.dateRdvRecuperation ? (
+                      <span style={{color: isRdvUrgent(cmd) ? 'var(--danger)' : 'var(--ink)', fontWeight: isRdvUrgent(cmd) ? 700 : 400}}>
+                        {fmtDate(cmd.dateRdvRecuperation)}{cmd.heureRdvRecuperation ? ` ${cmd.heureRdvRecuperation}` : ''}
+                      </span>
+                    ) : <span style={{color:'var(--steam)'}}>—</span>}
+                  </td>
                   <td style={{...td, textAlign:'right'}}>
                     <div style={{display:'flex', gap:6, justifyContent:'flex-end', flexWrap:'wrap'}}>
                       <button className="btn btn-ghost btn-sm" onClick={()=>setOpenTicket(cmd)}>Voir</button>
@@ -1617,7 +1844,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
     let workingClients = site.clients;
     if(newClientMode){
       if(!newClientNom.trim()) return;
-      const newClient = { id: uid('cli_'), nom: newClientNom.trim(), tel: newClientTel.trim(), canalPref:'SMS', dateInscription: todayISO() };
+      const newClient = { id: uid('cli_'), nom: capitalizeNom(newClientNom), tel: newClientTel.trim() ? `+224 ${newClientTel.trim()}` : '', canalPref:'SMS', dateInscription: todayISO() };
       workingClients = [...site.clients, newClient];
       finalClientId = newClient.id;
     }
@@ -1692,7 +1919,10 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
           ) : (
             <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:10}}>
               <input type="text" placeholder="Nom complet" value={newClientNom} onChange={e=>setNewClientNom(e.target.value)} />
-              <input type="tel" placeholder="Téléphone" value={newClientTel} onChange={e=>setNewClientTel(e.target.value)} />
+              <div style={{display:'flex', gap:8, alignItems:'center'}}>
+                <span className="mono" style={{padding:'9px 10px', background:'var(--pine-light)', color:'var(--pine)', borderRadius:8, fontWeight:700, fontSize:13.5}}>+224</span>
+                <input type="tel" placeholder="6XX XX XX XX" value={newClientTel} onChange={e=>setNewClientTel(e.target.value)} style={{flex:1}} />
+              </div>
               <button className="btn btn-ghost btn-sm" style={{gridColumn:'1/-1', justifySelf:'start'}} onClick={()=>setNewClientMode(false)}>← Choisir un client existant</button>
             </div>
           )}
@@ -2275,7 +2505,7 @@ function NewClientModal({ site, updateSite, onClose }){
 
   function submit(){
     if(!nom.trim()) return;
-    const client = { id: uid('cli_'), nom: nom.trim(), tel: tel.trim(), email: email.trim(), canalPref, dateInscription: todayISO() };
+    const client = { id: uid('cli_'), nom: capitalizeNom(nom), tel: tel.trim() ? `+224 ${tel.trim()}` : '', email: email.trim(), canalPref, dateInscription: todayISO() };
     updateSite({ ...site, clients: [...site.clients, client] });
     onClose();
   }
@@ -2284,7 +2514,13 @@ function NewClientModal({ site, updateSite, onClose }){
     <ModalShell title="Nouveau client" onClose={onClose} width={420}>
       <div style={{display:'grid', gap:14}}>
         <div><label>Nom complet</label><input type="text" value={nom} onChange={e=>setNom(e.target.value)} autoFocus/></div>
-        <div><label>Téléphone</label><input type="tel" value={tel} onChange={e=>setTel(e.target.value)} /></div>
+        <div>
+          <label>Téléphone</label>
+          <div style={{display:'flex', gap:8, alignItems:'center'}}>
+            <span className="mono" style={{padding:'9px 10px', background:'var(--pine-light)', color:'var(--pine)', borderRadius:8, fontWeight:700, fontSize:13.5}}>+224</span>
+            <input type="tel" placeholder="6XX XX XX XX" value={tel} onChange={e=>setTel(e.target.value)} style={{flex:1}} />
+          </div>
+        </div>
         <div><label>Email (optionnel)</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)} /></div>
         <div>
           <label>Canal de notification préféré</label>
@@ -2343,20 +2579,26 @@ function ClientDetailModal({ client, site, onClose, onEdit }){
 
 function EditClientModal({ client, onSave, onClose }){
   const [nom, setNom] = useState(client.nom || '');
-  const [tel, setTel] = useState(client.tel || '');
+  const [tel, setTel] = useState((client.tel || '').replace(/^\+224\s*/, ''));
   const [email, setEmail] = useState(client.email || '');
   const [canalPref, setCanalPref] = useState(client.canalPref || 'SMS');
 
   function submit(){
     if(!nom.trim()) return;
-    onSave({ ...client, nom: nom.trim(), tel: tel.trim(), email: email.trim(), canalPref });
+    onSave({ ...client, nom: capitalizeNom(nom), tel: tel.trim() ? `+224 ${tel.trim()}` : '', email: email.trim(), canalPref });
   }
 
   return (
     <ModalShell title={`Modifier — ${client.nom}`} onClose={onClose} width={420}>
       <div style={{display:'grid', gap:14}}>
         <div><label>Nom complet</label><input type="text" value={nom} onChange={e=>setNom(e.target.value)} autoFocus/></div>
-        <div><label>Téléphone</label><input type="tel" value={tel} onChange={e=>setTel(e.target.value)} /></div>
+        <div>
+          <label>Téléphone</label>
+          <div style={{display:'flex', gap:8, alignItems:'center'}}>
+            <span className="mono" style={{padding:'9px 10px', background:'var(--pine-light)', color:'var(--pine)', borderRadius:8, fontWeight:700, fontSize:13.5}}>+224</span>
+            <input type="tel" placeholder="6XX XX XX XX" value={tel} onChange={e=>setTel(e.target.value)} style={{flex:1}} />
+          </div>
+        </div>
         <div><label>Email (optionnel)</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)} /></div>
         <div>
           <label>Canal de notification préféré</label>
@@ -2395,7 +2637,9 @@ function StockView({ site, updateSite }){
     updateSite({ ...site, stock: site.stock.map(s => s.id===id ? {...s, quantite: Math.max(0, s.quantite+delta)} : s) });
   }
   function removeItem(id){
-    updateSite({ ...site, stock: site.stock.filter(s => s.id !== id) });
+    const item = site.stock.find(s => s.id === id);
+    const entry = { id: uid('trash_'), type:'stock', label: item ? `Stock : ${item.nom}` : 'Article stock', data: item, dateSuppression: new Date().toISOString() };
+    updateSite({ ...site, stock: site.stock.filter(s => s.id !== id), corbeille: [entry, ...(site.corbeille||[])] });
   }
   function saveEdit(){
     if(!editItem) return;
@@ -2525,7 +2769,9 @@ function EquipeView({ site, updateSite }){
   const [passFlash, setPassFlash] = useState(false);
 
   function removeEmp(id){
-    updateSite({ ...site, employes: site.employes.filter(e=>e.id!==id) });
+    const emp = site.employes.find(e=>e.id===id);
+    const entry = { id: uid('trash_'), type:'employe', label: emp ? `Employé : ${emp.nom}` : 'Employé', data: emp, dateSuppression: new Date().toISOString() };
+    updateSite({ ...site, employes: site.employes.filter(e=>e.id!==id), corbeille: [entry, ...(site.corbeille||[])] });
   }
   function togglePass(id){ setShowPass(prev => ({...prev, [id]: !prev[id]})); }
   function saveNewPass(){
@@ -2684,7 +2930,9 @@ function DepensesView({ site, updateSite }){
   }, [filtered]);
 
   function removeDepense(id){
-    updateSite({ ...site, depenses: depenses.filter(d=>d.id!==id) });
+    const dep = depenses.find(d=>d.id===id);
+    const entry = { id: uid('trash_'), type:'depense', label: dep ? `Dépense : ${dep.description}` : 'Dépense', data: dep, dateSuppression: new Date().toISOString() };
+    updateSite({ ...site, depenses: depenses.filter(d=>d.id!==id), corbeille: [entry, ...(site.corbeille||[])] });
   }
 
   function saveEditDepense(updated){
@@ -2924,7 +3172,7 @@ function RemunerationGerantView({ site }){
 
   return (
     <div>
-      <PageHeader title="Rémunérations & Traçabilité" subtitle={`${filterMois}`} />
+      <PageHeader title="Rémunérations & Traçabilité" subtitle={formatMoisAnnee(filterMois)} />
 
       {/* Filtres */}
       <div style={{display:'flex', gap:10, marginBottom:18, flexWrap:'wrap', alignItems:'center'}}>
@@ -3191,11 +3439,12 @@ function ParametresView({ site, updateSite, db, setDb }){
   function resetCommandes(){
     if(!resetScope) return;
     const today = todayISO();
-    let remaining;
-    if(resetScope === 'jour') remaining = site.commandes.filter(c => c.dateCreation.slice(0,10) !== today);
-    else if(resetScope === 'mois') remaining = site.commandes.filter(c => c.dateCreation.slice(0,7) !== today.slice(0,7));
-    else remaining = [];
-    updateSite({ ...site, commandes: remaining, seq: resetScope === 'tout' ? 1 : site.seq });
+    let removed, remaining;
+    if(resetScope === 'jour'){ removed = site.commandes.filter(c => c.dateCreation.slice(0,10) === today); remaining = site.commandes.filter(c => c.dateCreation.slice(0,10) !== today); }
+    else if(resetScope === 'mois'){ removed = site.commandes.filter(c => c.dateCreation.slice(0,7) === today.slice(0,7)); remaining = site.commandes.filter(c => c.dateCreation.slice(0,7) !== today.slice(0,7)); }
+    else { removed = site.commandes; remaining = []; }
+    const entry = { id: uid('trash_'), type:'commandes_reset', label: `Réinitialisation (${resetScope==='jour'?"aujourd'hui":resetScope==='mois'?'ce mois-ci':'toute la période'}) — ${removed.length} commande(s)`, data: removed, dateSuppression: new Date().toISOString() };
+    updateSite({ ...site, commandes: remaining, seq: resetScope === 'tout' ? 1 : site.seq, corbeille: [entry, ...(site.corbeille||[])] });
     setResetScope(null);
   }
 
@@ -3452,7 +3701,9 @@ function ServicesEditor({ site, updateSite }){
     setNom(''); setPrix('');
   }
   function removeService(id){
-    updateSite({ ...site, services: site.services.filter(s=>s.id!==id) });
+    const svc = site.services.find(s=>s.id===id);
+    const entry = { id: uid('trash_'), type:'service', label: svc ? `Service : ${svc.nom}` : 'Service', data: svc, dateSuppression: new Date().toISOString() };
+    updateSite({ ...site, services: site.services.filter(s=>s.id!==id), corbeille: [entry, ...(site.corbeille||[])] });
   }
   function startEdit(s){
     setEditingId(s.id);
@@ -3689,7 +3940,7 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
 
   return (
     <div>
-      <PageHeader title={`Ma rémunération${monProfil ? ` — ${monProfil.nom}` : ''}`} subtitle={`Total ${filterMois} : ${fmtGNF(totalMois)}`} />
+      <PageHeader title={`Ma rémunération${monProfil ? ` — ${monProfil.nom}` : ''}`} subtitle={`Total ${formatMoisAnnee(filterMois)} : ${fmtGNF(totalMois)}`} />
 
       <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20}}>
         <StatCard label="Total ce mois" value={fmtGNF(totalMois)} icon="euro" />
@@ -4013,10 +4264,15 @@ function RepasseurView({ site, updateSite, employeId }){
         </div>
       ) : (
         <div style={{display:'grid', gap:12}}>
-          {commandes.map(cmd => (
+          {commandes.map(cmd => {
+            const client = site.clients.find(c => c.id === cmd.clientId);
+            return (
             <div key={cmd.id} className="card" style={{padding:'1.1rem 1.25rem', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
               <div>
-                <div style={{fontWeight:700, fontSize:15}} className="mono">{cmd.numero}</div>
+                <div style={{display:'flex', alignItems:'baseline', gap:8}}>
+                  <span className="mono" style={{fontWeight:700, fontSize:15}}>{cmd.numero}</span>
+                  <span style={{fontWeight:600, fontSize:14, color:'var(--pine)'}}>{client ? client.nom : 'Client inconnu'}</span>
+                </div>
                 <div style={{fontSize:13, color:'var(--steam)', marginTop:3}}>
                   {cmd.lignes.reduce((s,l)=>s+l.qte,0)} article(s) · {fmtDate(cmd.dateCreation.slice(0,10))}
                 </div>
@@ -4039,7 +4295,8 @@ function RepasseurView({ site, updateSite, employeId }){
                 </button>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -4058,8 +4315,10 @@ function RepasseurView({ site, updateSite, employeId }){
 }
 
 function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
-  const [page, setPage] = useState('caisse');
   const site = db.sites.find(s => s.id === siteId);
+  const monProfil = (site && employeId) ? site.employes.find(e=>e.id===employeId) : null;
+  const isRepasseur = monProfil && monProfil.role === 'Repasseur';
+  const [page, setPage] = useState(isRepasseur ? 'repassage' : 'caisse');
 
   function updateSite(updatedSite){
     setDb({ ...db, sites: db.sites.map(s => s.id === updatedSite.id ? updatedSite : s) });
@@ -4075,9 +4334,6 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
       </div>
     );
   }
-
-  const monProfil = employeId ? site.employes.find(e=>e.id===employeId) : null;
-  const isRepasseur = monProfil && monProfil.role === 'Repasseur';
 
   // Espace repasseur — vue limitée
   if(isRepasseur){
