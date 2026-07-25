@@ -475,7 +475,9 @@ function App(){
     });
 
     return () => { unsubscribeAuth(); if(unsubscribeDB) unsubscribeDB(); };
-  }, []);const persist = useCallback((next) => {
+  }, []);
+
+  const persist = useCallback((next) => {
     setDb(next);
     if(saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
@@ -573,6 +575,14 @@ function RoleSelect({ db, setDb, onSelect }){
     }
   }
 
+  function createClientAndLogin(siteId, nom, tel){
+    const site = db.sites.find(s => s.id === siteId);
+    if(!site || !nom.trim()) return;
+    const newClient = { id: uid('cli_'), nom: nom.trim(), tel: tel.trim(), canalPref:'SMS', dateInscription: todayISO() };
+    setDb({ ...db, sites: db.sites.map(s => s.id === siteId ? { ...s, clients: [...s.clients, newClient] } : s) });
+    onSelect('client', siteId, newClient.id);
+  }
+
   if(loginRole === 'employe' && !selectedEmp){
     return (
       <div style={{minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'2rem'}}>
@@ -656,7 +666,7 @@ function RoleSelect({ db, setDb, onSelect }){
       )}
 
       {mode === 'client' && (
-        <ClientLoginFlow db={db} onPick={(siteId, clientId) => onSelect('client', siteId, clientId)} onBack={()=>setMode(null)} />
+        <ClientLoginFlow db={db} onPick={(siteId, clientId) => onSelect('client', siteId, clientId)} onCreate={createClientAndLogin} onBack={()=>setMode(null)} />
       )}
     </div>
   );
@@ -679,9 +689,12 @@ function SitePicker({ db, title, onPick, onBack }){
   );
 }
 
-function ClientLoginFlow({ db, onPick, onBack }){
+function ClientLoginFlow({ db, onPick, onCreate, onBack }){
   const [siteId, setSiteId] = useState(db.sites.length === 1 ? db.sites[0].id : null);
   const [search, setSearch] = useState('');
+  const [showCreate, setShowCreate] = useState(false);
+  const [newNom, setNewNom] = useState('');
+  const [newTel, setNewTel] = useState('');
 
   const site = db.sites.find(s => s.id === siteId);
   const matches = useMemo(() => {
@@ -694,13 +707,32 @@ function ClientLoginFlow({ db, onPick, onBack }){
     return <SitePicker db={db} title="Vous êtes client de quel pressing ?" onPick={setSiteId} onBack={onBack} />;
   }
 
+  if(showCreate){
+    return (
+      <div className="card" style={{marginTop:24, padding:'1.25rem', width:380, maxWidth:'90vw'}}>
+        <label>Créer ma fiche client — {site.nom}</label>
+        <div style={{display:'grid', gap:10, marginTop:6}}>
+          <input type="text" placeholder="Nom complet" value={newNom} onChange={e=>setNewNom(e.target.value)} autoFocus />
+          <input type="tel" placeholder="Téléphone" value={newTel} onChange={e=>setNewTel(e.target.value)} />
+        </div>
+        <p style={{fontSize:12, color:'var(--steam)', margin:'10px 0 0', lineHeight:1.4}}>
+          Pas besoin de déposer un vêtement pour créer votre fiche — vous pourrez suivre vos futures commandes ici.
+        </p>
+        <div style={{display:'flex', gap:8, marginTop:14}}>
+          <button className="btn btn-ghost btn-sm" onClick={()=>{ setShowCreate(false); setNewNom(''); setNewTel(''); }}>← Retour</button>
+          <button className="btn btn-rust btn-sm" disabled={!newNom.trim()} onClick={()=>onCreate(siteId, newNom, newTel)} style={{flex:1}}>Créer ma fiche</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="card" style={{marginTop:24, padding:'1.25rem', width:380, maxWidth:'90vw'}}>
       <label>Trouvez votre fiche client — {site.nom}</label>
       <input type="text" placeholder="Nom ou téléphone…" value={search} onChange={e=>setSearch(e.target.value)} autoFocus />
       <div style={{marginTop:10, maxHeight:220, overflowY:'auto'}}>
         {search && matches.length === 0 && (
-          <p style={{fontSize:13, color:'var(--steam)', margin:'8px 0'}}>Aucun client trouvé. Demandez à l'accueil de créer votre fiche.</p>
+          <p style={{fontSize:13, color:'var(--steam)', margin:'8px 0'}}>Aucun client trouvé.</p>
         )}
         {matches.map(c => (
           <button key={c.id} className="btn" style={{width:'100%', textAlign:'left', marginBottom:6, display:'flex', justifyContent:'space-between'}} onClick={() => onPick(siteId, c.id)}>
@@ -709,6 +741,9 @@ function ClientLoginFlow({ db, onPick, onBack }){
           </button>
         ))}
       </div>
+      <button className="btn btn-ghost btn-sm" style={{marginTop:8, width:'100%', justifyContent:'center'}} onClick={()=>setShowCreate(true)}>
+        + Je n'ai pas encore de fiche — Créer mon compte
+      </button>
       <div style={{display:'flex', gap:8, marginTop:8}}>
         {db.sites.length > 1 && <button className="btn btn-ghost btn-sm" onClick={()=>setSiteId(null)}>← Changer de site</button>}
         <button className="btn btn-ghost btn-sm" onClick={onBack}>Annuler</button>
@@ -1458,7 +1493,22 @@ function CommandesView({ site, updateSite, editable, employeId }){
                       {editable && (
                         <button className="btn btn-sm" onClick={()=>togglePaiement(cmd)}>{cmd.paiement==='paye' ? 'Marquer impayé' : 'Marquer payé'}</button>
                       )}
- {confirmDeleteCmd && <ConfirmDelete db={site} message={`Supprimer définitivement la commande ${confirmDeleteCmd.numero} ? Cette action est irréversible.`}
+                      {editable && total > (Number(cmd.acompte)||0) && (
+                        <button className="btn btn-sm" style={{color:'var(--ok)', borderColor:'var(--ok)'}} onClick={()=>setEncaisserCmd(cmd)}>💰 Encaisser</button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {showNew && <NewCommandeModal site={site} updateSite={updateSite} employeId={employeId} onClose={()=>setShowNew(false)} />}
+      {openTicket && <TicketModal cmd={openTicket} site={site} onClose={()=>setOpenTicket(null)} />}
+      {editCmd && <EditCommandeModal cmd={editCmd} site={site} updateSite={updateSite} onClose={()=>setEditCmd(null)} />}
+      {confirmDeleteCmd && <ConfirmDelete db={site} message={`Supprimer définitivement la commande ${confirmDeleteCmd.numero} ? Cette action est irréversible.`}
         onConfirm={()=>{ deleteCommande(confirmDeleteCmd.id); setConfirmDeleteCmd(null); }}
         onCancel={()=>setConfirmDeleteCmd(null)} />}
       {encaisserCmd && <EncaisserModal cmd={encaisserCmd} site={site} onClose={()=>setEncaisserCmd(null)} onSave={(montant)=>enregistrerPaiement(encaisserCmd, montant)} />}
@@ -1498,24 +1548,6 @@ function EncaisserModal({ cmd, site, onClose, onSave }){
         </div>
       </div>
     </ModalShell>
-  );
-}                     
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      {showNew && <NewCommandeModal site={site} updateSite={updateSite} employeId={employeId} onClose={()=>setShowNew(false)} />}
-      {openTicket && <TicketModal cmd={openTicket} site={site} onClose={()=>setOpenTicket(null)} />}
-      {editCmd && <EditCommandeModal cmd={editCmd} site={site} updateSite={updateSite} onClose={()=>setEditCmd(null)} />}
-      {confirmDeleteCmd && <ConfirmDelete db={site} message={`Supprimer définitivement la commande ${confirmDeleteCmd.numero} ? Cette action est irréversible.`}
-        onConfirm={()=>{ deleteCommande(confirmDeleteCmd.id); setConfirmDeleteCmd(null); }}
-        onCancel={()=>setConfirmDeleteCmd(null)} />}
-    </div>
   );
 }
 
@@ -2732,7 +2764,6 @@ function DepensesView({ site, updateSite }){
       </div>
 
       {showNew && <NewDepenseModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
-      {showNew && <NewDepenseModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
       {confirmDep && <ConfirmDelete db={site} message={`Supprimer la dépense « ${confirmDep.description} » (${fmtGNF(confirmDep.montant)}) ?`}
         onConfirm={()=>{ removeDepense(confirmDep.id); setConfirmDep(null); }}
         onCancel={()=>setConfirmDep(null)} />}
@@ -3141,6 +3172,12 @@ function ParametresView({ site, updateSite, db, setDb }){
   const [adresse, setAdresse] = useState(site.adresse);
   const [tel, setTel] = useState(site.tel);
   const [savedFlash, setSavedFlash] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+
+  function resetCommandes(){
+    updateSite({ ...site, commandes: [], seq: 1 });
+    setShowResetConfirm(false);
+  }
 
   // Changement mot de passe gérant
   const [ancienPass, setAncienPass] = useState('');
@@ -3272,6 +3309,28 @@ function ParametresView({ site, updateSite, db, setDb }){
           </div>
         )}
       </div>
+
+      {/* Réinitialiser les commandes (nouveau mois / nouvelle période) */}
+      <div className="card" style={{padding:'1.5rem', marginTop:18, borderColor:'var(--danger)'}}>
+        <h3 style={{margin:'0 0 6px', fontSize:15, display:'flex', alignItems:'center', gap:8, color:'var(--danger)'}}>
+          🗓️ Réinitialiser les commandes de ce site
+        </h3>
+        <p style={{fontSize:13, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.6}}>
+          Efface définitivement <strong>toutes les commandes</strong> de « {site.nom} » (historique, statuts, paiements) et remet la numérotation des tickets à zéro.
+          <strong> Vos clients, employés, services, stock et dépenses restent intacts.</strong> Utile pour repartir sur une nouvelle période (ex: début du mois d'août).
+        </p>
+        <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)'}} onClick={()=>setShowResetConfirm(true)}>
+          <Icon name="trash" size={14}/> Réinitialiser les commandes
+        </button>
+      </div>
+
+      {showResetConfirm && (
+        <ConfirmDelete db={db}
+          message={`Effacer TOUTES les commandes de « ${site.nom} » ? Les clients, employés, services et stock ne seront pas touchés. Cette action est irréversible.`}
+          onConfirm={resetCommandes}
+          onCancel={()=>setShowResetConfirm(false)}
+        />
+      )}
 
       {/* Section Rémunération */}
       <ConfigRemunerationEditor site={site} updateSite={updateSite} />
