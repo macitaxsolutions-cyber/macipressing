@@ -4219,11 +4219,22 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
 
 function RepasseurView({ site, updateSite, employeId }){
   const [confirmPret, setConfirmPret] = useState(null);
+  const [search, setSearch] = useState('');
 
   // Seulement les commandes En cours ou Reçu
   const commandes = (site.commandes||[])
     .filter(c => c.statut === 'Reçu' || c.statut === 'En cours')
     .sort((a,b) => new Date(a.dateCreation) - new Date(b.dateCreation));
+
+  const filteredCommandes = useMemo(() => {
+    if(!search.trim()) return commandes;
+    const q = search.trim().toLowerCase();
+    return commandes.filter(cmd => {
+      const client = site.clients.find(c => c.id === cmd.clientId);
+      const last4 = cmd.numero.slice(-4);
+      return (client && client.nom.toLowerCase().includes(q)) || cmd.numero.toLowerCase().includes(q) || last4 === q;
+    });
+  }, [commandes, search, site.clients]);
 
   function marquerPret(cmd){
     const config = site.configRemuneration || {};
@@ -4257,14 +4268,25 @@ function RepasseurView({ site, updateSite, employeId }){
     <div>
       <PageHeader title="Commandes à repasser" subtitle={`${commandes.length} commande(s) en attente`} />
 
+      {commandes.length > 0 && (
+        <div style={{position:'relative', maxWidth:340, marginBottom:18}}>
+          <input type="text" placeholder="Nom du client ou 4 derniers chiffres du reçu…" value={search} onChange={e=>setSearch(e.target.value)} style={{paddingLeft:34}}/>
+          <Icon name="search" size={15} style={{position:'absolute', left:11, top:11, color:'var(--steam)'}}/>
+        </div>
+      )}
+
       {commandes.length === 0 ? (
         <div className="card" style={{padding:'2rem', textAlign:'center', color:'var(--steam)'}}>
           <div style={{fontSize:32, marginBottom:8}}>✅</div>
           <div style={{fontSize:15, fontWeight:600}}>Toutes les commandes sont repassées !</div>
         </div>
+      ) : filteredCommandes.length === 0 ? (
+        <div className="card" style={{padding:'2rem', textAlign:'center', color:'var(--steam)'}}>
+          Aucune commande ne correspond à votre recherche.
+        </div>
       ) : (
         <div style={{display:'grid', gap:12}}>
-          {commandes.map(cmd => {
+          {filteredCommandes.map(cmd => {
             const client = site.clients.find(c => c.id === cmd.clientId);
             return (
             <div key={cmd.id} className="card" style={{padding:'1.1rem 1.25rem', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
