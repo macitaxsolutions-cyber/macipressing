@@ -26,6 +26,8 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-storage-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
   const firebaseConfig = {
     apiKey: "AIzaSyC9CbMGfZhcMIgOYwhywLdLqljIoPyCfGI",
@@ -39,6 +41,7 @@
   firebase.initializeApp(firebaseConfig);
   const firebaseDB = firebase.database();
   const firebaseAuth = firebase.auth();
+  const firebaseStorage = firebase.storage();
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -1218,6 +1221,7 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
   const [page, setPage] = useState('dashboard');
   const navItems = [
     { key:'dashboard', label:'Tableau de bord', icon:'chart' },
+    { key:'agenda', label:'Agenda du jour', icon:'clock' },
     { key:'commandes', label:'Commandes', icon:'ticket' },
     { key:'clients', label:'Clients', icon:'users' },
     { key:'stock', label:'Stock', icon:'box' },
@@ -1241,6 +1245,7 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
         ))}
       </div>
       {page === 'dashboard' && <Dashboard site={site} updateSite={updateSite} siteTitle={site.nom} />}
+      {page === 'agenda' && <AgendaView site={site} />}
       {page === 'commandes' && <CommandesView site={site} updateSite={updateSite} editable={true} />}
       {page === 'clients' && <ClientsView site={site} updateSite={updateSite} />}
       {page === 'stock' && <StockView site={site} updateSite={updateSite} />}
@@ -1318,6 +1323,72 @@ function CorbeilleView({ site, updateSite }){
               </div>
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ===================== AGENDA DU JOUR ===================== */
+
+function AgendaView({ site }){
+  const today = todayISO();
+
+  const items = (site.commandes||[])
+    .filter(c => c.statut !== 'Récupéré' && c.dateRdvRecuperation && c.dateRdvRecuperation <= today)
+    .sort((a,b) => {
+      const da = new Date(a.dateRdvRecuperation + 'T' + (a.heureRdvRecuperation || '00:00'));
+      const db = new Date(b.dateRdvRecuperation + 'T' + (b.heureRdvRecuperation || '00:00'));
+      return da - db;
+    });
+
+  function urgencyLevel(cmd){
+    const dt = new Date(cmd.dateRdvRecuperation + 'T' + (cmd.heureRdvRecuperation ? cmd.heureRdvRecuperation+':00' : '23:59:00'));
+    const diffHours = (dt.getTime() - Date.now()) / 3600000;
+    if(diffHours < 0) return 'depasse';
+    if(cmd.statut !== 'Prêt' && diffHours <= 8) return 'critique';
+    if(diffHours <= 24) return 'urgent';
+    return 'normal';
+  }
+
+  const BADGE = {
+    depasse:  { style:{background:'var(--danger)', color:'var(--white)'}, label:'⏰ En retard' },
+    critique: { style:{background:'var(--danger-light)', color:'var(--danger)'}, label:'🔥 Très urgent' },
+    urgent:   { style:{background:'var(--warn-light)', color:'var(--warn)'}, label:'⚠️ Urgent' },
+    normal:   { style:{background:'var(--pine-light)', color:'var(--pine)'}, label:"🕐 Aujourd'hui" },
+  };
+
+  return (
+    <div>
+      <PageHeader title="Agenda du jour" subtitle={`${items.length} commande(s) à traiter en priorité — triées par rendez-vous de récupération`} />
+      {items.length === 0 ? (
+        <div className="card" style={{padding:'2rem', textAlign:'center', color:'var(--steam)'}}>
+          Aucun rendez-vous de récupération aujourd'hui ou en retard. 👍
+        </div>
+      ) : (
+        <div style={{display:'grid', gap:10}}>
+          {items.map(cmd => {
+            const client = site.clients.find(c=>c.id===cmd.clientId);
+            const niveau = urgencyLevel(cmd);
+            const badge = BADGE[niveau];
+            return (
+              <div key={cmd.id} className="card" style={{padding:'1rem 1.25rem', display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10}}>
+                <div>
+                  <div style={{display:'flex', alignItems:'center', gap:8, flexWrap:'wrap'}}>
+                    <span className="mono" style={{fontWeight:700}}>{cmd.numero}</span>
+                    <span style={{fontWeight:600, color:'var(--pine)'}}>{client ? client.nom : 'Client inconnu'}</span>
+                    {cmd.express && <span className="tag" style={{background:'var(--rust-light)', color:'var(--rust)'}}>⚡ Express</span>}
+                    <span className={`tag ${STATUT_TAG_CLASS[cmd.statut]}`}>{cmd.statut}</span>
+                  </div>
+                  <div style={{fontSize:12.5, color:'var(--steam)', marginTop:4}}>
+                    RDV : {fmtDate(cmd.dateRdvRecuperation)}{cmd.heureRdvRecuperation ? ` à ${cmd.heureRdvRecuperation}` : ''}
+                    {cmd.lignes && ` · ${cmd.lignes.reduce((s,l)=>s+l.qte,0)} article(s)`}
+                  </div>
+                </div>
+                <span className="tag" style={badge.style}>{badge.label}</span>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -1678,7 +1749,10 @@ function CommandesView({ site, updateSite, editable, employeId }){
               const total = calcCommandeTotal(cmd, site.services);
               return (
                 <tr key={cmd.id} className={isRdvCritical(cmd) ? 'blink-urgent' : undefined} style={{borderTop:'1px solid var(--line)', background: !isRdvCritical(cmd) && isRdvUrgent(cmd) ? 'var(--danger-light)' : undefined}}>
-                  <td style={{...td}}><span className="mono" style={{fontWeight:600}}>{cmd.numero}</span></td>
+                  <td style={{...td}}>
+                    <span className="mono" style={{fontWeight:600}}>{cmd.numero}</span>
+                    {cmd.express && <span className="tag" style={{background:'var(--rust-light)', color:'var(--rust)', marginLeft:6}}>⚡ Express</span>}
+                  </td>
                   <td style={td}>{client ? client.nom : '—'}</td>
                   <td style={td}>{cmd.lignes.reduce((s,l)=>s+l.qte,0)} article(s)</td>
                   <td style={td}>
@@ -1808,6 +1882,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
   const [newServicePrix, setNewServicePrix] = useState('');
   const [newServiceCat, setNewServiceCat] = useState('Nettoyage');
   const [editServiceId, setEditServiceId] = useState(null);
+  const [creating, setCreating] = useState(false);
 
   const clientMatches = useMemo(() => {
     if(!clientSearch.trim()) return site.clients.slice(0,5);
@@ -1826,6 +1901,9 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
     setLignes(prev => prev.map(l => l.serviceId===serviceId ? {...l, qte: Math.max(0,qte)} : l).filter(l=>l.qte>0));
   }
 
+  const [express, setExpress] = useState(false);
+  const [expressMajoration, setExpressMajoration] = useState('50');
+
   const totalBrut = lignes.reduce((s,l)=>{
     const svc = site.services.find(x=>x.id===l.serviceId);
     return s + (svc ? svc.prix*l.qte : 0);
@@ -1837,9 +1915,11 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
     return 0;
   }, [totalBrut, rabaisMode, rabais]);
 
-  const total = totalBrut - montantRabais;
+  const baseApresRabais = totalBrut - montantRabais;
+  const montantExpress = express ? Math.round(baseApresRabais * (Number(expressMajoration)||0) / 100) : 0;
+  const total = baseApresRabais + montantExpress;
 
-  function handleSubmit(){
+  async function handleSubmit(){
     let finalClientId = clientId;
     let workingClients = site.clients;
     if(newClientMode){
@@ -1849,6 +1929,8 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
       finalClientId = newClient.id;
     }
     if(!finalClientId || lignes.length === 0) return;
+
+    setCreating(true);
 
     const seq = site.seq;
     const montantAcompte = Number(acompte) || 0;
@@ -1863,9 +1945,12 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
       acompte: montantAcompte,
       rabais: montantRabais,
       totalBrut: totalBrut,
+      express: express,
+      expressMajoration: express ? Number(expressMajoration)||0 : 0,
+      montantExpress: montantExpress,
       dateCreation: new Date().toISOString(),
       dateRetraitPrevue: dateRetrait || null,
-      dateRdvRecuperation: dateRdv || null,
+      dateRdvRecuperation: dateRdv || (express ? todayISO() : null),
       heureRdvRecuperation: heureRdv || null,
       notes: notes.trim(),
     };
@@ -1877,7 +1962,18 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
       return svc ? `${l.qte}x ${svc.nom} (${fmtGNF(svc.prix*l.qte)})` : '';
     }).filter(Boolean).join('\n');
 
-    const msgDepose = `🧺 Reçu de dépôt — ${site.nom}\nCommande : ${cmd.numero}\n\n${lignesDetail}${montantRabais>0?`\nRabais : -${fmtGNF(montantRabais)}`:''}\nTotal : ${fmtGNF(total)}${montantAcompte>0?`\nAcompte versé : ${fmtGNF(montantAcompte)}\nSolde restant : ${fmtGNF(total-montantAcompte)}`:'\nPaiement : À la récupération'}${cmd.dateRetraitPrevue?`\nRDV : ${fmtDate(cmd.dateRetraitPrevue)}`:''}\n\nMerci pour votre confiance !`;
+    let msgDepose = `🧺 Reçu de dépôt — ${site.nom}${express ? '\n⚡ COMMANDE EXPRESS' : ''}\nCommande : ${cmd.numero}\n\n${lignesDetail}${montantRabais>0?`\nRabais : -${fmtGNF(montantRabais)}`:''}${montantExpress>0?`\nSupplément Express (${expressMajoration}%) : +${fmtGNF(montantExpress)}`:''}\nTotal : ${fmtGNF(total)}${montantAcompte>0?`\nAcompte versé : ${fmtGNF(montantAcompte)}\nSolde restant : ${fmtGNF(total-montantAcompte)}`:'\nPaiement : À la récupération'}${cmd.dateRdvRecuperation?`\nRDV de récupération : ${fmtDate(cmd.dateRdvRecuperation)}${cmd.heureRdvRecuperation?' à '+cmd.heureRdvRecuperation:''}${express?' (urgence — même jour)':''}`:cmd.dateRetraitPrevue?`\nRDV : ${fmtDate(cmd.dateRetraitPrevue)}`:''}\n\nMerci pour votre confiance !`;
+
+    // Générer le reçu PDF et l'envoyer sur Firebase Storage (avec délai de sécurité de 8s)
+    try {
+      const pdfBlob = generateReceiptPDFBlob(cmd, site, client, total, montantAcompte, total - montantAcompte);
+      const timeout = new Promise((_, reject) => setTimeout(()=>reject(new Error('timeout')), 8000));
+      const url = await Promise.race([uploadReceiptPDF(site.id, cmd, pdfBlob), timeout]);
+      msgDepose += `\n\n📄 Reçu PDF : ${url}`;
+      cmd.receiptPdfUrl = url;
+    } catch(e) {
+      console.error('Erreur génération/envoi du reçu PDF', e);
+    }
 
     const notif = { id: uid('notif_'), clientId: finalClientId, message: msgDepose, canal: client.canalPref || 'SMS', date: new Date().toISOString() };
 
@@ -1895,6 +1991,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
       setTimeout(() => window.open(`https://wa.me/${tel}?text=${encodeURIComponent(msgDepose)}`, '_blank'), 300);
     }
 
+    setCreating(false);
     onClose();
   }
 
@@ -2082,6 +2179,27 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
               )}
             </div>
 
+            {/* BLOC EXPRESS */}
+            <div style={{paddingTop:8, borderTop:'1px solid var(--line)'}}>
+              <button className="btn btn-sm" onClick={()=>setExpress(!express)}
+                style={{background: express ? 'var(--rust)' : 'transparent', color: express ? 'var(--white)' : 'var(--ink)', borderColor: express ? 'var(--rust)' : 'var(--line-strong)'}}>
+                ⚡ {express ? 'Commande Express activée' : 'Activer Express (urgence — généralement en une journée)'}
+              </button>
+              {express && (
+                <div style={{marginTop:10, padding:'10px 12px', background:'var(--rust-light)', borderRadius:8}}>
+                  <div style={{display:'flex', gap:8, alignItems:'center', flexWrap:'wrap'}}>
+                    <span style={{fontSize:13}}>Majoration express :</span>
+                    <input type="number" value={expressMajoration} onChange={e=>setExpressMajoration(e.target.value)} style={{width:70, padding:'5px 8px'}} min={0}/>
+                    <span style={{fontSize:13}}>%</span>
+                    <span className="mono" style={{color:'var(--rust)', fontWeight:700, marginLeft:'auto'}}>+ {fmtGNF(montantExpress)}</span>
+                  </div>
+                  <p style={{fontSize:11.5, color:'#8C4322', margin:'6px 0 0', lineHeight:1.4}}>
+                    Le client souhaite récupérer ses articles en urgence. Le rendez-vous de récupération sera fixé à aujourd'hui si aucune date n'est choisie ci-dessous.
+                  </p>
+                </div>
+              )}
+            </div>
+
             <div style={{display:'flex', justifyContent:'space-between', paddingTop:8, fontWeight:700, fontSize:16, borderTop:'2px solid var(--line-strong)'}}>
               <span>Total à payer</span><span className="mono" style={{color:'var(--pine)'}}>{fmtGNF(total)}</span>
             </div>
@@ -2146,7 +2264,9 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
 
         <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
           <button className="btn" onClick={onClose}>Annuler</button>
-          <button className="btn btn-rust" disabled={(!clientId && !newClientMode) || lignes.length===0} onClick={handleSubmit}>Créer le ticket</button>
+          <button className="btn btn-rust" disabled={(!clientId && !newClientMode) || lignes.length===0 || creating} onClick={handleSubmit}>
+            {creating ? 'Génération du reçu…' : 'Créer le ticket'}
+          </button>
         </div>
       </div>
     </ModalShell>
@@ -2276,6 +2396,9 @@ function imprimerTicket(cmd, site, client, total, acompte, solde, caissier){
     <tr><td style="padding:4px 0;color:#666">Sous-total</td><td style="padding:4px 0;text-align:right;font-family:monospace;color:#666">${fmtGNF(cmd.totalBrut||total)}</td></tr>
     <tr><td style="padding:4px 0;color:#c05c2c">🏷️ Rabais</td><td style="padding:4px 0;text-align:right;font-family:monospace;color:#c05c2c">− ${fmtGNF(cmd.rabais)}</td></tr>` : '';
 
+  const expressHTML = cmd.montantExpress > 0 ? `
+    <tr><td style="padding:4px 0;color:#c05c2c">⚡ Supplément Express (${cmd.expressMajoration}%)</td><td style="padding:4px 0;text-align:right;font-family:monospace;color:#c05c2c">+ ${fmtGNF(cmd.montantExpress)}</td></tr>` : '';
+
   const paiementHTML = acompte > 0 ? `
     <tr><td style="padding:4px 0;color:#2d6a4f">Acompte versé</td><td style="padding:4px 0;text-align:right;font-family:monospace;color:#2d6a4f">${fmtGNF(acompte)}</td></tr>
     <tr style="font-weight:700;color:${solde>0?'#c0392b':'#2d6a4f'}"><td style="padding:4px 0">${solde>0?'Solde restant':'✔️ Entièrement payé'}</td><td style="padding:4px 0;text-align:right;font-family:monospace">${solde>0?fmtGNF(solde):''}</td></tr>` : '';
@@ -2288,17 +2411,20 @@ function imprimerTicket(cmd, site, client, total, acompte, solde, caissier){
 <meta charset="UTF-8">
 <title>Ticket ${cmd.numero}</title>
 <style>
-  @page { size: 80mm auto; margin: 8mm; }
-  @media print { body { margin:0; } button { display:none; } }
-  body { font-family: Arial, sans-serif; font-size: 13px; color: #1a1a1a; max-width: 280px; margin: 0 auto; padding: 8px; }
-  h2 { text-align:center; font-size:16px; margin:0 0 4px; }
+  @page { size: 80mm auto; margin: 0; }
+  @media print { html, body { margin:0; padding:0; } button { display:none; } }
+  * { box-sizing:border-box; }
+  html, body { width: 80mm; }
+  body { font-family: Arial, sans-serif; font-size: 12px; color: #1a1a1a; width: 72mm; margin: 0 auto; padding: 3mm 4mm; word-wrap:break-word; overflow-wrap:break-word; }
+  h2 { text-align:center; font-size:15px; margin:0 0 4px; word-wrap:break-word; }
   .center { text-align:center; }
   .mono { font-family:monospace; }
-  .sep { border-top: 1px dashed #999; margin: 8px 0; }
-  table { width:100%; border-collapse:collapse; }
-  .total-row td { font-weight:700; font-size:15px; border-top:1px dashed #999; padding-top:6px; }
-  .disclaimer { font-size:10px; color:#7a5c00; background:#fef3c7; padding:6px; border-radius:4px; margin-top:8px; line-height:1.4; }
-  .footer { font-size:10px; color:#666; margin-top:6px; display:flex; justify-content:space-between; }
+  .sep { border-top: 1px dashed #999; margin: 6px 0; }
+  table { width:100%; border-collapse:collapse; table-layout:fixed; }
+  td { word-wrap:break-word; overflow-wrap:break-word; }
+  .total-row td { font-weight:700; font-size:14px; border-top:1px dashed #999; padding-top:5px; }
+  .disclaimer { font-size:9.5px; color:#7a5c00; background:#fef3c7; padding:5px; border-radius:4px; margin-top:6px; line-height:1.4; }
+  .footer { font-size:9.5px; color:#666; margin-top:5px; display:flex; justify-content:space-between; }
   .btn-print { display:block; width:100%; padding:10px; background:#2d4a3e; color:white; border:none; font-size:14px; cursor:pointer; border-radius:6px; margin-top:12px; }
 </style>
 </head><body>
@@ -2306,13 +2432,14 @@ function imprimerTicket(cmd, site, client, total, acompte, solde, caissier){
 <p class="center" style="margin:2px 0;font-size:11px;color:#666">${site.adresse}</p>
 <p class="center" style="margin:2px 0;font-size:11px;color:#666">${site.tel}</p>
 <div class="sep"></div>
-<p class="center mono" style="font-size:15px;font-weight:700;margin:4px 0">${cmd.numero}</p>
+<p class="center mono" style="font-size:15px;font-weight:700;margin:4px 0">${cmd.numero}${cmd.express ? ' <span style="background:#C76B3F;color:#fff;padding:2px 8px;border-radius:100px;font-size:11px;">⚡ EXPRESS</span>' : ''}</p>
 <p class="center" style="font-size:11px;color:#666;margin:2px 0">${new Date(cmd.dateCreation).toLocaleString('fr-FR')}</p>
 <p style="margin:6px 0"><strong>${client ? client.nom : 'Client'}</strong>${client&&client.tel?' — '+client.tel:''}</p>
 <div class="sep"></div>
 <table>
   ${lignesHTML}
   ${rabaisHTML}
+  ${expressHTML}
   <tr class="total-row"><td>Total à payer</td><td style="text-align:right;font-family:monospace">${fmtGNF(total)}</td></tr>
   ${paiementHTML}
 </table>
@@ -2331,6 +2458,125 @@ ${cmd.notes ? `<p style="font-size:11px;color:#666;margin:4px 0">📝 ${cmd.note
   const win = window.open('', '_blank', 'width=350,height=600');
   win.document.write(html);
   win.document.close();
+}
+
+/* ===================== RECU PDF (pour WhatsApp) ===================== */
+
+function setPdfColor(doc, hex){
+  const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+  doc.setTextColor(r,g,b);
+}
+
+function generateReceiptPDFBlob(cmd, site, client, total, acompte, solde){
+  const { jsPDF } = window.jspdf;
+  const lignesConnues = cmd.lignes.map(l => {
+    const svc = site.services.find(s=>s.id===l.serviceId);
+    return svc ? { nom: svc.nom, qte: l.qte, prix: svc.prix } : null;
+  }).filter(Boolean);
+
+  const extraLines = (cmd.rabais > 0 ? 1 : 0) + (cmd.montantExpress > 0 ? 1 : 0) + (acompte > 0 ? 2 : 0) + ((cmd.dateRdvRecuperation || cmd.dateRetraitPrevue) ? 1 : 0) + (cmd.notes ? 2 : 0);
+  const totalLines = 12 + lignesConnues.length + extraLines + 8;
+  const heightMM = Math.max(130, totalLines * 5.2 + 20);
+
+  const doc = new jsPDF({ unit:'mm', format:[80, heightMM] });
+  const W = 80;
+  const mx = 5;
+  let y = 8;
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(13);
+  doc.text(site.nom, W/2, y, {align:'center'}); y += 5;
+  doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+  if(site.adresse){ doc.text(site.adresse, W/2, y, {align:'center'}); y += 4; }
+  if(site.tel){ doc.text(site.tel, W/2, y, {align:'center'}); y += 4; }
+
+  doc.setLineDashPattern([1,1],0);
+  doc.line(mx, y, W-mx, y); y += 5;
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(12);
+  doc.text(cmd.numero + (cmd.express ? '  [EXPRESS]' : ''), W/2, y, {align:'center'}); y += 4.5;
+  doc.setFont('helvetica','normal'); doc.setFontSize(8);
+  doc.text(new Date(cmd.dateCreation).toLocaleString('fr-FR'), W/2, y, {align:'center'}); y += 5;
+
+  doc.setFontSize(9.5);
+  doc.text(client ? client.nom + (client.tel ? ' — ' + client.tel : '') : 'Client', mx, y); y += 5;
+
+  doc.line(mx, y, W-mx, y); y += 5;
+
+  doc.setFontSize(9);
+  lignesConnues.forEach(l => {
+    doc.text(`${l.qte}x ${l.nom}`, mx, y);
+    doc.text(fmtGNF(l.prix*l.qte), W-mx, y, {align:'right'});
+    y += 4.8;
+  });
+
+  if(cmd.rabais > 0){
+    setPdfColor(doc, '#C76B3F');
+    doc.text('Rabais', mx, y);
+    doc.text('- ' + fmtGNF(cmd.rabais), W-mx, y, {align:'right'});
+    setPdfColor(doc, '#1A1F1C');
+    y += 4.8;
+  }
+  if(cmd.montantExpress > 0){
+    setPdfColor(doc, '#C76B3F');
+    doc.text(`Supplément Express (${cmd.expressMajoration}%)`, mx, y);
+    doc.text('+ ' + fmtGNF(cmd.montantExpress), W-mx, y, {align:'right'});
+    setPdfColor(doc, '#1A1F1C');
+    y += 4.8;
+  }
+
+  doc.line(mx, y, W-mx, y); y += 5;
+  doc.setFont('helvetica','bold'); doc.setFontSize(11);
+  doc.text('Total à payer', mx, y);
+  doc.text(fmtGNF(total), W-mx, y, {align:'right'});
+  y += 5.5;
+  doc.setFont('helvetica','normal'); doc.setFontSize(9);
+
+  if(acompte > 0){
+    setPdfColor(doc, '#3B7D4F');
+    doc.text('Acompte versé', mx, y);
+    doc.text(fmtGNF(acompte), W-mx, y, {align:'right'});
+    y += 4.8;
+    setPdfColor(doc, solde > 0 ? '#B23B3B' : '#3B7D4F');
+    doc.setFont('helvetica','bold');
+    doc.text(solde > 0 ? 'Solde restant' : 'Entièrement payé', mx, y);
+    if(solde > 0) doc.text(fmtGNF(solde), W-mx, y, {align:'right'});
+    y += 5;
+    doc.setFont('helvetica','normal');
+    setPdfColor(doc, '#1A1F1C');
+  }
+
+  if(cmd.dateRdvRecuperation || cmd.dateRetraitPrevue){
+    doc.setFontSize(8.5);
+    const rdvTxt = cmd.dateRdvRecuperation
+      ? `RDV : ${fmtDate(cmd.dateRdvRecuperation)}${cmd.heureRdvRecuperation ? ' à '+cmd.heureRdvRecuperation : ''}`
+      : `RDV : ${fmtDate(cmd.dateRetraitPrevue)}`;
+    doc.text(rdvTxt, mx, y);
+    y += 4.5;
+  }
+
+  if(cmd.notes){
+    doc.setFontSize(8.5);
+    const noteLines = doc.splitTextToSize('Notes : ' + cmd.notes, W - mx*2);
+    doc.text(noteLines, mx, y);
+    y += noteLines.length * 4 + 1;
+  }
+
+  y += 2;
+  doc.line(mx, y, W-mx, y); y += 5;
+
+  doc.setFontSize(7.5);
+  setPdfColor(doc, '#92400E');
+  const disclaimerLines = doc.splitTextToSize("Avis important : Maci Pressing ne sera pas responsable des articles non récupérés après 45 jours de dépôt. Passé ce délai, les articles seront considérés comme abandonnés.", W - mx*2);
+  doc.text(disclaimerLines, mx, y);
+
+  return doc.output('blob');
+}
+
+async function uploadReceiptPDF(siteId, cmd, pdfBlob){
+  const path = `receipts/${siteId}/${cmd.numero}_${cmd.id}.pdf`;
+  const ref = firebaseStorage.ref().child(path);
+  await ref.put(pdfBlob, { contentType: 'application/pdf' });
+  return await ref.getDownloadURL();
 }
 
 function TicketModal({ cmd, site, onClose }){
@@ -2358,7 +2604,7 @@ function TicketModal({ cmd, site, onClose }){
           <div style={{fontSize:12, color:'var(--steam)'}}>{site.tel}</div>
         </div>
         <div style={{borderTop:'1px dashed var(--line-strong)', borderBottom:'1px dashed var(--line-strong)', padding:'10px 0', margin:'10px 0'}}>
-          <div className="mono" style={{textAlign:'center', fontSize:15, fontWeight:700}}>{cmd.numero}</div>
+          <div className="mono" style={{textAlign:'center', fontSize:15, fontWeight:700}}>{cmd.numero}{cmd.express && <span style={{marginLeft:8, fontSize:12, background:'var(--rust)', color:'var(--white)', padding:'2px 8px', borderRadius:100}}>⚡ EXPRESS</span>}</div>
           <div style={{textAlign:'center', fontSize:12, color:'var(--steam)'}}>{fmtDateTime(cmd.dateCreation)}</div>
         </div>
         <div style={{fontSize:13.5, marginBottom:8}}><strong>{client ? client.nom : 'Client inconnu'}</strong>{client && client.tel ? ` — ${client.tel}` : ''}</div>
@@ -2381,6 +2627,11 @@ function TicketModal({ cmd, site, onClose }){
               <span>🏷️ Rabais</span><span className="mono">− {fmtGNF(Number(cmd.rabais))}</span>
             </div>
           </>
+        )}
+        {Number(cmd.montantExpress) > 0 && (
+          <div style={{display:'flex', justifyContent:'space-between', fontSize:13, color:'var(--rust)', paddingTop:2}}>
+            <span>⚡ Supplément Express ({cmd.expressMajoration}%)</span><span className="mono">+ {fmtGNF(Number(cmd.montantExpress))}</span>
+          </div>
         )}
         <div style={{borderTop:'1px dashed var(--line-strong)', marginTop:6, paddingTop:8, display:'flex', justifyContent:'space-between', fontWeight:700}}>
           <span>Total à payer</span><span className="mono">{fmtGNF(total)}</span>
@@ -4362,9 +4613,11 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
     return (
       <Shell title={site.nom} role={`Repasseur — ${monProfil.nom}`} navItems={[
         { key:'repassage', label:'Repassage', icon:'shirt' },
+        { key:'agenda', label:'Agenda du jour', icon:'clock' },
         { key:'remuneration', label:'Ma rémunération', icon:'chart' },
       ]} active={page} onNav={setPage} onLogout={onLogout}>
         {page === 'repassage' && <RepasseurView site={site} updateSite={updateSite} employeId={employeId} />}
+        {page === 'agenda' && <AgendaView site={site} />}
         {page === 'remuneration' && <RemunerationView site={site} updateSite={updateSite} db={db} siteId={siteId} employeId={employeId} />}
       </Shell>
     );
@@ -4373,6 +4626,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
   // Espace caissier/autre employé — vue complète
   const navItems = [
     { key:'caisse', label:'Caisse', icon:'ticket' },
+    { key:'agenda', label:'Agenda du jour', icon:'clock' },
     { key:'clients', label:'Clients', icon:'users' },
     { key:'stock', label:'Stock', icon:'box' },
     { key:'depenses', label:'Dépenses', icon:'euro' },
@@ -4381,6 +4635,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
   return (
     <Shell title={site.nom} role="Espace employé" navItems={navItems} active={page} onNav={setPage} onLogout={onLogout}>
       {page === 'caisse' && <CommandesView site={site} updateSite={updateSite} editable={true} employeId={employeId} />}
+      {page === 'agenda' && <AgendaView site={site} />}
       {page === 'clients' && <ClientsView site={site} updateSite={updateSite} />}
       {page === 'stock' && <StockView site={site} updateSite={updateSite} />}
       {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} />}
