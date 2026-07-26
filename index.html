@@ -1165,6 +1165,43 @@ const PARTS_DISTRIBUTION = [
 
 const ANNEE_DEBUT_APP = 2026; // année de mise en place de l'application
 
+function MoisRow({ valeurs, onSave }){
+  const [recetteBrute, setRecetteBrute] = useState(String(valeurs.recetteBrute || ''));
+  const [depenses, setDepenses] = useState(String(valeurs.depenses || ''));
+  const [impayes, setImpayes] = useState(String(valeurs.impayes || ''));
+  const [flash, setFlash] = useState(false);
+
+  useEffect(() => {
+    setRecetteBrute(valeurs.recetteBrute ? String(valeurs.recetteBrute) : '');
+    setDepenses(valeurs.depenses ? String(valeurs.depenses) : '');
+    setImpayes(valeurs.impayes ? String(valeurs.impayes) : '');
+  }, [valeurs.mois, valeurs.recetteBrute, valeurs.depenses, valeurs.impayes]);
+
+  function save(){
+    onSave(valeurs.mois, { recetteBrute: Number(recetteBrute)||0, depenses: Number(depenses)||0, impayes: Number(impayes)||0 });
+    setFlash(true);
+    setTimeout(()=>setFlash(false), 1200);
+  }
+
+  const recetteNetteMois = (Number(recetteBrute)||0) - (Number(impayes)||0) - (Number(depenses)||0);
+
+  return (
+    <tr style={{borderTop:'1px solid var(--line)'}}>
+      <td style={{...td, textTransform:'capitalize', fontWeight:600, whiteSpace:'nowrap'}}>
+        {valeurs.label}
+        {valeurs.manuel && <span className="tag" style={{fontSize:9, marginLeft:6, background:'var(--warn-light)', color:'var(--warn)'}}>Manuel</span>}
+      </td>
+      <td style={td}><input type="number" value={recetteBrute} onChange={e=>setRecetteBrute(e.target.value)} placeholder="0" style={{padding:'6px 8px', fontSize:13}} /></td>
+      <td style={td}><input type="number" value={impayes} onChange={e=>setImpayes(e.target.value)} placeholder="0" style={{padding:'6px 8px', fontSize:13}} /></td>
+      <td style={td}><input type="number" value={depenses} onChange={e=>setDepenses(e.target.value)} placeholder="0" style={{padding:'6px 8px', fontSize:13}} /></td>
+      <td style={{...td, fontWeight:700, color: recetteNetteMois<0?'var(--danger)':'var(--ink)'}} className="mono">{fmtGNF(recetteNetteMois)}</td>
+      <td style={{...td, textAlign:'right'}}>
+        <button className="btn btn-sm" onClick={save}>{flash ? <Icon name="check" size={13}/> : 'Enreg.'}</button>
+      </td>
+    </tr>
+  );
+}
+
 function DistributionView({ db, setDb }){
   const currentYear = Number(todayISO().slice(0,4));
   const anneesDisponibles = useMemo(() => {
@@ -1177,25 +1214,6 @@ function DistributionView({ db, setDb }){
   const estAnneeApp = annee >= ANNEE_DEBUT_APP;
 
   // Calcul automatique à partir des données réelles de l'app (année couverte par l'application)
-  const donneesAuto = useMemo(() => {
-    let recetteBrute = 0, recetteEncaissee = 0, depensesTotal = 0;
-    db.sites.forEach(site => {
-      (site.commandes||[]).forEach(c => {
-        if(c.dateCreation && c.dateCreation.slice(0,4) === String(annee)){
-          const totalCmd = calcCommandeTotal(c, site.services);
-          recetteBrute += totalCmd;
-          recetteEncaissee += c.paiement === 'paye' ? totalCmd : (Number(c.acompte)||0);
-        }
-      });
-      (site.depenses||[]).forEach(d => {
-        if(d.date && d.date.slice(0,4) === String(annee)){
-          depensesTotal += Number(d.montant)||0;
-        }
-      });
-    });
-    return { recetteBrute, recetteEncaissee, depenses: depensesTotal, impayes: recetteBrute - recetteEncaissee };
-  }, [db, annee]);
-
   // Saisie manuelle pour les années antérieures à l'application
   const historique = db.historiqueAnnuel || {};
   const [editRecette, setEditRecette] = useState('');
@@ -1245,9 +1263,65 @@ function DistributionView({ db, setDb }){
   }
 
   const dataHisto = historique[annee] || { recetteBrute: 0, depenses: 0, impayes: 0 };
-  const recetteBrute = estAnneeApp ? donneesAuto.recetteBrute : dataHisto.recetteBrute;
-  const depensesAnnee = estAnneeApp ? donneesAuto.depenses : dataHisto.depenses;
-  const impayesAnnee = estAnneeApp ? donneesAuto.impayes : (Number(dataHisto.impayes)||0);
+
+  // Détail mensuel — données réelles de l'app, avec possibilité de saisie/correction manuelle mois par mois
+  const donneesParMois = useMemo(() => {
+    if(!estAnneeApp) return null;
+    const auto = Array.from({length:12}, (_,i) => ({
+      mois: i+1,
+      label: new Date(annee, i, 1).toLocaleDateString('fr-FR', {month:'long'}),
+      recetteBrute: 0,
+      recetteEncaissee: 0,
+      depenses: 0,
+    }));
+    db.sites.forEach(site => {
+      (site.commandes||[]).forEach(c => {
+        if(c.dateCreation && c.dateCreation.slice(0,4) === String(annee)){
+          const m = Number(c.dateCreation.slice(5,7)) - 1;
+          const totalCmd = calcCommandeTotal(c, site.services);
+          auto[m].recetteBrute += totalCmd;
+          auto[m].recetteEncaissee += c.paiement === 'paye' ? totalCmd : (Number(c.acompte)||0);
+        }
+      });
+      (site.depenses||[]).forEach(d => {
+        if(d.date && d.date.slice(0,4) === String(annee)){
+          const m = Number(d.date.slice(5,7)) - 1;
+          auto[m].depenses += Number(d.montant)||0;
+        }
+      });
+    });
+    const moisManuel = (db.historiqueAnnuel?.[annee]?.mois) || {};
+    return auto.map(m => {
+      const override = moisManuel[m.mois];
+      if(override){
+        return {
+          mois: m.mois, label: m.label,
+          recetteBrute: Number(override.recetteBrute)||0,
+          depenses: Number(override.depenses)||0,
+          impayes: Number(override.impayes)||0,
+          recetteNette: (Number(override.recetteBrute)||0) - (Number(override.impayes)||0) - (Number(override.depenses)||0),
+          manuel: true,
+        };
+      }
+      const impayesAuto = m.recetteBrute - m.recetteEncaissee;
+      return {
+        mois: m.mois, label: m.label,
+        recetteBrute: m.recetteBrute, depenses: m.depenses, impayes: impayesAuto,
+        recetteNette: m.recetteEncaissee - m.depenses,
+        manuel: false,
+      };
+    });
+  }, [db, annee, estAnneeApp]);
+
+  function saveMois(m, valeurs){
+    const anneeActuelle = (db.historiqueAnnuel||{})[annee] || {};
+    const moisActuels = anneeActuelle.mois || {};
+    const nextMois = { ...moisActuels, [m]: valeurs };
+    setDb({ ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [annee]: { ...anneeActuelle, mois: nextMois } } });
+  }
+  const recetteBrute = estAnneeApp ? (donneesParMois ? donneesParMois.reduce((s,m)=>s+m.recetteBrute,0) : 0) : dataHisto.recetteBrute;
+  const depensesAnnee = estAnneeApp ? (donneesParMois ? donneesParMois.reduce((s,m)=>s+m.depenses,0) : 0) : dataHisto.depenses;
+  const impayesAnnee = estAnneeApp ? (donneesParMois ? donneesParMois.reduce((s,m)=>s+m.impayes,0) : 0) : (Number(dataHisto.impayes)||0);
   const recetteEncaissee = recetteBrute - impayesAnnee;
   const recetteNette = recetteEncaissee - depensesAnnee;
   const depensesActeursActuel = dataHisto.depensesActeurs || {}; // { [nom]: [{id, description, montant}] }
@@ -1341,6 +1415,42 @@ function DistributionView({ db, setDb }){
         <StatCard label={`Dépenses entreprise ${annee}`} value={fmtGNF(depensesAnnee)} icon="trash" tone="danger" />
         <StatCard label={`Recette nette ${annee}`} value={fmtGNF(recetteNette)} icon="chart" tone={recetteNette>=0?'default':'danger'} />
       </div>
+
+      {estAnneeApp && donneesParMois && (
+        <>
+          <h2 style={{fontSize:16, color:'var(--pine)', marginBottom:6}}>Détail mensuel — {annee}</h2>
+          <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
+            Les montants sont calculés automatiquement à partir des commandes et dépenses réelles de chaque mois. Pour un mois sans données dans l'application (ex : avant sa mise en place), corrigez les valeurs puis cliquez sur "Enreg." — vos saisies remplacent alors le calcul automatique pour ce mois.
+          </p>
+          <div className="card" style={{overflow:'hidden', marginBottom:24}}>
+            <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+              <thead>
+                <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                  <th style={th}>Mois</th>
+                  <th style={th}>Recette brute</th>
+                  <th style={th}>Impayés</th>
+                  <th style={th}>Dépenses entreprise</th>
+                  <th style={th}>Recette nette</th>
+                  <th style={th}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {donneesParMois.map(m => (
+                  <MoisRow key={m.mois} valeurs={m} onSave={saveMois} />
+                ))}
+                <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
+                  <td style={{...td, fontWeight:700}}>Total {annee}</td>
+                  <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(recetteBrute)}</td>
+                  <td style={{...td, fontWeight:700}} className="mono">{impayesAnnee>0?fmtGNF(impayesAnnee):'—'}</td>
+                  <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(depensesAnnee)}</td>
+                  <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(recetteNette)}</td>
+                  <td style={td}></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
 
       <h2 style={{fontSize:16, color:'var(--pine)', marginBottom:14}}>Répartition entre les acteurs</h2>
       <div className="card" style={{overflow:'hidden'}}>
