@@ -232,6 +232,207 @@ function capitalizeNom(str){
     .join(' ');
 }
 
+const COUNTRY_CODES = [
+  { code: '+224', name: 'Guinée' },
+  { code: '+93', name: 'Afghanistan' },
+  { code: '+27', name: 'Afrique du Sud' },
+  { code: '+355', name: 'Albanie' },
+  { code: '+213', name: 'Algérie' },
+  { code: '+49', name: 'Allemagne' },
+  { code: '+376', name: 'Andorre' },
+  { code: '+244', name: 'Angola' },
+  { code: '+966', name: 'Arabie Saoudite' },
+  { code: '+54', name: 'Argentine' },
+  { code: '+374', name: 'Arménie' },
+  { code: '+61', name: 'Australie' },
+  { code: '+43', name: 'Autriche' },
+  { code: '+994', name: 'Azerbaïdjan' },
+  { code: '+973', name: 'Bahreïn' },
+  { code: '+880', name: 'Bangladesh' },
+  { code: '+32', name: 'Belgique' },
+  { code: '+501', name: 'Belize' },
+  { code: '+229', name: 'Bénin' },
+  { code: '+975', name: 'Bhoutan' },
+  { code: '+375', name: 'Biélorussie' },
+  { code: '+591', name: 'Bolivie' },
+  { code: '+387', name: 'Bosnie-Herzégovine' },
+  { code: '+267', name: 'Botswana' },
+  { code: '+55', name: 'Brésil' },
+  { code: '+673', name: 'Brunei' },
+  { code: '+359', name: 'Bulgarie' },
+  { code: '+226', name: 'Burkina Faso' },
+  { code: '+257', name: 'Burundi' },
+  { code: '+855', name: 'Cambodge' },
+  { code: '+237', name: 'Cameroun' },
+  { code: '+1', name: 'Canada' },
+  { code: '+238', name: 'Cap-Vert' },
+  { code: '+236', name: 'Centrafrique' },
+  { code: '+56', name: 'Chili' },
+  { code: '+86', name: 'Chine' },
+  { code: '+357', name: 'Chypre' },
+  { code: '+57', name: 'Colombie' },
+  { code: '+269', name: 'Comores' },
+  { code: '+242', name: 'Congo-Brazzaville' },
+  { code: '+243', name: 'Congo-Kinshasa (RDC)' },
+  { code: '+82', name: 'Corée du Sud' },
+  { code: '+850', name: 'Corée du Nord' },
+  { code: '+506', name: 'Costa Rica' },
+  { code: '+225', name: "Côte d'Ivoire" },
+  { code: '+385', name: 'Croatie' },
+  { code: '+53', name: 'Cuba' },
+  { code: '+45', name: 'Danemark' },
+  { code: '+253', name: 'Djibouti' },
+  { code: '+20', name: 'Égypte' },
+  { code: '+971', name: 'Émirats Arabes Unis' },
+  { code: '+593', name: 'Équateur' },
+  { code: '+34', name: 'Espagne' },
+  { code: '+372', name: 'Estonie' },
+  { code: '+1', name: 'États-Unis' },
+  { code: '+268', name: 'Eswatini' },
+  { code: '+251', name: 'Éthiopie' },
+  { code: '+679', name: 'Fidji' },
+  { code: '+358', name: 'Finlande' },
+  { code: '+33', name: 'France' },
+  { code: '+241', name: 'Gabon' },
+  { code: '+220', name: 'Gambie' },
+  { code: '+995', name: 'Géorgie' },
+  { code: '+233', name: 'Ghana' },
+  { code: '+30', name: 'Grèce' },
+  { code: '+299', name: 'Groenland' },
+  { code: '+590', name: 'Guadeloupe' },
+  { code: '+502', name: 'Guatemala' },
+  { code: '+245', name: 'Guinée-Bissau' },
+  { code: '+240', name: 'Guinée Équatoriale' },
+  { code: '+592', name: 'Guyana' },
+  { code: '+594', name: 'Guyane Française' },
+  { code: '+509', name: 'Haïti' },
+  { code: '+504', name: 'Honduras' },
+  { code: '+852', name: 'Hong Kong' },
+  { code: '+36', name: 'Hongrie' },
+  { code: '+91', name: 'Inde' },
+  { code: '+62', name: 'Indonésie' },
+  { code: '+964', name: 'Irak' },
+  { code: '+98', name: 'Iran' },
+  { code: '+353', name: 'Irlande' },
+  { code: '+354', name: 'Islande' },
+  { code: '+972', name: 'Israël' },
+  { code: '+39', name: 'Italie' },
+  { code: '+81', name: 'Japon' },
+  { code: '+962', name: 'Jordanie' },
+  { code: '+254', name: 'Kenya' },
+  { code: '+996', name: 'Kirghizistan' },
+  { code: '+965', name: 'Koweït' },
+  { code: '+856', name: 'Laos' },
+  { code: '+266', name: 'Lesotho' },
+  { code: '+371', name: 'Lettonie' },
+  { code: '+961', name: 'Liban' },
+  { code: '+231', name: 'Liberia' },
+  { code: '+218', name: 'Libye' },
+  { code: '+423', name: 'Liechtenstein' },
+  { code: '+370', name: 'Lituanie' },
+  { code: '+352', name: 'Luxembourg' },
+  { code: '+853', name: 'Macao' },
+  { code: '+389', name: 'Macédoine du Nord' },
+  { code: '+261', name: 'Madagascar' },
+  { code: '+60', name: 'Malaisie' },
+  { code: '+265', name: 'Malawi' },
+  { code: '+960', name: 'Maldives' },
+  { code: '+223', name: 'Mali' },
+  { code: '+356', name: 'Malte' },
+  { code: '+212', name: 'Maroc' },
+  { code: '+596', name: 'Martinique' },
+  { code: '+230', name: 'Maurice' },
+  { code: '+222', name: 'Mauritanie' },
+  { code: '+52', name: 'Mexique' },
+  { code: '+373', name: 'Moldavie' },
+  { code: '+377', name: 'Monaco' },
+  { code: '+976', name: 'Mongolie' },
+  { code: '+382', name: 'Monténégro' },
+  { code: '+258', name: 'Mozambique' },
+  { code: '+95', name: 'Myanmar (Birmanie)' },
+  { code: '+264', name: 'Namibie' },
+  { code: '+977', name: 'Népal' },
+  { code: '+505', name: 'Nicaragua' },
+  { code: '+227', name: 'Niger' },
+  { code: '+234', name: 'Nigeria' },
+  { code: '+47', name: 'Norvège' },
+  { code: '+64', name: 'Nouvelle-Zélande' },
+  { code: '+968', name: 'Oman' },
+  { code: '+256', name: 'Ouganda' },
+  { code: '+998', name: 'Ouzbékistan' },
+  { code: '+92', name: 'Pakistan' },
+  { code: '+970', name: 'Palestine' },
+  { code: '+507', name: 'Panama' },
+  { code: '+675', name: 'Papouasie-Nouvelle-Guinée' },
+  { code: '+595', name: 'Paraguay' },
+  { code: '+31', name: 'Pays-Bas' },
+  { code: '+51', name: 'Pérou' },
+  { code: '+63', name: 'Philippines' },
+  { code: '+48', name: 'Pologne' },
+  { code: '+689', name: 'Polynésie Française' },
+  { code: '+351', name: 'Portugal' },
+  { code: '+974', name: 'Qatar' },
+  { code: '+262', name: 'Réunion' },
+  { code: '+40', name: 'Roumanie' },
+  { code: '+44', name: 'Royaume-Uni' },
+  { code: '+7', name: 'Russie' },
+  { code: '+250', name: 'Rwanda' },
+  { code: '+590', name: 'Saint-Martin' },
+  { code: '+378', name: 'Saint-Marin' },
+  { code: '+503', name: 'Salvador' },
+  { code: '+685', name: 'Samoa' },
+  { code: '+239', name: 'Sao Tomé-et-Principe' },
+  { code: '+221', name: 'Sénégal' },
+  { code: '+381', name: 'Serbie' },
+  { code: '+248', name: 'Seychelles' },
+  { code: '+232', name: 'Sierra Leone' },
+  { code: '+65', name: 'Singapour' },
+  { code: '+421', name: 'Slovaquie' },
+  { code: '+386', name: 'Slovénie' },
+  { code: '+252', name: 'Somalie' },
+  { code: '+249', name: 'Soudan' },
+  { code: '+211', name: 'Soudan du Sud' },
+  { code: '+94', name: 'Sri Lanka' },
+  { code: '+46', name: 'Suède' },
+  { code: '+41', name: 'Suisse' },
+  { code: '+597', name: 'Suriname' },
+  { code: '+963', name: 'Syrie' },
+  { code: '+992', name: 'Tadjikistan' },
+  { code: '+886', name: 'Taïwan' },
+  { code: '+255', name: 'Tanzanie' },
+  { code: '+235', name: 'Tchad' },
+  { code: '+420', name: 'Tchéquie' },
+  { code: '+66', name: 'Thaïlande' },
+  { code: '+228', name: 'Togo' },
+  { code: '+676', name: 'Tonga' },
+  { code: '+216', name: 'Tunisie' },
+  { code: '+993', name: 'Turkménistan' },
+  { code: '+90', name: 'Turquie' },
+  { code: '+380', name: 'Ukraine' },
+  { code: '+598', name: 'Uruguay' },
+  { code: '+678', name: 'Vanuatu' },
+  { code: '+379', name: 'Vatican' },
+  { code: '+58', name: 'Venezuela' },
+  { code: '+84', name: 'Vietnam' },
+  { code: '+967', name: 'Yémen' },
+  { code: '+260', name: 'Zambie' },
+  { code: '+263', name: 'Zimbabwe' },
+];
+
+function splitTel(tel){
+  const match = (tel||'').trim().match(/^(\+\d{1,4})\s*(.*)$/);
+  if(match) return { indicatif: match[1], numero: match[2] };
+  return { indicatif: '+224', numero: (tel||'').trim() };
+}
+
+function CountryCodeSelect({ value, onChange }){
+  return (
+    <select value={value} onChange={e=>onChange(e.target.value)} style={{width:150, flexShrink:0}}>
+      {COUNTRY_CODES.map(c => <option key={c.name} value={c.code}>{c.code} {c.name}</option>)}
+    </select>
+  );
+}
+
 /* ===================== STORAGE LAYER (Firebase) ===================== */
 
 const DB_KEY = 'pressing-db-v2';
@@ -632,10 +833,10 @@ function RoleSelect({ db, setDb, onSelect }){
     }
   }
 
-  function createClientAndLogin(siteId, nom, tel){
+  function createClientAndLogin(siteId, nom, indicatif, tel){
     const site = db.sites.find(s => s.id === siteId);
     if(!site || !nom.trim()) return;
-    const newClient = { id: uid('cli_'), nom: capitalizeNom(nom), tel: tel.trim() ? `+224 ${tel.trim()}` : '', canalPref:'SMS', dateInscription: todayISO() };
+    const newClient = { id: uid('cli_'), nom: capitalizeNom(nom), tel: tel.trim() ? `${indicatif} ${tel.trim()}` : '', canalPref:'SMS', dateInscription: todayISO() };
     setDb({ ...db, sites: db.sites.map(s => s.id === siteId ? { ...s, clients: [...s.clients, newClient] } : s) });
     onSelect('client', siteId, newClient.id);
   }
@@ -751,6 +952,7 @@ function ClientLoginFlow({ db, onPick, onCreate, onBack }){
   const [search, setSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [newNom, setNewNom] = useState('');
+  const [newIndicatif, setNewIndicatif] = useState('+224');
   const [newTel, setNewTel] = useState('');
 
   const site = db.sites.find(s => s.id === siteId);
@@ -771,7 +973,7 @@ function ClientLoginFlow({ db, onPick, onCreate, onBack }){
         <div style={{display:'grid', gap:10, marginTop:6}}>
           <input type="text" placeholder="Nom complet" value={newNom} onChange={e=>setNewNom(e.target.value)} autoFocus />
           <div style={{display:'flex', gap:8, alignItems:'center'}}>
-            <span className="mono" style={{padding:'9px 10px', background:'var(--pine-light)', color:'var(--pine)', borderRadius:8, fontWeight:700, fontSize:13.5}}>+224</span>
+            <CountryCodeSelect value={newIndicatif} onChange={setNewIndicatif} />
             <input type="tel" placeholder="6XX XX XX XX" value={newTel} onChange={e=>setNewTel(e.target.value)} style={{flex:1}} />
           </div>
         </div>
@@ -780,7 +982,7 @@ function ClientLoginFlow({ db, onPick, onCreate, onBack }){
         </p>
         <div style={{display:'flex', gap:8, marginTop:14}}>
           <button className="btn btn-ghost btn-sm" onClick={()=>{ setShowCreate(false); setNewNom(''); setNewTel(''); }}>← Retour</button>
-          <button className="btn btn-rust btn-sm" disabled={!newNom.trim()} onClick={()=>onCreate(siteId, newNom, newTel)} style={{flex:1}}>Créer ma fiche</button>
+          <button className="btn btn-rust btn-sm" disabled={!newNom.trim()} onClick={()=>onCreate(siteId, newNom, newIndicatif, newTel)} style={{flex:1}}>Créer ma fiche</button>
         </div>
       </div>
     );
@@ -929,6 +1131,7 @@ function GerantApp({ db, setDb, onLogout }){
   const navItems = [
     { key:'global', label:'Vue globale', icon:'layers' },
     { key:'sites', label:'Mes pressings', icon:'building' },
+    { key:'distribution', label:'Distribution des recettes', icon:'euro' },
   ];
 
   const activeSite = db.sites.find(s => s.id === activeSiteId);
@@ -942,9 +1145,241 @@ function GerantApp({ db, setDb, onLogout }){
         <>
           {page === 'global' && <GlobalDashboard db={db} onOpenSite={setActiveSiteId} />}
           {page === 'sites' && <SitesManager db={db} setDb={setDb} addSite={addSite} removeSite={removeSite} onOpenSite={setActiveSiteId} />}
+          {page === 'distribution' && <DistributionView db={db} setDb={setDb} />}
         </>
       )}
     </Shell>
+  );
+}
+
+/* ===================== DISTRIBUTION DES RECETTES ===================== */
+
+const PARTS_DISTRIBUTION = [
+  { nom: 'Alpha Mamoudou Bah', pct: 30 },
+  { nom: 'Mamadou Sanoussy Bah', pct: 25 },
+  { nom: 'Mamadou Alpha Bah', pct: 20 },
+  { nom: 'Nene Djiba Bah', pct: 10 },
+  { nom: 'Amadou Tidiane Bah', pct: 5 },
+  { nom: 'Conservation du Capital Fixe', pct: 10 },
+];
+
+const ANNEE_DEBUT_APP = 2026; // année de mise en place de l'application
+
+function DistributionView({ db, setDb }){
+  const currentYear = Number(todayISO().slice(0,4));
+  const anneesDisponibles = useMemo(() => {
+    const arr = [];
+    for(let y = currentYear; y >= ANNEE_DEBUT_APP - 10; y--) arr.push(y);
+    return arr;
+  }, [currentYear]);
+
+  const [annee, setAnnee] = useState(currentYear);
+  const estAnneeApp = annee >= ANNEE_DEBUT_APP;
+
+  // Calcul automatique à partir des données réelles de l'app (année couverte par l'application)
+  const donneesAuto = useMemo(() => {
+    let recetteBrute = 0, recetteEncaissee = 0, depensesTotal = 0;
+    db.sites.forEach(site => {
+      (site.commandes||[]).forEach(c => {
+        if(c.dateCreation && c.dateCreation.slice(0,4) === String(annee)){
+          const totalCmd = calcCommandeTotal(c, site.services);
+          recetteBrute += totalCmd;
+          recetteEncaissee += c.paiement === 'paye' ? totalCmd : (Number(c.acompte)||0);
+        }
+      });
+      (site.depenses||[]).forEach(d => {
+        if(d.date && d.date.slice(0,4) === String(annee)){
+          depensesTotal += Number(d.montant)||0;
+        }
+      });
+    });
+    return { recetteBrute, recetteEncaissee, depenses: depensesTotal, impayes: recetteBrute - recetteEncaissee };
+  }, [db, annee]);
+
+  // Saisie manuelle pour les années antérieures à l'application
+  const historique = db.historiqueAnnuel || {};
+  const [editRecette, setEditRecette] = useState('');
+  const [editDepenses, setEditDepenses] = useState('');
+  const [editImpayes, setEditImpayes] = useState('');
+  const [flash, setFlash] = useState(false);
+
+  // Dépenses propres à chaque acteur (toutes années confondues) — liste détaillée avec description
+  const [draftDesc, setDraftDesc] = useState({});
+  const [draftMontant, setDraftMontant] = useState({});
+
+  useEffect(() => {
+    const d = (db.historiqueAnnuel || {})[annee] || {};
+    setEditRecette(d.recetteBrute ? String(d.recetteBrute) : '');
+    setEditDepenses(d.depenses ? String(d.depenses) : '');
+    setEditImpayes(d.impayes ? String(d.impayes) : '');
+  }, [annee]);
+
+  function saveHistorique(){
+    const next = {
+      ...(db.historiqueAnnuel || {}),
+      [annee]: { ...(db.historiqueAnnuel?.[annee]||{}), recetteBrute: Number(editRecette)||0, depenses: Number(editDepenses)||0, impayes: Number(editImpayes)||0 },
+    };
+    setDb({ ...db, historiqueAnnuel: next });
+    setFlash(true);
+    setTimeout(()=>setFlash(false), 1800);
+  }
+
+  function ajouterDepenseActeur(nomActeur){
+    const desc = (draftDesc[nomActeur]||'').trim();
+    const montant = Number(draftMontant[nomActeur])||0;
+    if(!desc || montant<=0) return;
+    const entry = { id: uid('depact_'), description: desc, montant };
+    const anneeActuelle = (db.historiqueAnnuel||{})[annee] || {};
+    const listeActuelle = (anneeActuelle.depensesActeurs||{})[nomActeur] || [];
+    const nextDepensesActeurs = { ...(anneeActuelle.depensesActeurs||{}), [nomActeur]: [...listeActuelle, entry] };
+    setDb({ ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [annee]: { ...anneeActuelle, depensesActeurs: nextDepensesActeurs } } });
+    setDraftDesc({...draftDesc, [nomActeur]: ''});
+    setDraftMontant({...draftMontant, [nomActeur]: ''});
+  }
+
+  function supprimerDepenseActeur(nomActeur, entryId){
+    const anneeActuelle = (db.historiqueAnnuel||{})[annee] || {};
+    const listeActuelle = (anneeActuelle.depensesActeurs||{})[nomActeur] || [];
+    const nextDepensesActeurs = { ...(anneeActuelle.depensesActeurs||{}), [nomActeur]: listeActuelle.filter(e=>e.id!==entryId) };
+    setDb({ ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [annee]: { ...anneeActuelle, depensesActeurs: nextDepensesActeurs } } });
+  }
+
+  const dataHisto = historique[annee] || { recetteBrute: 0, depenses: 0, impayes: 0 };
+  const recetteBrute = estAnneeApp ? donneesAuto.recetteBrute : dataHisto.recetteBrute;
+  const depensesAnnee = estAnneeApp ? donneesAuto.depenses : dataHisto.depenses;
+  const impayesAnnee = estAnneeApp ? donneesAuto.impayes : (Number(dataHisto.impayes)||0);
+  const recetteEncaissee = recetteBrute - impayesAnnee;
+  const recetteNette = recetteEncaissee - depensesAnnee;
+  const depensesActeursActuel = dataHisto.depensesActeurs || {}; // { [nom]: [{id, description, montant}] }
+  const totalDepensesActeurs = PARTS_DISTRIBUTION.reduce((s,p)=> s + ((depensesActeursActuel[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0)), 0);
+
+  return (
+    <div>
+      <PageHeader title="Distribution des recettes" subtitle="Répartition annuelle du bénéfice net entre les acteurs du pressing" />
+
+      <div style={{display:'flex', gap:14, marginBottom:20, alignItems:'center', flexWrap:'wrap'}}>
+        <label style={{margin:0}}>Année :</label>
+        <select value={annee} onChange={e=>setAnnee(Number(e.target.value))} style={{width:'auto', minWidth:120}}>
+          {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
+        </select>
+        {!estAnneeApp && (
+          <span className="tag" style={{background:'var(--warn-light)', color:'var(--warn)'}}>Année antérieure à l'application — saisie manuelle</span>
+        )}
+      </div>
+
+      {!estAnneeApp && (
+        <div className="card" style={{padding:'1.5rem', marginBottom:20, background:'var(--warn-light)', border:'1.5px solid var(--warn)'}}>
+          <h3 style={{margin:'0 0 6px', fontSize:15}}>Saisie des données de {annee}</h3>
+          <p style={{fontSize:12.5, color:'#7a5c00', margin:'0 0 14px', lineHeight:1.5}}>
+            Cette année n'est pas couverte par l'application (mise en place en {ANNEE_DEBUT_APP}). Entrez les montants connus pour calculer la répartition de cette période.
+          </p>
+          <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:14}}>
+            <div>
+              <label>Recette brute de l'année (GNF)</label>
+              <input type="number" value={editRecette} onChange={e=>setEditRecette(e.target.value)} placeholder="0" />
+            </div>
+            <div>
+              <label>Dépenses de l'entreprise (GNF)</label>
+              <input type="number" value={editDepenses} onChange={e=>setEditDepenses(e.target.value)} placeholder="0" />
+            </div>
+            <div>
+              <label>Factures non payées (GNF)</label>
+              <input type="number" value={editImpayes} onChange={e=>setEditImpayes(e.target.value)} placeholder="0" />
+            </div>
+          </div>
+          <p style={{fontSize:11.5, color:'#7a5c00', margin:'10px 0 0', lineHeight:1.4}}>
+            Le montant des factures non payées est déduit de la recette brute — il ne sera pas compté dans la recette nette à distribuer, puisqu'il n'a jamais été réellement encaissé.
+          </p>
+          <button className="btn btn-rust" style={{marginTop:14}} onClick={saveHistorique}>
+            {flash ? <><Icon name="check" size={14}/> Enregistré !</> : `Enregistrer les données de ${annee}`}
+          </button>
+        </div>
+      )}
+
+      <div className="card" style={{padding:'1.5rem', marginBottom:20}}>
+        <h3 style={{margin:'0 0 6px', fontSize:15}}>💰 Dépenses propres de chaque acteur — {annee}</h3>
+        <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 16px', lineHeight:1.5}}>
+          Dépenses personnelles engagées par chaque acteur sur son propre compte cette année-là (avances, retraits, achats personnels…), avec leur description. Elles seront déduites de sa part pour refléter son montant net réel — sans affecter la recette nette globale de l'entreprise.
+        </p>
+        <div style={{display:'grid', gap:18}}>
+          {PARTS_DISTRIBUTION.map(p => {
+            const entries = depensesActeursActuel[p.nom] || [];
+            const sousTotal = entries.reduce((s,e)=>s+(Number(e.montant)||0),0);
+            return (
+              <div key={p.nom} style={{borderTop:'1px solid var(--line)', paddingTop:14}}>
+                <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8}}>
+                  <strong style={{fontSize:13.5}}>{p.nom}</strong>
+                  <span className="mono" style={{fontSize:13, fontWeight:700, color: sousTotal>0 ? 'var(--danger)' : 'var(--steam)'}}>{sousTotal>0 ? '− '+fmtGNF(sousTotal) : '—'}</span>
+                </div>
+                {entries.length > 0 && (
+                  <div style={{marginBottom:8}}>
+                    {entries.map(e => (
+                      <div key={e.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'5px 0', borderBottom:'1px solid var(--line)', fontSize:13}}>
+                        <span>{e.description}</span>
+                        <div style={{display:'flex', gap:8, alignItems:'center'}}>
+                          <span className="mono">{fmtGNF(e.montant)}</span>
+                          <button className="btn btn-ghost btn-sm" style={{padding:'3px 7px', color:'var(--danger)'}} onClick={()=>supprimerDepenseActeur(p.nom, e.id)}><Icon name="trash" size={12}/></button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{display:'grid', gridTemplateColumns:'2fr 1fr auto', gap:8}}>
+                  <input type="text" placeholder="Description (ex: avance sur salaire)" value={draftDesc[p.nom]||''} onChange={e=>setDraftDesc({...draftDesc, [p.nom]: e.target.value})} />
+                  <input type="number" placeholder="Montant" value={draftMontant[p.nom]||''} onChange={e=>setDraftMontant({...draftMontant, [p.nom]: e.target.value})} />
+                  <button className="btn btn-sm" disabled={!(draftDesc[p.nom]||'').trim() || !draftMontant[p.nom]} onClick={()=>ajouterDepenseActeur(p.nom)}><Icon name="plus" size={13}/> Ajouter</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:24}}>
+        <StatCard label={`Recette brute ${annee}`} value={fmtGNF(recetteBrute)} icon="euro" />
+        <StatCard label={`Factures impayées ${annee}`} value={fmtGNF(impayesAnnee)} icon="alert" tone={impayesAnnee>0?'danger':'default'} />
+        <StatCard label={`Dépenses entreprise ${annee}`} value={fmtGNF(depensesAnnee)} icon="trash" tone="danger" />
+        <StatCard label={`Recette nette ${annee}`} value={fmtGNF(recetteNette)} icon="chart" tone={recetteNette>=0?'default':'danger'} />
+      </div>
+
+      <h2 style={{fontSize:16, color:'var(--pine)', marginBottom:14}}>Répartition entre les acteurs</h2>
+      <div className="card" style={{overflow:'hidden'}}>
+        <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+          <thead>
+            <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+              <th style={th}>Bénéficiaire</th>
+              <th style={th}>Part</th>
+              <th style={th}>Montant brut</th>
+              <th style={th}>Dépenses propres</th>
+              <th style={th}>Net perçu</th>
+            </tr>
+          </thead>
+          <tbody>
+            {PARTS_DISTRIBUTION.map(p => {
+              const montantBrut = recetteNette * p.pct / 100;
+              const depensePropre = (depensesActeursActuel[p.nom]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0);
+              const montantNet = montantBrut - depensePropre;
+              return (
+                <tr key={p.nom} style={{borderTop:'1px solid var(--line)'}}>
+                  <td style={td}>{p.nom}</td>
+                  <td style={td}><span className="tag tag-recu">{p.pct}%</span></td>
+                  <td style={td} className="mono">{fmtGNF(montantBrut)}</td>
+                  <td style={{...td, color: depensePropre>0 ? 'var(--danger)' : 'var(--steam)'}} className="mono">{depensePropre>0 ? '− '+fmtGNF(depensePropre) : '—'}</td>
+                  <td style={{...td, fontWeight:700, color: montantNet<0 ? 'var(--danger)' : 'var(--ink)'}} className="mono">{fmtGNF(montantNet)}</td>
+                </tr>
+              );
+            })}
+            <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
+              <td style={{...td, fontWeight:700}}>Total</td>
+              <td style={{...td, fontWeight:700}}>100%</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(recetteNette)}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{totalDepensesActeurs>0 ? '− '+fmtGNF(totalDepensesActeurs) : '—'}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(recetteNette - totalDepensesActeurs)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
@@ -1867,6 +2302,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
   const [clientSearch, setClientSearch] = useState('');
   const [newClientMode, setNewClientMode] = useState(false);
   const [newClientNom, setNewClientNom] = useState('');
+  const [newClientIndicatif, setNewClientIndicatif] = useState('+224');
   const [newClientTel, setNewClientTel] = useState('');
   const [lignes, setLignes] = useState([]);
   const [dateRetrait, setDateRetrait] = useState('');
@@ -1924,7 +2360,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
     let workingClients = site.clients;
     if(newClientMode){
       if(!newClientNom.trim()) return;
-      const newClient = { id: uid('cli_'), nom: capitalizeNom(newClientNom), tel: newClientTel.trim() ? `+224 ${newClientTel.trim()}` : '', canalPref:'SMS', dateInscription: todayISO() };
+      const newClient = { id: uid('cli_'), nom: capitalizeNom(newClientNom), tel: newClientTel.trim() ? `${newClientIndicatif} ${newClientTel.trim()}` : '', canalPref:'SMS', dateInscription: todayISO() };
       workingClients = [...site.clients, newClient];
       finalClientId = newClient.id;
     }
@@ -2017,7 +2453,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
             <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:10}}>
               <input type="text" placeholder="Nom complet" value={newClientNom} onChange={e=>setNewClientNom(e.target.value)} />
               <div style={{display:'flex', gap:8, alignItems:'center'}}>
-                <span className="mono" style={{padding:'9px 10px', background:'var(--pine-light)', color:'var(--pine)', borderRadius:8, fontWeight:700, fontSize:13.5}}>+224</span>
+                <CountryCodeSelect value={newClientIndicatif} onChange={setNewClientIndicatif} />
                 <input type="tel" placeholder="6XX XX XX XX" value={newClientTel} onChange={e=>setNewClientTel(e.target.value)} style={{flex:1}} />
               </div>
               <button className="btn btn-ghost btn-sm" style={{gridColumn:'1/-1', justifySelf:'start'}} onClick={()=>setNewClientMode(false)}>← Choisir un client existant</button>
@@ -2757,13 +3193,14 @@ function ClientsView({ site, updateSite }){
 
 function NewClientModal({ site, updateSite, onClose }){
   const [nom, setNom] = useState('');
+  const [indicatif, setIndicatif] = useState('+224');
   const [tel, setTel] = useState('');
   const [email, setEmail] = useState('');
   const [canalPref, setCanalPref] = useState('SMS');
 
   function submit(){
     if(!nom.trim()) return;
-    const client = { id: uid('cli_'), nom: capitalizeNom(nom), tel: tel.trim() ? `+224 ${tel.trim()}` : '', email: email.trim(), canalPref, dateInscription: todayISO() };
+    const client = { id: uid('cli_'), nom: capitalizeNom(nom), tel: tel.trim() ? `${indicatif} ${tel.trim()}` : '', email: email.trim(), canalPref, dateInscription: todayISO() };
     updateSite({ ...site, clients: [...site.clients, client] });
     onClose();
   }
@@ -2775,7 +3212,7 @@ function NewClientModal({ site, updateSite, onClose }){
         <div>
           <label>Téléphone</label>
           <div style={{display:'flex', gap:8, alignItems:'center'}}>
-            <span className="mono" style={{padding:'9px 10px', background:'var(--pine-light)', color:'var(--pine)', borderRadius:8, fontWeight:700, fontSize:13.5}}>+224</span>
+            <CountryCodeSelect value={indicatif} onChange={setIndicatif} />
             <input type="tel" placeholder="6XX XX XX XX" value={tel} onChange={e=>setTel(e.target.value)} style={{flex:1}} />
           </div>
         </div>
@@ -2836,14 +3273,16 @@ function ClientDetailModal({ client, site, onClose, onEdit }){
 }
 
 function EditClientModal({ client, onSave, onClose }){
+  const parsedTel = splitTel(client.tel);
   const [nom, setNom] = useState(client.nom || '');
-  const [tel, setTel] = useState((client.tel || '').replace(/^\+224\s*/, ''));
+  const [indicatif, setIndicatif] = useState(parsedTel.indicatif);
+  const [tel, setTel] = useState(parsedTel.numero);
   const [email, setEmail] = useState(client.email || '');
   const [canalPref, setCanalPref] = useState(client.canalPref || 'SMS');
 
   function submit(){
     if(!nom.trim()) return;
-    onSave({ ...client, nom: capitalizeNom(nom), tel: tel.trim() ? `+224 ${tel.trim()}` : '', email: email.trim(), canalPref });
+    onSave({ ...client, nom: capitalizeNom(nom), tel: tel.trim() ? `${indicatif} ${tel.trim()}` : '', email: email.trim(), canalPref });
   }
 
   return (
@@ -2853,7 +3292,7 @@ function EditClientModal({ client, onSave, onClose }){
         <div>
           <label>Téléphone</label>
           <div style={{display:'flex', gap:8, alignItems:'center'}}>
-            <span className="mono" style={{padding:'9px 10px', background:'var(--pine-light)', color:'var(--pine)', borderRadius:8, fontWeight:700, fontSize:13.5}}>+224</span>
+            <CountryCodeSelect value={indicatif} onChange={setIndicatif} />
             <input type="tel" placeholder="6XX XX XX XX" value={tel} onChange={e=>setTel(e.target.value)} style={{flex:1}} />
           </div>
         </div>
