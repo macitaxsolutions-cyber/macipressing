@@ -2467,6 +2467,10 @@ function setPdfColor(doc, hex){
   doc.setTextColor(r,g,b);
 }
 
+function fmtGNFPdf(n){
+  return fmtGNF(n).replace(/[\u202F\u00A0]/g, ' ');
+}
+
 function generateReceiptPDFBlob(cmd, site, client, total, acompte, solde){
   const { jsPDF } = window.jspdf;
   const lignesConnues = cmd.lignes.map(l => {
@@ -2475,7 +2479,7 @@ function generateReceiptPDFBlob(cmd, site, client, total, acompte, solde){
   }).filter(Boolean);
 
   const extraLines = (cmd.rabais > 0 ? 1 : 0) + (cmd.montantExpress > 0 ? 1 : 0) + (acompte > 0 ? 2 : 0) + ((cmd.dateRdvRecuperation || cmd.dateRetraitPrevue) ? 1 : 0) + (cmd.notes ? 2 : 0);
-  const totalLines = 12 + lignesConnues.length + extraLines + 8;
+  const totalLines = 12 + (lignesConnues.length * 2) + extraLines + 8;
   const heightMM = Math.max(130, totalLines * 5.2 + 20);
 
   const doc = new jsPDF({ unit:'mm', format:[80, heightMM] });
@@ -2504,22 +2508,25 @@ function generateReceiptPDFBlob(cmd, site, client, total, acompte, solde){
 
   doc.setFontSize(9);
   lignesConnues.forEach(l => {
-    doc.text(`${l.qte}x ${l.nom}`, mx, y);
-    doc.text(fmtGNF(l.prix*l.qte), W-mx, y, {align:'right'});
-    y += 4.8;
+    const label = `${l.qte}x ${l.nom}`;
+    const priceStr = fmtGNFPdf(l.prix*l.qte);
+    const labelLines = doc.splitTextToSize(label, W - mx*2 - 22);
+    doc.text(labelLines, mx, y);
+    doc.text(priceStr, W-mx, y, {align:'right'});
+    y += 4.8 * labelLines.length;
   });
 
   if(cmd.rabais > 0){
     setPdfColor(doc, '#C76B3F');
     doc.text('Rabais', mx, y);
-    doc.text('- ' + fmtGNF(cmd.rabais), W-mx, y, {align:'right'});
+    doc.text('- ' + fmtGNFPdf(cmd.rabais), W-mx, y, {align:'right'});
     setPdfColor(doc, '#1A1F1C');
     y += 4.8;
   }
   if(cmd.montantExpress > 0){
     setPdfColor(doc, '#C76B3F');
     doc.text(`Supplément Express (${cmd.expressMajoration}%)`, mx, y);
-    doc.text('+ ' + fmtGNF(cmd.montantExpress), W-mx, y, {align:'right'});
+    doc.text('+ ' + fmtGNFPdf(cmd.montantExpress), W-mx, y, {align:'right'});
     setPdfColor(doc, '#1A1F1C');
     y += 4.8;
   }
@@ -2527,19 +2534,19 @@ function generateReceiptPDFBlob(cmd, site, client, total, acompte, solde){
   doc.line(mx, y, W-mx, y); y += 5;
   doc.setFont('helvetica','bold'); doc.setFontSize(11);
   doc.text('Total à payer', mx, y);
-  doc.text(fmtGNF(total), W-mx, y, {align:'right'});
+  doc.text(fmtGNFPdf(total), W-mx, y, {align:'right'});
   y += 5.5;
   doc.setFont('helvetica','normal'); doc.setFontSize(9);
 
   if(acompte > 0){
     setPdfColor(doc, '#3B7D4F');
     doc.text('Acompte versé', mx, y);
-    doc.text(fmtGNF(acompte), W-mx, y, {align:'right'});
+    doc.text(fmtGNFPdf(acompte), W-mx, y, {align:'right'});
     y += 4.8;
     setPdfColor(doc, solde > 0 ? '#B23B3B' : '#3B7D4F');
     doc.setFont('helvetica','bold');
     doc.text(solde > 0 ? 'Solde restant' : 'Entièrement payé', mx, y);
-    if(solde > 0) doc.text(fmtGNF(solde), W-mx, y, {align:'right'});
+    if(solde > 0) doc.text(fmtGNFPdf(solde), W-mx, y, {align:'right'});
     y += 5;
     doc.setFont('helvetica','normal');
     setPdfColor(doc, '#1A1F1C');
