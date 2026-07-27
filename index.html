@@ -75,7 +75,10 @@
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;}
   body{
-    background:var(--paper);
+    background:
+      radial-gradient(circle at 15% 8%, rgba(199,107,63,0.05), transparent 45%),
+      radial-gradient(circle at 85% 92%, rgba(27,58,54,0.06), transparent 50%),
+      var(--paper);
     color:var(--ink);
     font-family:'Source Sans 3', sans-serif;
     -webkit-font-smoothing:antialiased;
@@ -589,6 +592,36 @@ const Icon = ({ name, size=18, style }) => {
   );
 };
 
+/* ===================== LOGO MACI PRESSING ===================== */
+
+function LogoMark({ size = 44 }){
+  return (
+    <svg width={size} height={size} viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="60" cy="60" r="57" fill="#1B3A36" />
+      <circle cx="60" cy="60" r="57" fill="none" stroke="#C76B3F" strokeWidth="3" />
+      <path d="M58 22c0-5 4-8 8-6" stroke="#F6F2E8" strokeWidth="3" fill="none" strokeLinecap="round" />
+      <path d="M60 26 L46 36 L35 49 L45 57 L45 94 L79 94 L79 57 L89 49 L78 36 Z" fill="#F6F2E8" />
+      <path d="M51 31 L60 40 L69 31" stroke="#1B3A36" strokeWidth="3" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M38 102 L82 102" stroke="#C76B3F" strokeWidth="4.5" strokeLinecap="round" />
+      <path d="M44 110 L76 110" stroke="#C76B3F" strokeWidth="4.5" strokeLinecap="round" opacity="0.65" />
+    </svg>
+  );
+}
+
+function Logo({ size = 44, showText = true, textColor = 'var(--pine)', accentColor = 'var(--rust)' }){
+  return (
+    <div style={{display:'flex', alignItems:'center', gap: size*0.22}}>
+      <LogoMark size={size} />
+      {showText && (
+        <div style={{lineHeight:1.05}}>
+          <div style={{fontFamily:"'Archivo Expanded',sans-serif", fontWeight:800, fontSize: size*0.36, color:textColor, letterSpacing:'0.01em'}}>MACI</div>
+          <div style={{fontFamily:"'Archivo Expanded',sans-serif", fontWeight:600, fontSize: size*0.22, color:accentColor, letterSpacing:'0.12em'}}>PRESSING</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ===================== STATUTS ===================== */
 
 const STATUTS = ['Reçu', 'En cours', 'Prêt', 'Récupéré'];
@@ -845,8 +878,7 @@ function RoleSelect({ db, setDb, onSelect }){
     return (
       <div style={{minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'2rem'}}>
         <div style={{textAlign:'center', marginBottom:'2rem'}}>
-          <Icon name="shirt" size={30} style={{color:'var(--pine)'}} />
-          <h1 style={{fontSize:28, margin:'10px 0 4px', color:'var(--pine)'}}>Maci Pressing</h1>
+          <div style={{display:'flex', justifyContent:'center', marginBottom:10}}><Logo size={52} /></div>
           <p style={{color:'var(--steam)', fontSize:14, margin:0}}>Espace Employé — Qui êtes-vous ?</p>
         </div>
         <div className="card" style={{padding:'1.75rem', width:400, maxWidth:'90vw'}}>
@@ -871,8 +903,7 @@ function RoleSelect({ db, setDb, onSelect }){
     return (
       <div style={{minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'2rem'}}>
         <div style={{textAlign:'center', marginBottom:'2rem'}}>
-          <Icon name="shirt" size={30} style={{color:'var(--pine)'}} />
-          <h1 style={{fontSize:28, margin:'10px 0 4px', color:'var(--pine)'}}>Maci Pressing</h1>
+          <div style={{display:'flex', justifyContent:'center', marginBottom:10}}><Logo size={52} /></div>
           {selectedEmp ? (
             <p style={{color:'var(--steam)', fontSize:14, margin:0}}>Bonjour <strong>{selectedEmp.emp.nom}</strong> — {selectedEmp.site.nom}</p>
           ) : (
@@ -900,12 +931,14 @@ function RoleSelect({ db, setDb, onSelect }){
   }
 
   return (
-    <div style={{minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'2rem'}}>
+    <div style={{minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'2rem', position:'relative', overflow:'hidden'}}>
+      <div style={{position:'absolute', top:'-8%', right:'-6%', opacity:0.05, transform:'rotate(12deg)', pointerEvents:'none'}}>
+        <LogoMark size={340} />
+      </div>
       <div style={{textAlign:'center', marginBottom:'2.5rem'}}>
-        <div style={{display:'inline-flex', alignItems:'center', gap:10, color:'var(--pine)', marginBottom:14}}>
-          <Icon name="shirt" size={30} />
+        <div style={{display:'flex', justifyContent:'center', marginBottom:16}}>
+          <Logo size={68} />
         </div>
-        <h1 style={{fontSize:34, margin:0, color:'var(--pine)'}}>Maci Pressing</h1>
         <p className="mono" style={{color:'var(--steam)', fontSize:13, marginTop:6}}>
           {db.sites.length > 1 ? `${db.sites.length} sites — choisissez votre espace` : 'Gestion de pressing — choisissez votre espace'}
         </p>
@@ -1042,8 +1075,8 @@ function Shell({ title, role, navItems, active, onNav, onLogout, children }){
         width:230, background:'var(--pine)', color:'var(--white)', padding:'1.5rem 1rem',
         display:'flex', flexDirection:'column', position:'sticky', top:0, height:'100vh'
       }}>
-        <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:'2rem', padding:'0 0.5rem'}}>
-          <Icon name="shirt" size={22} />
+        <div style={{display:'flex', alignItems:'center', gap:10, marginBottom:'2rem', padding:'0 0.5rem'}}>
+          <LogoMark size={30} />
           <div>
             <div style={{fontFamily:"'Archivo Expanded',sans-serif", fontSize:14.5, fontWeight:700, lineHeight:1.25}}>{title}</div>
             <div className="mono" style={{fontSize:11, opacity:0.65}}>{role}</div>
@@ -1559,29 +1592,38 @@ function DistributionView({ db, setDb, anneeInitiale }){
         </>
       )}
 
-      <h2 style={{fontSize:16, color:'var(--pine)', marginBottom:14}}>Répartition entre les acteurs</h2>
+      <h2 style={{fontSize:16, color:'var(--pine)', marginBottom:6}}>Répartition entre les acteurs</h2>
+      <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
+        « Impayés (part de l'acteur) » indique combien reviendrait à chaque personne si les factures actuellement en attente étaient un jour réglées — à titre d'information seulement. Le montant à distribuer réellement est celui de la colonne <strong>« Montant réel (sans impayés) »</strong>, qui exclut déjà l'argent pas encore encaissé, pour ne jamais distribuer ce que l'entreprise n'a pas.
+      </p>
       <div className="card" style={{overflow:'hidden'}}>
         <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
           <thead>
             <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
               <th style={th}>Bénéficiaire</th>
               <th style={th}>Part</th>
-              <th style={th}>Montant brut</th>
+              <th style={th}>Impayés (part de l'acteur)</th>
+              <th style={th}>Montant réel (sans impayés)</th>
               <th style={th}>Dépenses propres</th>
+              <th style={th}>Cumulé (impayés + net perçu)</th>
               <th style={th}>Net perçu</th>
             </tr>
           </thead>
           <tbody>
             {PARTS_DISTRIBUTION.map(p => {
+              const impayesPart = impayesAnnee * p.pct / 100;
               const montantBrut = recetteNette * p.pct / 100;
               const depensePropre = (depensesActeursActuel[p.nom]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0);
               const montantNet = montantBrut - depensePropre;
+              const cumule = impayesPart + montantNet;
               return (
                 <tr key={p.nom} style={{borderTop:'1px solid var(--line)'}}>
                   <td style={td}>{p.nom}</td>
                   <td style={td}><span className="tag tag-recu">{p.pct}%</span></td>
-                  <td style={td} className="mono">{fmtGNF(montantBrut)}</td>
+                  <td style={{...td, color: impayesPart>0 ? 'var(--danger)' : 'var(--steam)'}} className="mono">{impayesPart>0 ? fmtGNF(impayesPart) : '—'}</td>
+                  <td style={{...td, fontWeight:600}} className="mono">{fmtGNF(montantBrut)}</td>
                   <td style={{...td, color: depensePropre>0 ? 'var(--danger)' : 'var(--steam)'}} className="mono">{depensePropre>0 ? '− '+fmtGNF(depensePropre) : '—'}</td>
+                  <td style={{...td, fontWeight:700, color:'var(--danger)'}} className="mono">{fmtGNF(cumule)}</td>
                   <td style={{...td, fontWeight:700, color: montantNet<0 ? 'var(--danger)' : 'var(--ink)'}} className="mono">{fmtGNF(montantNet)}</td>
                 </tr>
               );
@@ -1589,8 +1631,10 @@ function DistributionView({ db, setDb, anneeInitiale }){
             <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
               <td style={{...td, fontWeight:700}}>Total</td>
               <td style={{...td, fontWeight:700}}>100%</td>
+              <td style={{...td, fontWeight:700, color: impayesAnnee>0?'var(--danger)':'var(--steam)'}} className="mono">{impayesAnnee>0?fmtGNF(impayesAnnee):'—'}</td>
               <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(recetteNette)}</td>
               <td style={{...td, fontWeight:700}} className="mono">{totalDepensesActeurs>0 ? '− '+fmtGNF(totalDepensesActeurs) : '—'}</td>
+              <td style={{...td, fontWeight:700, color:'var(--danger)'}} className="mono">{fmtGNF(impayesAnnee + (recetteNette - totalDepensesActeurs))}</td>
               <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(recetteNette - totalDepensesActeurs)}</td>
             </tr>
           </tbody>
@@ -3081,6 +3125,17 @@ function imprimerTicket(cmd, site, client, total, acompte, solde, caissier){
   .btn-print { display:block; width:100%; padding:10px; background:#2d4a3e; color:white; border:none; font-size:14px; cursor:pointer; border-radius:6px; margin-top:12px; }
 </style>
 </head><body>
+<div style="text-align:center;margin-bottom:4px;">
+  <svg width="46" height="46" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="60" cy="60" r="57" fill="#1B3A36" />
+    <circle cx="60" cy="60" r="57" fill="none" stroke="#C76B3F" stroke-width="3" />
+    <path d="M58 22c0-5 4-8 8-6" stroke="#F6F2E8" stroke-width="3" fill="none" stroke-linecap="round" />
+    <path d="M60 26 L46 36 L35 49 L45 57 L45 94 L79 94 L79 57 L89 49 L78 36 Z" fill="#F6F2E8" />
+    <path d="M51 31 L60 40 L69 31" stroke="#1B3A36" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M38 102 L82 102" stroke="#C76B3F" stroke-width="4.5" stroke-linecap="round" />
+    <path d="M44 110 L76 110" stroke="#C76B3F" stroke-width="4.5" stroke-linecap="round" opacity="0.65" />
+  </svg>
+</div>
 <h2>${site.nom}</h2>
 <p class="center" style="margin:2px 0;font-size:11px;color:#666">${site.adresse}</p>
 <p class="center" style="margin:2px 0;font-size:11px;color:#666">${site.tel}</p>
@@ -3135,10 +3190,24 @@ function generateReceiptPDFBlob(cmd, site, client, total, acompte, solde){
   const totalLines = 12 + (lignesConnues.length * 2) + extraLines + 8;
   const heightMM = Math.max(130, totalLines * 5.2 + 20);
 
-  const doc = new jsPDF({ unit:'mm', format:[80, heightMM] });
+  const doc = new jsPDF({ unit:'mm', format:[80, heightMM + 14] });
   const W = 80;
   const mx = 5;
   let y = 8;
+
+  // Logo simplifié (badge + repère "chemise" + traits vapeur), en vectoriel natif jsPDF
+  const logoCx = W/2, logoCy = y + 7, logoR = 7;
+  doc.setFillColor(27,58,54);
+  doc.circle(logoCx, logoCy, logoR, 'F');
+  doc.setDrawColor(199,107,63);
+  doc.setLineWidth(0.4);
+  doc.circle(logoCx, logoCy, logoR, 'S');
+  doc.setFillColor(246,242,232);
+  doc.triangle(logoCx-3.2, logoCy-2.5, logoCx+3.2, logoCy-2.5, logoCx, logoCy+4.5, 'F');
+  doc.setDrawColor(199,107,63);
+  doc.setLineWidth(0.7);
+  doc.line(logoCx-4, logoCy+6.3, logoCx+4, logoCy+6.3);
+  y = logoCy + logoR + 6;
 
   doc.setFont('helvetica','bold'); doc.setFontSize(13);
   doc.text(site.nom, W/2, y, {align:'center'}); y += 5;
@@ -3233,7 +3302,7 @@ function generateReceiptPDFBlob(cmd, site, client, total, acompte, solde){
 }
 
 async function uploadReceiptPDF(siteId, cmd, pdfBlob){
-  const path = `receipts/${siteId}/${cmd.numero}_${cmd.id}.pdf`;
+  const path = `receipts/${siteId}/${cmd.id}.pdf`;
   const ref = firebaseStorage.ref().child(path);
   await ref.put(pdfBlob, { contentType: 'application/pdf' });
   return await ref.getDownloadURL();
@@ -4336,10 +4405,70 @@ function ConfigRemunerationEditor({ site, updateSite }){
   );
 }
 
+function RegenererRecusSection({ site }){
+  const [progress, setProgress] = useState(null); // {done, total} | null
+
+  const commandesAvecRecu = (site.commandes||[]).filter(c => c.receiptPdfUrl);
+
+  async function regenererTout(){
+    const liste = commandesAvecRecu;
+    setProgress({ done: 0, total: liste.length });
+    for(let i=0; i<liste.length; i++){
+      const cmd = liste[i];
+      try {
+        const client = site.clients.find(c=>c.id===cmd.clientId);
+        const total = calcCommandeTotal(cmd, site.services);
+        const acompte = Number(cmd.acompte)||0;
+        const solde = total - acompte;
+        const pdfBlob = generateReceiptPDFBlob(cmd, site, client, total, acompte, solde);
+        await uploadReceiptPDF(site.id, cmd, pdfBlob);
+      } catch(e) {
+        console.error('Erreur régénération reçu', cmd.numero, e);
+      }
+      setProgress({ done: i+1, total: liste.length });
+    }
+  }
+
+  if(commandesAvecRecu.length === 0) return null;
+
+  const termine = progress && progress.done === progress.total;
+
+  return (
+    <div className="card" style={{padding:'1.5rem', marginTop:18}}>
+      <h3 style={{margin:'0 0 6px', fontSize:15}}>🖼️ Ajouter le logo aux reçus déjà envoyés</h3>
+      <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
+        {commandesAvecRecu.length} reçu(s) PDF de « {site.nom} » ont été générés avant l'ajout du logo. Cet outil les régénère avec le nouveau logo — les liens déjà envoyés par WhatsApp restent valides et afficheront automatiquement la version mise à jour, sans avoir besoin de recontacter les clients.
+      </p>
+      <button className="btn btn-rust" onClick={regenererTout} disabled={progress && !termine}>
+        {progress && !termine ? `Régénération… ${progress.done}/${progress.total}` : `Régénérer les ${commandesAvecRecu.length} reçu(s)`}
+      </button>
+      {termine && (
+        <p style={{color:'var(--ok)', fontSize:13, marginTop:10, display:'flex', alignItems:'center', gap:6}}><Icon name="check" size={14}/> Terminé !</p>
+      )}
+    </div>
+  );
+}
+
 function ParametresView({ site, updateSite, db, setDb }){
   const [nom, setNom] = useState(site.nom);
   const [adresse, setAdresse] = useState(site.adresse);
   const [tel, setTel] = useState(site.tel);
+  const [code, setCode] = useState(site.code);
+  const [showRenameConfirm, setShowRenameConfirm] = useState(false);
+  const [renameFlash, setRenameFlash] = useState(false);
+
+  function renommerTousLesTickets(){
+    const nouveauCode = code.trim().toUpperCase() || site.code;
+    const nextCommandes = site.commandes.map(c => {
+      const idx = c.numero.indexOf('-');
+      const reste = idx >= 0 ? c.numero.slice(idx) : ('-' + c.numero);
+      return { ...c, numero: nouveauCode + reste };
+    });
+    updateSite({ ...site, code: nouveauCode, commandes: nextCommandes });
+    setShowRenameConfirm(false);
+    setRenameFlash(true);
+    setTimeout(()=>setRenameFlash(false), 2200);
+  }
   const [savedFlash, setSavedFlash] = useState(false);
   const [resetScope, setResetScope] = useState(null); // 'jour' | 'mois' | 'tout'
 
@@ -4392,7 +4521,7 @@ function ParametresView({ site, updateSite, db, setDb }){
   const [smsTestResult, setSmsTestResult] = useState('');
 
   function save(){
-    updateSite({ ...site, nom, adresse, tel });
+    updateSite({ ...site, nom, adresse, tel, code: code.trim().toUpperCase() || site.code });
     setSavedFlash(true);
     setTimeout(()=>setSavedFlash(false), 1800);
   }
@@ -4451,6 +4580,19 @@ function ParametresView({ site, updateSite, db, setDb }){
             <div><label>Nom</label><input type="text" value={nom} onChange={e=>setNom(e.target.value)} /></div>
             <div><label>Adresse</label><input type="text" value={adresse} onChange={e=>setAdresse(e.target.value)} /></div>
             <div><label>Téléphone</label><input type="text" value={tel} onChange={e=>setTel(e.target.value)} /></div>
+            <div>
+              <label>Préfixe des tickets</label>
+              <input type="text" value={code} onChange={e=>setCode(e.target.value.toUpperCase())} maxLength={8} placeholder="ex: KIPE" />
+              <p style={{fontSize:11.5, color:'var(--steam)', margin:'5px 0 0', lineHeight:1.4}}>
+                Apparaît devant chaque numéro de ticket (ex: {code || site.code}-2607-0001). Utile pour distinguer les tickets entre vos pressings.
+              </p>
+              {site.commandes.length > 0 && (
+                <button className="btn btn-ghost btn-sm" style={{marginTop:8, color:'var(--rust)'}} onClick={()=>setShowRenameConfirm(true)}>
+                  Renommer les {site.commandes.length} ticket(s) déjà créés avec « {code || site.code} »
+                </button>
+              )}
+              {renameFlash && <p style={{color:'var(--ok)', fontSize:13, marginTop:6, display:'flex', alignItems:'center', gap:6}}><Icon name="check" size={14}/> Tickets renommés !</p>}
+            </div>
             <button className="btn btn-rust" onClick={save} style={{justifySelf:'start'}}>
               {savedFlash ? <><Icon name="check" size={14}/> Enregistré</> : 'Enregistrer'}
             </button>
@@ -4522,6 +4664,16 @@ function ParametresView({ site, updateSite, db, setDb }){
           onCancel={()=>setResetScope(null)}
         />
       )}
+
+      {showRenameConfirm && (
+        <ConfirmDelete db={db}
+          message={`Renommer les ${site.commandes.length} ticket(s) de « ${site.nom} » pour utiliser le préfixe « ${(code||site.code).trim().toUpperCase()} » ? Le reste du numéro (mois/année/séquence) ne change pas. Les tickets déjà imprimés ou envoyés garderont leur ancien numéro papier, mais l'app affichera désormais partout le nouveau numéro.`}
+          onConfirm={renommerTousLesTickets}
+          onCancel={()=>setShowRenameConfirm(false)}
+        />
+      )}
+
+      <RegenererRecusSection site={site} />
 
       {/* Section Rémunération */}
       <ConfigRemunerationEditor site={site} updateSite={updateSite} />
