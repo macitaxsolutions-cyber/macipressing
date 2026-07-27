@@ -826,6 +826,12 @@ function RoleSelect({ db, setDb, onSelect }){
     return list;
   }, [db]);
 
+  const EMPLOYES_SALAIRE_JOURNALIER = ['mamadou alpha', 'nene djiba'];
+  function estEmployeSalaireJournalier(emp){
+    const nom = (emp.nom||'').trim().toLowerCase();
+    return EMPLOYES_SALAIRE_JOURNALIER.some(cible => nom.includes(cible));
+  }
+
   function recordDailyCaissierExpense(siteId, emp){
     const site = db.sites.find(s => s.id === siteId);
     if(!site) return;
@@ -854,7 +860,7 @@ function RoleSelect({ db, setDb, onSelect }){
       }
     } else if(loginRole === 'employe' && selectedEmp){
       if(password === selectedEmp.emp.motdepasse){
-        if(selectedEmp.emp.role === 'Caissier'){
+        if(estEmployeSalaireJournalier(selectedEmp.emp)){
           recordDailyCaissierExpense(selectedEmp.site.id, selectedEmp.emp);
         }
         onSelect('employe', selectedEmp.site.id, null, selectedEmp.emp.id);
@@ -5406,7 +5412,19 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
   const site = db.sites.find(s => s.id === siteId);
   const monProfil = (site && employeId) ? site.employes.find(e=>e.id===employeId) : null;
   const isRepasseur = monProfil && monProfil.role === 'Repasseur';
-  const [page, setPage] = useState(isRepasseur ? 'repassage' : 'caisse');
+  const [page, setPage] = useState(() => {
+    const pageParDefaut = isRepasseur ? 'repassage' : 'caisse';
+    try {
+      const today = todayISO();
+      const cle = `maci-agenda-vu-${employeId}`;
+      const dernierVu = localStorage.getItem(cle);
+      if(dernierVu !== today){
+        localStorage.setItem(cle, today);
+        return 'agenda';
+      }
+    } catch(e){ /* localStorage indisponible — on ignore */ }
+    return pageParDefaut;
+  });
 
   function updateSite(updatedSite){
     setDb({ ...db, sites: db.sites.map(s => s.id === updatedSite.id ? updatedSite : s) });
