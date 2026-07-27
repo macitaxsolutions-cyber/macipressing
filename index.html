@@ -2522,7 +2522,7 @@ function CommandesView({ site, updateSite, editable, employeId }){
                     ) : <span style={{color:'var(--steam)'}}>—</span>}
                   </td>
                   <td style={{...td, textAlign:'right'}}>
-                    <div style={{display:'flex', gap:6, justifyContent:'flex-end', flexWrap:'wrap'}}>
+                    <div style={{display:'flex', gap:6, justifyContent:'flex-end', flexWrap:'nowrap', whiteSpace:'nowrap'}}>
                       <button className="btn btn-ghost btn-sm" onClick={()=>setOpenTicket(cmd)}>Voir</button>
                       {editable && cmd.statut === 'Reçu' && (
                         <button className="btn btn-ghost btn-sm" style={{color:'var(--pine)'}} onClick={()=>setEditCmd(cmd)}><Icon name="edit" size={13}/></button>
