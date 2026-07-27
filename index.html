@@ -1111,6 +1111,12 @@ function pushNotification(site, updateSite, { clientId, message, canal }){
 function GerantApp({ db, setDb, onLogout }){
   const [page, setPage] = useState('global');
   const [activeSiteId, setActiveSiteId] = useState(null);
+  const [anneeDistribution, setAnneeDistribution] = useState(null);
+
+  function ouvrirAnneeDansDistribution(annee){
+    setAnneeDistribution(annee);
+    setPage('distribution');
+  }
 
   function updateSite(updatedSite){
     setDb({ ...db, sites: db.sites.map(s => s.id === updatedSite.id ? updatedSite : s) });
@@ -1132,6 +1138,7 @@ function GerantApp({ db, setDb, onLogout }){
     { key:'global', label:'Vue globale', icon:'layers' },
     { key:'sites', label:'Mes pressings', icon:'building' },
     { key:'distribution', label:'Distribution des recettes', icon:'euro' },
+    { key:'comparaison', label:'Comparaison annuelle', icon:'chart' },
   ];
 
   const activeSite = db.sites.find(s => s.id === activeSiteId);
@@ -1145,7 +1152,8 @@ function GerantApp({ db, setDb, onLogout }){
         <>
           {page === 'global' && <GlobalDashboard db={db} onOpenSite={setActiveSiteId} />}
           {page === 'sites' && <SitesManager db={db} setDb={setDb} addSite={addSite} removeSite={removeSite} onOpenSite={setActiveSiteId} />}
-          {page === 'distribution' && <DistributionView db={db} setDb={setDb} />}
+          {page === 'distribution' && <DistributionView db={db} setDb={setDb} anneeInitiale={anneeDistribution} />}
+          {page === 'comparaison' && <ComparaisonAnneesView db={db} onOpenAnnee={ouvrirAnneeDansDistribution} />}
         </>
       )}
     </Shell>
@@ -1164,6 +1172,105 @@ const PARTS_DISTRIBUTION = [
 ];
 
 const ANNEE_DEBUT_APP = 2026; // année de mise en place de l'application
+
+function calculerDonneesAnnee(db, annee){
+  if(annee >= ANNEE_DEBUT_APP){
+    const autoParMois = {};
+    db.sites.forEach(site => {
+      (site.commandes||[]).forEach(c => {
+        if(c.dateCreation && c.dateCreation.slice(0,4) === String(annee)){
+          const m = Number(c.dateCreation.slice(5,7));
+          if(!autoParMois[m]) autoParMois[m] = { recetteBrute:0, recetteEncaissee:0, depenses:0 };
+          const totalCmd = calcCommandeTotal(c, site.services);
+          autoParMois[m].recetteBrute += totalCmd;
+          autoParMois[m].recetteEncaissee += c.paiement === 'paye' ? totalCmd : (Number(c.acompte)||0);
+        }
+      });
+      (site.depenses||[]).forEach(d => {
+        if(d.date && d.date.slice(0,4) === String(annee)){
+          const m = Number(d.date.slice(5,7));
+          if(!autoParMois[m]) autoParMois[m] = { recetteBrute:0, recetteEncaissee:0, depenses:0 };
+          autoParMois[m].depenses += Number(d.montant)||0;
+        }
+      });
+    });
+    const moisManuel = (db.historiqueAnnuel?.[annee]?.mois) || {};
+    let recetteBrute = 0, recetteEncaissee = 0, depenses = 0;
+    for(let m=1; m<=12; m++){
+      const override = moisManuel[m];
+      if(override){
+        recetteBrute += Number(override.recetteBrute)||0;
+        depenses += Number(override.depenses)||0;
+        recetteEncaissee += (Number(override.recetteBrute)||0) - (Number(override.impayes)||0);
+      } else {
+        const a = autoParMois[m] || { recetteBrute:0, recetteEncaissee:0, depenses:0 };
+        recetteBrute += a.recetteBrute;
+        recetteEncaissee += a.recetteEncaissee;
+        depenses += a.depenses;
+      }
+    }
+    const impayes = recetteBrute - recetteEncaissee;
+    return { recetteBrute, depenses, impayes, recetteNette: recetteEncaissee - depenses };
+  }
+  const d = (db.historiqueAnnuel||{})[annee] || {};
+  const recetteBrute = Number(d.recetteBrute)||0;
+  const depenses = Number(d.depenses)||0;
+  const impayes = Number(d.impayes)||0;
+  return { recetteBrute, depenses, impayes, recetteNette: recetteBrute - impayes - depenses };
+}
+
+function ComparaisonAnneesView({ db, onOpenAnnee }){
+  const currentYear = Number(todayISO().slice(0,4));
+  const anneesDisponibles = [];
+  for(let y = currentYear; y >= ANNEE_DEBUT_APP - 10; y--) anneesDisponibles.push(y);
+
+  const lignes = anneesDisponibles.map(y => ({ annee: y, ...calculerDonneesAnnee(db, y) }));
+
+  return (
+    <div>
+      <PageHeader title="Comparaison annuelle" subtitle="Vue d'ensemble de toutes les années pour comparer et prendre des décisions" />
+      <div className="card" style={{overflow:'hidden'}}>
+        <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+          <thead>
+            <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+              <th style={th}>Année</th>
+              <th style={th}>Recette brute</th>
+              <th style={th}>Impayés</th>
+              <th style={th}>Dépenses entreprise</th>
+              <th style={th}>Recette nette</th>
+              <th style={th}>Évolution</th>
+            </tr>
+          </thead>
+          <tbody>
+            {lignes.map((l, i) => {
+              const precedente = lignes[i+1];
+              let evolution = null;
+              if(precedente && precedente.recetteNette !== 0){
+                evolution = ((l.recetteNette - precedente.recetteNette) / Math.abs(precedente.recetteNette)) * 100;
+              }
+              return (
+                <tr key={l.annee} style={{borderTop:'1px solid var(--line)', cursor:'pointer'}} onClick={()=>onOpenAnnee(l.annee)}>
+                  <td style={{...td, fontWeight:700, color:'var(--pine)'}}>{l.annee} →</td>
+                  <td style={td} className="mono">{fmtGNF(l.recetteBrute)}</td>
+                  <td style={{...td, color: l.impayes>0?'var(--danger)':'var(--steam)'}} className="mono">{l.impayes>0?fmtGNF(l.impayes):'—'}</td>
+                  <td style={{...td, color:'var(--danger)'}} className="mono">{fmtGNF(l.depenses)}</td>
+                  <td style={{...td, fontWeight:700, color: l.recetteNette<0?'var(--danger)':'var(--pine)'}} className="mono">{fmtGNF(l.recetteNette)}</td>
+                  <td style={td}>
+                    {evolution === null ? <span style={{color:'var(--steam)'}}>—</span> : (
+                      <span style={{color: evolution>=0 ? 'var(--ok)' : 'var(--danger)', fontWeight:600}}>
+                        {evolution>=0 ? '▲' : '▼'} {Math.abs(evolution).toFixed(1)}%
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
 function MoisRow({ valeurs, onSave }){
   const [recetteBrute, setRecetteBrute] = useState(String(valeurs.recetteBrute || ''));
@@ -1202,7 +1309,7 @@ function MoisRow({ valeurs, onSave }){
   );
 }
 
-function DistributionView({ db, setDb }){
+function DistributionView({ db, setDb, anneeInitiale }){
   const currentYear = Number(todayISO().slice(0,4));
   const anneesDisponibles = useMemo(() => {
     const arr = [];
@@ -1210,7 +1317,7 @@ function DistributionView({ db, setDb }){
     return arr;
   }, [currentYear]);
 
-  const [annee, setAnnee] = useState(currentYear);
+  const [annee, setAnnee] = useState(anneeInitiale || currentYear);
   const estAnneeApp = annee >= ANNEE_DEBUT_APP;
 
   // Calcul automatique à partir des données réelles de l'app (année couverte par l'application)
