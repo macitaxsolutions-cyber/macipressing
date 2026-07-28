@@ -2017,6 +2017,7 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
 const CORBEILLE_TYPE_LABELS = {
   commande: '🎫 Commande',
   commandes_reset: '🗓️ Réinitialisation de commandes',
+  depenses_reset: '🗓️ Réinitialisation de dépenses',
   stock: '📦 Article de stock',
   service: '🧺 Service',
   employe: '👤 Employé',
@@ -2039,6 +2040,8 @@ function CorbeilleView({ site, updateSite }){
       nextSite.commandes = [entry.data, ...nextSite.commandes];
     } else if(entry.type === 'commandes_reset' && Array.isArray(entry.data)){
       nextSite.commandes = [...entry.data, ...nextSite.commandes];
+    } else if(entry.type === 'depenses_reset' && Array.isArray(entry.data)){
+      nextSite.depenses = [...entry.data, ...(nextSite.depenses||[])];
     } else if(entry.type === 'stock'){
       nextSite.stock = [...nextSite.stock, entry.data];
     } else if(entry.type === 'service'){
@@ -4786,10 +4789,15 @@ function ParametresView({ site, updateSite, db, setDb }){
   const [savedFlash, setSavedFlash] = useState(false);
   const [resetScope, setResetScope] = useState(null); // 'jour' | 'mois' | 'tout'
 
+  const [showPlageCmd, setShowPlageCmd] = useState(false);
+  const [rangeDebutCmd, setRangeDebutCmd] = useState(todayISO());
+  const [rangeFinCmd, setRangeFinCmd] = useState(todayISO());
+
   function countForScope(scope){
     const today = todayISO();
     if(scope === 'jour') return site.commandes.filter(c => c.dateCreation.slice(0,10) === today).length;
     if(scope === 'mois') return site.commandes.filter(c => c.dateCreation.slice(0,7) === today.slice(0,7)).length;
+    if(scope === 'plage') return site.commandes.filter(c => c.dateCreation.slice(0,10) >= rangeDebutCmd && c.dateCreation.slice(0,10) <= rangeFinCmd).length;
     return site.commandes.length;
   }
 
@@ -4799,10 +4807,44 @@ function ParametresView({ site, updateSite, db, setDb }){
     let removed, remaining;
     if(resetScope === 'jour'){ removed = site.commandes.filter(c => c.dateCreation.slice(0,10) === today); remaining = site.commandes.filter(c => c.dateCreation.slice(0,10) !== today); }
     else if(resetScope === 'mois'){ removed = site.commandes.filter(c => c.dateCreation.slice(0,7) === today.slice(0,7)); remaining = site.commandes.filter(c => c.dateCreation.slice(0,7) !== today.slice(0,7)); }
+    else if(resetScope === 'plage'){ removed = site.commandes.filter(c => c.dateCreation.slice(0,10) >= rangeDebutCmd && c.dateCreation.slice(0,10) <= rangeFinCmd); remaining = site.commandes.filter(c => !(c.dateCreation.slice(0,10) >= rangeDebutCmd && c.dateCreation.slice(0,10) <= rangeFinCmd)); }
     else { removed = site.commandes; remaining = []; }
-    const entry = { id: uid('trash_'), type:'commandes_reset', label: `Réinitialisation (${resetScope==='jour'?"aujourd'hui":resetScope==='mois'?'ce mois-ci':'toute la période'}) — ${removed.length} commande(s)`, data: removed, dateSuppression: new Date().toISOString() };
+    const labelPeriode = resetScope==='jour'?"aujourd'hui":resetScope==='mois'?'ce mois-ci':resetScope==='plage'?`du ${fmtDate(rangeDebutCmd)} au ${fmtDate(rangeFinCmd)}`:'toute la période';
+    const entry = { id: uid('trash_'), type:'commandes_reset', label: `Réinitialisation (${labelPeriode}) — ${removed.length} commande(s)`, data: removed, dateSuppression: new Date().toISOString() };
     updateSite({ ...site, commandes: remaining, seq: resetScope === 'tout' ? 1 : site.seq, corbeille: [entry, ...(site.corbeille||[])] });
     setResetScope(null);
+    setShowPlageCmd(false);
+  }
+
+  const [resetScopeDep, setResetScopeDep] = useState(null); // 'jour' | 'mois' | 'tout'
+
+  const [showPlageDep, setShowPlageDep] = useState(false);
+  const [rangeDebutDep, setRangeDebutDep] = useState(todayISO());
+  const [rangeFinDep, setRangeFinDep] = useState(todayISO());
+
+  function countForScopeDep(scope){
+    const today = todayISO();
+    const depenses = site.depenses || [];
+    if(scope === 'jour') return depenses.filter(d => d.date === today).length;
+    if(scope === 'mois') return depenses.filter(d => d.date.slice(0,7) === today.slice(0,7)).length;
+    if(scope === 'plage') return depenses.filter(d => d.date >= rangeDebutDep && d.date <= rangeFinDep).length;
+    return depenses.length;
+  }
+
+  function resetDepenses(){
+    if(!resetScopeDep) return;
+    const today = todayISO();
+    const depenses = site.depenses || [];
+    let removed, remaining;
+    if(resetScopeDep === 'jour'){ removed = depenses.filter(d => d.date === today); remaining = depenses.filter(d => d.date !== today); }
+    else if(resetScopeDep === 'mois'){ removed = depenses.filter(d => d.date.slice(0,7) === today.slice(0,7)); remaining = depenses.filter(d => d.date.slice(0,7) !== today.slice(0,7)); }
+    else if(resetScopeDep === 'plage'){ removed = depenses.filter(d => d.date >= rangeDebutDep && d.date <= rangeFinDep); remaining = depenses.filter(d => !(d.date >= rangeDebutDep && d.date <= rangeFinDep)); }
+    else { removed = depenses; remaining = []; }
+    const labelPeriode = resetScopeDep==='jour'?"aujourd'hui":resetScopeDep==='mois'?'ce mois-ci':resetScopeDep==='plage'?`du ${fmtDate(rangeDebutDep)} au ${fmtDate(rangeFinDep)}`:'toute la période';
+    const entry = { id: uid('trash_'), type:'depenses_reset', label: `Réinitialisation dépenses (${labelPeriode}) — ${removed.length} dépense(s)`, data: removed, dateSuppression: new Date().toISOString() };
+    updateSite({ ...site, depenses: remaining, corbeille: [entry, ...(site.corbeille||[])] });
+    setResetScopeDep(null);
+    setShowPlageDep(false);
   }
 
   // Changement mot de passe gérant
@@ -4968,14 +5010,80 @@ function ParametresView({ site, updateSite, db, setDb }){
           <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)'}} onClick={()=>setResetScope('tout')}>
             <Icon name="trash" size={14}/> Toute la période ({countForScope('tout')})
           </button>
+          <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)', background: showPlageCmd ? 'var(--danger-light)' : 'transparent'}} onClick={()=>setShowPlageCmd(!showPlageCmd)}>
+            📅 Jours spécifiques
+          </button>
         </div>
+        {showPlageCmd && (
+          <div style={{marginTop:12, padding:'12px', background:'var(--danger-light)', borderRadius:8, display:'flex', gap:10, alignItems:'flex-end', flexWrap:'wrap'}}>
+            <div>
+              <label>Du</label>
+              <input type="date" value={rangeDebutCmd} onChange={e=>setRangeDebutCmd(e.target.value)} />
+            </div>
+            <div>
+              <label>Au</label>
+              <input type="date" value={rangeFinCmd} onChange={e=>setRangeFinCmd(e.target.value)} min={rangeDebutCmd} />
+            </div>
+            <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)'}} onClick={()=>setResetScope('plage')}>
+              <Icon name="trash" size={14}/> Réinitialiser cette période ({countForScope('plage')})
+            </button>
+          </div>
+        )}
       </div>
 
       {resetScope && (
         <ConfirmDelete db={db}
-          message={`Effacer ${countForScope(resetScope)} commande(s) — ${resetScope==='jour' ? "celles d'aujourd'hui" : resetScope==='mois' ? 'celles de ce mois-ci' : 'TOUTES les commandes, toutes périodes confondues'} — de « ${site.nom} » ? Les clients, employés, services et stock ne seront pas touchés. Cette action est irréversible.`}
+          message={`Effacer ${countForScope(resetScope)} commande(s) — ${resetScope==='jour' ? "celles d'aujourd'hui" : resetScope==='mois' ? 'celles de ce mois-ci' : resetScope==='plage' ? `celles du ${fmtDate(rangeDebutCmd)} au ${fmtDate(rangeFinCmd)}` : 'TOUTES les commandes, toutes périodes confondues'} — de « ${site.nom} » ? Les clients, employés, services et stock ne seront pas touchés. Cette action est irréversible.`}
           onConfirm={resetCommandes}
           onCancel={()=>setResetScope(null)}
+        />
+      )}
+
+      {/* Réinitialiser les dépenses */}
+      <div className="card" style={{padding:'1.5rem', marginTop:18, borderColor:'var(--danger)'}}>
+        <h3 style={{margin:'0 0 6px', fontSize:15, display:'flex', alignItems:'center', gap:8, color:'var(--danger)'}}>
+          🗓️ Réinitialiser les dépenses de ce site
+        </h3>
+        <p style={{fontSize:13, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.6}}>
+          Choisissez la période à effacer pour « {site.nom} ».
+          <strong> Vos clients, employés, services, stock et commandes restent toujours intacts.</strong>
+        </p>
+        <div style={{display:'flex', gap:10, flexWrap:'wrap'}}>
+          <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)'}} onClick={()=>setResetScopeDep('jour')}>
+            <Icon name="trash" size={14}/> Aujourd'hui ({countForScopeDep('jour')})
+          </button>
+          <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)'}} onClick={()=>setResetScopeDep('mois')}>
+            <Icon name="trash" size={14}/> Ce mois-ci ({countForScopeDep('mois')})
+          </button>
+          <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)'}} onClick={()=>setResetScopeDep('tout')}>
+            <Icon name="trash" size={14}/> Toute la période ({countForScopeDep('tout')})
+          </button>
+          <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)', background: showPlageDep ? 'var(--danger-light)' : 'transparent'}} onClick={()=>setShowPlageDep(!showPlageDep)}>
+            📅 Jours spécifiques
+          </button>
+        </div>
+        {showPlageDep && (
+          <div style={{marginTop:12, padding:'12px', background:'var(--danger-light)', borderRadius:8, display:'flex', gap:10, alignItems:'flex-end', flexWrap:'wrap'}}>
+            <div>
+              <label>Du</label>
+              <input type="date" value={rangeDebutDep} onChange={e=>setRangeDebutDep(e.target.value)} />
+            </div>
+            <div>
+              <label>Au</label>
+              <input type="date" value={rangeFinDep} onChange={e=>setRangeFinDep(e.target.value)} min={rangeDebutDep} />
+            </div>
+            <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)'}} onClick={()=>setResetScopeDep('plage')}>
+              <Icon name="trash" size={14}/> Réinitialiser cette période ({countForScopeDep('plage')})
+            </button>
+          </div>
+        )}
+      </div>
+
+      {resetScopeDep && (
+        <ConfirmDelete db={db}
+          message={`Effacer ${countForScopeDep(resetScopeDep)} dépense(s) — ${resetScopeDep==='jour' ? "celles d'aujourd'hui" : resetScopeDep==='mois' ? 'celles de ce mois-ci' : resetScopeDep==='plage' ? `celles du ${fmtDate(rangeDebutDep)} au ${fmtDate(rangeFinDep)}` : 'TOUTES les dépenses, toutes périodes confondues'} — de « ${site.nom} » ? Les clients, employés, services, stock et commandes ne seront pas touchés. Cette action est irréversible.`}
+          onConfirm={resetDepenses}
+          onCancel={()=>setResetScopeDep(null)}
         />
       )}
 
