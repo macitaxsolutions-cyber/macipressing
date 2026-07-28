@@ -881,6 +881,7 @@ function RoleSelect({ db, setDb, onSelect }){
   }
 
   function recordDailyCaissierExpense(siteId, emp){
+    if(new Date().getDay() === 0) return; // pas de salaire journalier le dimanche
     const site = db.sites.find(s => s.id === siteId);
     if(!site) return;
     const today = todayISO();
@@ -2729,7 +2730,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
       return svc ? `${l.qte}x ${svc.nom} (${fmtGNF(svc.prix*l.qte)})` : '';
     }).filter(Boolean).join('\n');
 
-    let msgDepose = `🧺 Reçu de dépôt — ${site.nom}${express ? '\n⚡ COMMANDE EXPRESS' : ''}\nCommande : ${cmd.numero}\n\n${lignesDetail}${montantRabais>0?`\nRabais : -${fmtGNF(montantRabais)}`:''}${montantExpress>0?`\nSupplément Express (${expressMajoration}%) : +${fmtGNF(montantExpress)}`:''}\nTotal : ${fmtGNF(total)}${montantAcompte>0?`\nAcompte versé : ${fmtGNF(montantAcompte)}\nSolde restant : ${fmtGNF(total-montantAcompte)}`:'\nPaiement : À la récupération'}${cmd.dateRdvRecuperation?`\nRDV de récupération : ${fmtDate(cmd.dateRdvRecuperation)}${cmd.heureRdvRecuperation?' à '+cmd.heureRdvRecuperation:''}${express?' (urgence — même jour)':''}`:cmd.dateRetraitPrevue?`\nRDV : ${fmtDate(cmd.dateRetraitPrevue)}`:''}\n\nMerci pour votre confiance !`;
+    let msgDepose = `🧺 Reçu de dépôt — ${site.nom}${express ? '\n⚡ COMMANDE EXPRESS' : ''}\nCommande : ${cmd.numero}\n\n${lignesDetail}\nTotal articles : ${lignes.reduce((s,l)=>s+l.qte,0)}${montantRabais>0?`\nRabais : -${fmtGNF(montantRabais)}`:''}${montantExpress>0?`\nSupplément Express (${expressMajoration}%) : +${fmtGNF(montantExpress)}`:''}\nTotal : ${fmtGNF(total)}${montantAcompte>0?`\nAcompte versé : ${fmtGNF(montantAcompte)}\nSolde restant : ${fmtGNF(total-montantAcompte)}`:'\nPaiement : À la récupération'}${cmd.dateRdvRecuperation?`\nRDV de récupération : ${fmtDate(cmd.dateRdvRecuperation)}${cmd.heureRdvRecuperation?' à '+cmd.heureRdvRecuperation:''}${express?' (urgence — même jour)':''}`:cmd.dateRetraitPrevue?`\nRDV : ${fmtDate(cmd.dateRetraitPrevue)}`:''}\n\nMerci pour votre confiance !`;
 
     // Générer le reçu PDF et l'envoyer sur Firebase Storage (avec délai de sécurité de 8s)
     try {
@@ -3226,6 +3227,7 @@ function imprimerTicket(cmd, site, client, total, acompte, solde, caissier){
 <div class="sep"></div>
 <table>
   ${lignesHTML}
+  <tr><td style="padding:4px 0;color:#666;font-size:11.5px">Total articles</td><td style="padding:4px 0;text-align:right;font-family:monospace;color:#666;font-size:11.5px">${cmd.lignes.reduce((s,l)=>s+l.qte,0)}</td></tr>
   ${rabaisHTML}
   ${expressHTML}
   <tr class="total-row"><td>Total à payer</td><td style="text-align:right;font-family:monospace">${fmtGNF(total)}</td></tr>
@@ -3317,6 +3319,14 @@ function generateReceiptPDFBlob(cmd, site, client, total, acompte, solde){
     doc.text(priceStr, W-mx, y, {align:'right'});
     y += 4.8 * labelLines.length;
   });
+
+  setPdfColor(doc, '#7FA89E');
+  doc.setFontSize(8);
+  doc.text('Total articles', mx, y);
+  doc.text(String(cmd.lignes.reduce((s,l)=>s+l.qte,0)), W-mx, y, {align:'right'});
+  setPdfColor(doc, '#1A1F1C');
+  doc.setFontSize(9);
+  y += 4.8;
 
   if(cmd.rabais > 0){
     setPdfColor(doc, '#C76B3F');
@@ -3427,6 +3437,9 @@ function TicketModal({ cmd, site, onClose }){
             </div>
           );
         })}
+        <div style={{display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--steam)', paddingTop:4}}>
+          <span>Total articles</span><span className="mono">{cmd.lignes.reduce((s,l)=>s+l.qte,0)}</span>
+        </div>
         {Number(cmd.rabais) > 0 && (
           <>
             <div style={{display:'flex', justifyContent:'space-between', fontSize:13, color:'var(--steam)', paddingTop:6}}>
@@ -4155,17 +4168,22 @@ const CATEGORIES_DEPENSES = ['Salaires', 'Électricité', 'Loyer', 'Fournitures'
 
 function DepensesView({ site, updateSite }){
   const [showNew, setShowNew] = useState(false);
+  const [typePeriode, setTypePeriode] = useState('mois'); // 'jour' | 'mois' | 'annee'
+  const [filterJour, setFilterJour] = useState(todayISO());
   const [filterMois, setFilterMois] = useState(todayISO().slice(0,7));
+  const [filterAnnee, setFilterAnnee] = useState(todayISO().slice(0,4));
   const [confirmDep, setConfirmDep] = useState(null);
   const [editDep, setEditDep] = useState(null);
 
   const depenses = (site.depenses || []);
 
   const filtered = useMemo(() => {
-    return [...depenses]
-      .filter(d => d.date.slice(0,7) === filterMois)
-      .sort((a,b) => new Date(b.date) - new Date(a.date));
-  }, [depenses, filterMois]);
+    let list = [...depenses];
+    if(typePeriode === 'jour') list = list.filter(d => d.date === filterJour);
+    else if(typePeriode === 'mois') list = list.filter(d => d.date.slice(0,7) === filterMois);
+    else if(typePeriode === 'annee') list = list.filter(d => d.date.slice(0,4) === filterAnnee);
+    return list.sort((a,b) => new Date(b.date) - new Date(a.date));
+  }, [depenses, typePeriode, filterJour, filterMois, filterAnnee]);
 
   const totalMois = filtered.reduce((s,d) => s + Number(d.montant), 0);
 
@@ -4188,25 +4206,51 @@ function DepensesView({ site, updateSite }){
     setEditDep(null);
   }
 
-  // Liste des mois disponibles
+  // Listes disponibles pour chaque type de période
   const moisDisponibles = useMemo(() => {
     const mois = new Set(depenses.map(d=>d.date.slice(0,7)));
     mois.add(todayISO().slice(0,7));
     return [...mois].sort().reverse();
   }, [depenses]);
 
+  const anneesDisponibles = useMemo(() => {
+    const annees = new Set(depenses.map(d=>d.date.slice(0,4)));
+    annees.add(todayISO().slice(0,4));
+    return [...annees].sort().reverse();
+  }, [depenses]);
+
+  const labelPeriode = typePeriode === 'jour' ? fmtDate(filterJour)
+    : typePeriode === 'annee' ? filterAnnee
+    : new Date(filterMois+'-01').toLocaleDateString('fr-FR',{month:'long',year:'numeric'});
+
   return (
     <div>
-      <PageHeader title="Dépenses" subtitle={`Total ${filterMois} : ${fmtGNF(totalMois)}`}
+      <PageHeader title="Dépenses" subtitle={`Total ${labelPeriode} : ${fmtGNF(totalMois)}`}
         right={<button className="btn btn-rust" onClick={()=>setShowNew(true)}><Icon name="plus" size={15}/> Nouvelle dépense</button>} />
 
-      {/* Filtre par mois */}
+      {/* Filtre par période */}
       <div style={{display:'flex', gap:10, marginBottom:18, alignItems:'center', flexWrap:'wrap'}}>
-        <select value={filterMois} onChange={e=>setFilterMois(e.target.value)} style={{width:'auto', minWidth:160}}>
-          {moisDisponibles.map(m => (
-            <option key={m} value={m}>{new Date(m + '-15T12:00:00').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})}</option>
-          ))}
-        </select>
+        {[{key:'jour', label:'Jour'}, {key:'mois', label:'Mois'}, {key:'annee', label:'Année'}].map(opt => (
+          <button key={opt.key} className="btn btn-sm" onClick={()=>setTypePeriode(opt.key)}
+            style={{background: typePeriode===opt.key ? 'var(--pine)' : 'transparent', color: typePeriode===opt.key ? 'var(--white)' : 'var(--ink)', borderColor: typePeriode===opt.key ? 'var(--pine)' : 'var(--line-strong)'}}>
+            {opt.label}
+          </button>
+        ))}
+        {typePeriode === 'jour' && (
+          <input type="date" value={filterJour} onChange={e=>setFilterJour(e.target.value)} style={{width:'auto'}} />
+        )}
+        {typePeriode === 'mois' && (
+          <select value={filterMois} onChange={e=>setFilterMois(e.target.value)} style={{width:'auto', minWidth:160}}>
+            {moisDisponibles.map(m => (
+              <option key={m} value={m}>{new Date(m + '-15T12:00:00').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})}</option>
+            ))}
+          </select>
+        )}
+        {typePeriode === 'annee' && (
+          <select value={filterAnnee} onChange={e=>setFilterAnnee(e.target.value)} style={{width:'auto', minWidth:120}}>
+            {anneesDisponibles.map(a => <option key={a} value={a}>{a}</option>)}
+          </select>
+        )}
       </div>
 
       {/* Résumé par catégorie */}
@@ -4257,7 +4301,7 @@ function DepensesView({ site, updateSite }){
             ))}
             {filtered.length > 0 && (
               <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
-                <td colSpan={3} style={{...td, fontWeight:700}}>Total {new Date(filterMois+'-01').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})}</td>
+                <td colSpan={3} style={{...td, fontWeight:700}}>Total {labelPeriode}</td>
                 <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalMois)}</td>
                 <td></td>
               </tr>
