@@ -3285,7 +3285,12 @@ function generateReceiptPDFBlob(cmd, site, client, total, acompte, solde){
   doc.setLineWidth(0.4);
   doc.circle(logoCx, logoCy, logoR, 'S');
   doc.setFillColor(246,242,232);
-  doc.triangle(logoCx-3.2, logoCy-2.5, logoCx+3.2, logoCy-2.5, logoCx, logoCy+4.5, 'F');
+  const sLogo = 0.148; // échelle pour adapter la forme (120x120) au badge de 14mm
+  doc.lines(
+    [ [-14,10], [-11,13], [10,8], [0,37], [34,0], [0,-37], [10,-8] ],
+    logoCx, logoCy - 34*sLogo,
+    [sLogo, sLogo], 'F', true
+  );
   doc.setDrawColor(199,107,63);
   doc.setLineWidth(0.7);
   doc.line(logoCx-4, logoCy+6.3, logoCx+4, logoCy+6.3);
