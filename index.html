@@ -1181,6 +1181,12 @@ function PageHeader({ title, subtitle, right }){
 
 /* ===================== LOGIQUE METIER ===================== */
 
+function getPaiementsCommande(c){
+  if(c.paiements && c.paiements.length) return c.paiements;
+  if(c.modePaiement && Number(c.acompte) > 0) return [{ montant: Number(c.acompte), mode: c.modePaiement, date: c.dateCreation }];
+  return [];
+}
+
 function calcCommandeTotal(commande, services){
   return commande.lignes.reduce((sum, l) => {
     const svc = services.find(s => s.id === l.serviceId);
@@ -1258,6 +1264,9 @@ const PARTS_DISTRIBUTION = [
   { nom: 'Amadou Tidiane Bah', pct: 5 },
   { nom: 'Conservation du Capital Fixe', pct: 10 },
 ];
+
+// Acteurs concernés par le remboursement d'investissement (80% versé, 20% vers Conservation du Capital Fixe)
+const ACTEURS_REMBOURSEMENT_INVESTISSEMENT = ['Mamadou Sanoussy Bah', 'Mamadou Alpha Bah', 'Nene Djiba Bah', 'Amadou Tidiane Bah'];
 
 const ANNEE_DEBUT_APP = 2026; // année de mise en place de l'application
 
@@ -1406,7 +1415,16 @@ function DistributionView({ db, setDb, anneeInitiale }){
   }, [currentYear]);
 
   const [annee, setAnnee] = useState(anneeInitiale || currentYear);
+  const remboursementActif = db.remboursementActif !== false; // activé par défaut
+  function toggleRemboursement(){
+    setDb({ ...db, remboursementActif: !remboursementActif });
+  }
   const estAnneeApp = annee >= ANNEE_DEBUT_APP;
+
+  const moisActuelDefaut = (estAnneeApp && annee === currentYear) ? Number(todayISO().slice(5,7)) : 12;
+  const [periodeRepartition, setPeriodeRepartition] = useState('mois'); // 'mois' | 'annee'
+  const [moisRepartition, setMoisRepartition] = useState(moisActuelDefaut);
+  const [cumulRepartition, setCumulRepartition] = useState(true); // cumul depuis janvier, ou ce mois seulement
 
   // Calcul automatique à partir des données réelles de l'app (année couverte par l'application)
   // Saisie manuelle pour les années antérieures à l'application
@@ -1419,6 +1437,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
   // Dépenses propres à chaque acteur (toutes années confondues) — liste détaillée avec description
   const [draftDesc, setDraftDesc] = useState({});
   const [draftMontant, setDraftMontant] = useState({});
+  const [draftDate, setDraftDate] = useState({});
 
   useEffect(() => {
     const d = (db.historiqueAnnuel || {})[annee] || {};
@@ -1440,14 +1459,16 @@ function DistributionView({ db, setDb, anneeInitiale }){
   function ajouterDepenseActeur(nomActeur){
     const desc = (draftDesc[nomActeur]||'').trim();
     const montant = Number(draftMontant[nomActeur])||0;
+    const date = draftDate[nomActeur] || todayISO();
     if(!desc || montant<=0) return;
-    const entry = { id: uid('depact_'), description: desc, montant };
+    const entry = { id: uid('depact_'), description: desc, montant, date };
     const anneeActuelle = (db.historiqueAnnuel||{})[annee] || {};
     const listeActuelle = (anneeActuelle.depensesActeurs||{})[nomActeur] || [];
     const nextDepensesActeurs = { ...(anneeActuelle.depensesActeurs||{}), [nomActeur]: [...listeActuelle, entry] };
     setDb({ ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [annee]: { ...anneeActuelle, depensesActeurs: nextDepensesActeurs } } });
     setDraftDesc({...draftDesc, [nomActeur]: ''});
     setDraftMontant({...draftMontant, [nomActeur]: ''});
+    setDraftDate({...draftDate, [nomActeur]: todayISO()});
   }
 
   function supprimerDepenseActeur(nomActeur, entryId){
@@ -1522,9 +1543,84 @@ function DistributionView({ db, setDb, anneeInitiale }){
   const depensesActeursActuel = dataHisto.depensesActeurs || {}; // { [nom]: [{id, description, montant}] }
   const totalDepensesActeurs = PARTS_DISTRIBUTION.reduce((s,p)=> s + ((depensesActeursActuel[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0)), 0);
 
+  // ---- Calculs spécifiques à la période choisie pour la répartition (mois / cumul depuis janvier / année entière) ----
+  function filtrerDepensesParPeriode(entries){
+    if(!entries) return [];
+    if(periodeRepartition === 'annee') return entries;
+    return entries.filter(e => {
+      if(!e.date) return true; // dépenses sans date (saisies avant cette fonctionnalité) : toujours comptées
+      const m = Number(e.date.slice(5,7));
+      return cumulRepartition ? m <= moisRepartition : m === moisRepartition;
+    });
+  }
+
+  const nomMoisRepartition = new Date(annee, moisRepartition-1, 1).toLocaleDateString('fr-FR',{month:'long'});
+  const periodeLabel = periodeRepartition === 'annee' || !estAnneeApp
+    ? `Année ${annee}`
+    : (cumulRepartition ? `Janvier à ${nomMoisRepartition} ${annee}` : `${nomMoisRepartition} ${annee}`);
+
+  const periodeDonnees = (periodeRepartition === 'mois' && estAnneeApp && donneesParMois)
+    ? (() => {
+        const subset = cumulRepartition
+          ? donneesParMois.filter(m => m.mois <= moisRepartition)
+          : donneesParMois.filter(m => m.mois === moisRepartition);
+        const rb = subset.reduce((s,m)=>s+m.recetteBrute,0);
+        const dep = subset.reduce((s,m)=>s+m.depenses,0);
+        const imp = subset.reduce((s,m)=>s+m.impayes,0);
+        return { recetteBrute: rb, depenses: dep, impayes: imp, recetteNette: rb - imp - dep };
+      })()
+    : { recetteBrute, depenses: depensesAnnee, impayes: impayesAnnee, recetteNette };
+
+  const depensesActeursPeriode = {};
+  PARTS_DISTRIBUTION.forEach(p => { depensesActeursPeriode[p.nom] = filtrerDepensesParPeriode(depensesActeursActuel[p.nom]); });
+  const totalDepensesActeursPeriode = PARTS_DISTRIBUTION.reduce((s,p)=> s + (depensesActeursPeriode[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0), 0);
+
+  // ---- Totaux encaissés par mode de paiement (Espèces / Orange Money), pour la période choisie ----
+  const totauxParMode = useMemo(() => {
+    const totaux = {};
+    db.sites.forEach(site => {
+      (site.commandes||[]).forEach(c => {
+        getPaiementsCommande(c).forEach(pmt => {
+          if(!pmt.date) return;
+          const d = pmt.date.slice(0,10);
+          const y = Number(d.slice(0,4)), m = Number(d.slice(5,7));
+          if(y !== annee) return;
+          if(periodeRepartition === 'mois' && estAnneeApp){
+            if(cumulRepartition){ if(m > moisRepartition) return; }
+            else { if(m !== moisRepartition) return; }
+          }
+          const mode = pmt.mode || 'Espèces';
+          totaux[mode] = (totaux[mode]||0) + Number(pmt.montant);
+        });
+      });
+    });
+    return totaux;
+  }, [db, annee, periodeRepartition, moisRepartition, cumulRepartition, estAnneeApp]);
+
+  // Remboursement d'investissement : 20% du net perçu des 4 acteurs concernés est redirigé vers la Conservation du Capital Fixe
+  const totalRedirigeVersCapitalFixe = remboursementActif ? PARTS_DISTRIBUTION.reduce((s,p) => {
+    if(!ACTEURS_REMBOURSEMENT_INVESTISSEMENT.includes(p.nom)) return s;
+    const montantBrutP = periodeDonnees.recetteNette * p.pct / 100;
+    const depensePropreP = (depensesActeursPeriode[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0);
+    const montantNetP = montantBrutP - depensePropreP;
+    return s + montantNetP * 0.2;
+  }, 0) : 0;
+
   return (
     <div>
       <PageHeader title="Distribution des recettes" subtitle="Répartition annuelle du bénéfice net entre les acteurs du pressing" />
+
+      <div className="card" style={{padding:'1.1rem 1.5rem', marginBottom:20, display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:12, background: remboursementActif ? 'var(--warn-light)' : 'var(--paper-2)'}}>
+        <div>
+          <div style={{fontWeight:700, fontSize:14, color: remboursementActif ? '#7a5c00' : 'var(--ink)'}}>💰 Remboursement de l'investissement en cours</div>
+          <div style={{fontSize:12.5, color: remboursementActif ? '#7a5c00' : 'var(--steam)', marginTop:2}}>
+            Quand actif, {ACTEURS_REMBOURSEMENT_INVESTISSEMENT.join(', ')} reçoivent 80% de leur net perçu — les 20% restants vont à la Conservation du Capital Fixe pour vous rembourser, sans les bloquer.
+          </div>
+        </div>
+        <button className="btn btn-sm" onClick={toggleRemboursement} style={{background: remboursementActif ? 'var(--warn)' : 'transparent', color: remboursementActif ? 'var(--white)' : 'var(--ink)', borderColor: remboursementActif ? 'var(--warn)' : 'var(--line-strong)', flexShrink:0}}>
+          {remboursementActif ? 'Désactiver' : 'Activer'}
+        </button>
+      </div>
 
       <div style={{display:'flex', gap:14, marginBottom:20, alignItems:'center', flexWrap:'wrap'}}>
         <label style={{margin:0}}>Année :</label>
@@ -1584,7 +1680,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
                   <div style={{marginBottom:8}}>
                     {entries.map(e => (
                       <div key={e.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'5px 0', borderBottom:'1px solid var(--line)', fontSize:13}}>
-                        <span>{e.description}</span>
+                        <span>{e.description}{e.date ? <span className="mono" style={{color:'var(--steam)', fontSize:11, marginLeft:8}}>{fmtDate(e.date)}</span> : null}</span>
                         <div style={{display:'flex', gap:8, alignItems:'center'}}>
                           <span className="mono">{fmtGNF(e.montant)}</span>
                           <button className="btn btn-ghost btn-sm" style={{padding:'3px 7px', color:'var(--danger)'}} onClick={()=>supprimerDepenseActeur(p.nom, e.id)}><Icon name="trash" size={12}/></button>
@@ -1593,9 +1689,10 @@ function DistributionView({ db, setDb, anneeInitiale }){
                     ))}
                   </div>
                 )}
-                <div style={{display:'grid', gridTemplateColumns:'2fr 1fr auto', gap:8}}>
+                <div style={{display:'grid', gridTemplateColumns:'1.6fr 0.9fr 0.9fr auto', gap:8}}>
                   <input type="text" placeholder="Description (ex: avance sur salaire)" value={draftDesc[p.nom]||''} onChange={e=>setDraftDesc({...draftDesc, [p.nom]: e.target.value})} />
                   <input type="number" placeholder="Montant" value={draftMontant[p.nom]||''} onChange={e=>setDraftMontant({...draftMontant, [p.nom]: e.target.value})} />
+                  <input type="date" value={draftDate[p.nom]||todayISO()} onChange={e=>setDraftDate({...draftDate, [p.nom]: e.target.value})} />
                   <button className="btn btn-sm" disabled={!(draftDesc[p.nom]||'').trim() || !draftMontant[p.nom]} onClick={()=>ajouterDepenseActeur(p.nom)}><Icon name="plus" size={13}/> Ajouter</button>
                 </div>
               </div>
@@ -1648,8 +1745,55 @@ function DistributionView({ db, setDb, anneeInitiale }){
       )}
 
       <h2 style={{fontSize:16, color:'var(--pine)', marginBottom:6}}>Répartition entre les acteurs</h2>
+
+      {estAnneeApp && (
+        <div style={{display:'flex', gap:10, flexWrap:'wrap', alignItems:'center', marginBottom:14}}>
+          <button className="btn btn-sm" onClick={()=>setPeriodeRepartition('mois')}
+            style={{background: periodeRepartition==='mois'?'var(--pine)':'transparent', color: periodeRepartition==='mois'?'var(--white)':'var(--ink)', borderColor: periodeRepartition==='mois'?'var(--pine)':'var(--line-strong)'}}>
+            Mensuelle
+          </button>
+          <button className="btn btn-sm" onClick={()=>setPeriodeRepartition('annee')}
+            style={{background: periodeRepartition==='annee'?'var(--pine)':'transparent', color: periodeRepartition==='annee'?'var(--white)':'var(--ink)', borderColor: periodeRepartition==='annee'?'var(--pine)':'var(--line-strong)'}}>
+            Annuelle
+          </button>
+          {periodeRepartition === 'mois' && (
+            <>
+              <select value={moisRepartition} onChange={e=>setMoisRepartition(Number(e.target.value))} style={{width:'auto', minWidth:140}}>
+                {Array.from({length:12},(_,i)=>i+1).map(m => (
+                  <option key={m} value={m}>{new Date(annee, m-1, 1).toLocaleDateString('fr-FR',{month:'long'})}</option>
+                ))}
+              </select>
+              <button className="btn btn-sm" onClick={()=>setCumulRepartition(true)}
+                style={{background: cumulRepartition?'var(--gold-light)':'transparent', color: cumulRepartition?'#7a5c00':'var(--ink)', borderColor: cumulRepartition?'var(--warn)':'var(--line-strong)'}}>
+                Cumul depuis janvier
+              </button>
+              <button className="btn btn-sm" onClick={()=>setCumulRepartition(false)}
+                style={{background: !cumulRepartition?'var(--gold-light)':'transparent', color: !cumulRepartition?'#7a5c00':'var(--ink)', borderColor: !cumulRepartition?'var(--warn)':'var(--line-strong)'}}>
+                Ce mois seulement
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:16}}>
+        <StatCard label={`Recette brute — ${periodeLabel}`} value={fmtGNF(periodeDonnees.recetteBrute)} icon="euro" />
+        <StatCard label={`Impayés — ${periodeLabel}`} value={fmtGNF(periodeDonnees.impayes)} icon="alert" tone={periodeDonnees.impayes>0?'danger':'default'} />
+        <StatCard label={`Dépenses — ${periodeLabel}`} value={fmtGNF(periodeDonnees.depenses)} icon="trash" tone="danger" />
+        <StatCard label={`Net perçu — ${periodeLabel}`} value={fmtGNF(periodeDonnees.recetteNette)} icon="chart" tone={periodeDonnees.recetteNette>=0?'default':'danger'} />
+      </div>
+
+      <h2 style={{fontSize:16, color:'var(--pine)', marginBottom:6}}>Total encaissé par mode de paiement</h2>
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
-        « Impayés (part de l'acteur) » indique combien reviendrait à chaque personne si les factures actuellement en attente étaient un jour réglées — à titre d'information seulement. Le montant à distribuer réellement est celui de la colonne <strong>« Montant réel (sans impayés) »</strong>, qui exclut déjà l'argent pas encore encaissé, pour ne jamais distribuer ce que l'entreprise n'a pas.
+        Montants réellement reçus des clients (acomptes et encaissements) — {periodeLabel}, tous pressings confondus.
+      </p>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:14, marginBottom:24}}>
+        <StatCard label="Espèces" value={fmtGNF(totauxParMode['Espèces']||0)} icon="euro" />
+        <StatCard label="Orange Money" value={fmtGNF(totauxParMode['Orange Money']||0)} icon="euro" />
+      </div>
+
+      <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
+        « Impayés (part de l'acteur) » indique combien reviendrait à chaque personne si les factures actuellement en attente étaient un jour réglées — à titre d'information seulement. « Montant brut avant impayés (Part de l'acteur) » montre la part projetée de chacun sur la recette brute totale, avant toute déduction. Le montant à distribuer réellement reste celui de la colonne <strong>« Net perçu »</strong>, qui exclut déjà l'argent pas encore encaissé et les dépenses, pour ne jamais distribuer ce que l'entreprise n'a pas.
       </p>
       <div className="card" style={{overflow:'hidden'}}>
         <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
@@ -1657,40 +1801,52 @@ function DistributionView({ db, setDb, anneeInitiale }){
             <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
               <th style={th}>Bénéficiaire</th>
               <th style={th}>Part</th>
+              <th style={th}>Montant brut avant impayés (Part de l'acteur)</th>
               <th style={th}>Impayés (part de l'acteur)</th>
-              <th style={th}>Montant réel (sans impayés)</th>
-              <th style={th}>Dépenses propres</th>
               <th style={th}>Cumulé (impayés + net perçu)</th>
+              <th style={th}>Dépenses propres</th>
               <th style={th}>Net perçu</th>
+              <th style={th}>Montant à verser</th>
             </tr>
           </thead>
           <tbody>
             {PARTS_DISTRIBUTION.map(p => {
-              const impayesPart = impayesAnnee * p.pct / 100;
-              const montantBrut = recetteNette * p.pct / 100;
-              const depensePropre = (depensesActeursActuel[p.nom]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0);
+              const impayesPart = periodeDonnees.impayes * p.pct / 100;
+              const montantBrut = periodeDonnees.recetteNette * p.pct / 100;
+              const montantBrutAvantImpayes = periodeDonnees.recetteBrute * p.pct / 100;
+              const depensePropre = (depensesActeursPeriode[p.nom]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0);
               const montantNet = montantBrut - depensePropre;
               const cumule = impayesPart + montantNet;
+              const estConcerne = remboursementActif && ACTEURS_REMBOURSEMENT_INVESTISSEMENT.includes(p.nom);
+              const montantAVerser = p.nom === 'Conservation du Capital Fixe'
+                ? montantNet + totalRedirigeVersCapitalFixe
+                : (estConcerne ? montantNet * 0.8 : montantNet);
               return (
                 <tr key={p.nom} style={{borderTop:'1px solid var(--line)'}}>
                   <td style={td}>{p.nom}</td>
                   <td style={td}><span className="tag tag-recu">{p.pct}%</span></td>
+                  <td style={{...td, fontWeight:600}} className="mono">{fmtGNF(montantBrutAvantImpayes)}</td>
                   <td style={{...td, color: impayesPart>0 ? 'var(--danger)' : 'var(--steam)'}} className="mono">{impayesPart>0 ? fmtGNF(impayesPart) : '—'}</td>
-                  <td style={{...td, fontWeight:600}} className="mono">{fmtGNF(montantBrut)}</td>
-                  <td style={{...td, color: depensePropre>0 ? 'var(--danger)' : 'var(--steam)'}} className="mono">{depensePropre>0 ? '− '+fmtGNF(depensePropre) : '—'}</td>
                   <td style={{...td, fontWeight:700, color:'var(--danger)'}} className="mono">{fmtGNF(cumule)}</td>
+                  <td style={{...td, color: depensePropre>0 ? 'var(--danger)' : 'var(--steam)'}} className="mono">{depensePropre>0 ? '− '+fmtGNF(depensePropre) : '—'}</td>
                   <td style={{...td, fontWeight:700, color: montantNet<0 ? 'var(--danger)' : 'var(--ink)'}} className="mono">{fmtGNF(montantNet)}</td>
+                  <td style={{...td, fontWeight:700, color:'var(--ok)'}} className="mono">
+                    {fmtGNF(montantAVerser)}
+                    {estConcerne && <div style={{fontSize:10.5, color:'var(--warn)', fontWeight:600}}>80% (20% → Capital Fixe)</div>}
+                    {p.nom === 'Conservation du Capital Fixe' && totalRedirigeVersCapitalFixe > 0 && <div style={{fontSize:10.5, color:'var(--warn)', fontWeight:600}}>+ {fmtGNF(totalRedirigeVersCapitalFixe)} reçus</div>}
+                  </td>
                 </tr>
               );
             })}
             <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
               <td style={{...td, fontWeight:700}}>Total</td>
               <td style={{...td, fontWeight:700}}>100%</td>
-              <td style={{...td, fontWeight:700, color: impayesAnnee>0?'var(--danger)':'var(--steam)'}} className="mono">{impayesAnnee>0?fmtGNF(impayesAnnee):'—'}</td>
-              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(recetteNette)}</td>
-              <td style={{...td, fontWeight:700}} className="mono">{totalDepensesActeurs>0 ? '− '+fmtGNF(totalDepensesActeurs) : '—'}</td>
-              <td style={{...td, fontWeight:700, color:'var(--danger)'}} className="mono">{fmtGNF(impayesAnnee + (recetteNette - totalDepensesActeurs))}</td>
-              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(recetteNette - totalDepensesActeurs)}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(periodeDonnees.recetteBrute)}</td>
+              <td style={{...td, fontWeight:700, color: periodeDonnees.impayes>0?'var(--danger)':'var(--steam)'}} className="mono">{periodeDonnees.impayes>0?fmtGNF(periodeDonnees.impayes):'—'}</td>
+              <td style={{...td, fontWeight:700, color:'var(--danger)'}} className="mono">{fmtGNF(periodeDonnees.impayes + (periodeDonnees.recetteNette - totalDepensesActeursPeriode))}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{totalDepensesActeursPeriode>0 ? '− '+fmtGNF(totalDepensesActeursPeriode) : '—'}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(periodeDonnees.recetteNette - totalDepensesActeursPeriode)}</td>
+              <td style={{...td, fontWeight:700, color:'var(--ok)'}} className="mono">{fmtGNF(periodeDonnees.recetteNette - totalDepensesActeursPeriode)}</td>
             </tr>
           </tbody>
         </table>
@@ -2450,7 +2606,8 @@ function CommandesView({ site, updateSite, editable, employeId }){
   function enregistrerPaiement(cmd, montant, mode){
     const total = calcCommandeTotal(cmd, site.services);
     const nouvelAcompte = Math.min((Number(cmd.acompte)||0) + Number(montant), total);
-    const updated = { ...cmd, acompte: nouvelAcompte, paiement: nouvelAcompte >= total ? 'paye' : 'impaye', modePaiement: mode };
+    const nouveauPaiement = { id: uid('pmt_'), montant: Number(montant), mode, date: new Date().toISOString() };
+    const updated = { ...cmd, acompte: nouvelAcompte, paiement: nouvelAcompte >= total ? 'paye' : 'impaye', modePaiement: mode, paiements: [...(cmd.paiements||[]), nouveauPaiement] };
     updateSite({ ...site, commandes: site.commandes.map(c => c.id === updated.id ? updated : c) });
   }
 
@@ -2615,7 +2772,6 @@ function EncaisserModal({ cmd, site, onClose, onSave }){
           <select value={mode} onChange={e=>setMode(e.target.value)}>
             <option>Espèces</option>
             <option>Orange Money</option>
-            <option>Mobile Money</option>
           </select>
         </div>
         <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
@@ -2714,6 +2870,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
       paiement: montantAcompte >= total ? 'paye' : 'impaye',
       acompte: montantAcompte,
       modePaiement: montantAcompte > 0 ? modePaiementDepot : null,
+      paiements: montantAcompte > 0 ? [{ id: uid('pmt_'), montant: montantAcompte, mode: modePaiementDepot, date: new Date().toISOString() }] : [],
       rabais: montantRabais,
       totalBrut: totalBrut,
       express: express,
@@ -3036,7 +3193,6 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
                 <select value={modePaiementDepot} onChange={e=>setModePaiementDepot(e.target.value)}>
                   <option>Espèces</option>
                   <option>Orange Money</option>
-                  <option>Mobile Money</option>
                 </select>
               </div>
             )}
@@ -4203,6 +4359,15 @@ function DepensesView({ site, updateSite }){
     return acc;
   }, [filtered]);
 
+  const parMode = useMemo(() => {
+    const acc = {};
+    filtered.forEach(d => {
+      const mode = d.modePaiement || 'Espèces';
+      acc[mode] = (acc[mode]||0) + Number(d.montant);
+    });
+    return acc;
+  }, [filtered]);
+
   function removeDepense(id){
     const dep = depenses.find(d=>d.id===id);
     const entry = { id: uid('trash_'), type:'depense', label: dep ? `Dépense : ${dep.description}` : 'Dépense', data: dep, dateSuppression: new Date().toISOString() };
@@ -4263,11 +4428,23 @@ function DepensesView({ site, updateSite }){
 
       {/* Résumé par catégorie */}
       {filtered.length > 0 && (
-        <div style={{display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:10, marginBottom:20}}>
+        <div style={{display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:10, marginBottom:14}}>
           {CATEGORIES_DEPENSES.map(cat => (
             <div key={cat} className="card" style={{padding:'0.9rem 1rem'}}>
               <div style={{fontSize:11.5, color:'var(--steam)', fontWeight:600, textTransform:'uppercase'}}>{cat}</div>
               <div className="mono" style={{fontSize:15, fontWeight:700, color:'var(--pine)', marginTop:4}}>{fmtGNF(parCategorie[cat]||0)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Résumé par mode de paiement */}
+      {filtered.length > 0 && (
+        <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:10, marginBottom:20}}>
+          {['Espèces','Orange Money'].map(mode => (
+            <div key={mode} className="card" style={{padding:'0.9rem 1rem'}}>
+              <div style={{fontSize:11.5, color:'var(--steam)', fontWeight:600, textTransform:'uppercase'}}>{mode}</div>
+              <div className="mono" style={{fontSize:15, fontWeight:700, color:'var(--rust)', marginTop:4}}>{fmtGNF(parMode[mode]||0)}</div>
             </div>
           ))}
         </div>
@@ -4281,6 +4458,7 @@ function DepensesView({ site, updateSite }){
               <th style={th}>Date</th>
               <th style={th}>Description</th>
               <th style={th}>Catégorie</th>
+              <th style={th}>Mode</th>
               <th style={th}>Montant</th>
               <th style={th}></th>
             </tr>
@@ -4294,6 +4472,7 @@ function DepensesView({ site, updateSite }){
                 <td style={td}>{fmtDate(d.date)}</td>
                 <td style={td}>{d.description}</td>
                 <td style={td}><span className="tag tag-recu">{d.categorie}</span></td>
+                <td style={td}>{d.modePaiement || 'Espèces'}</td>
                 <td style={{...td, color:'var(--danger)', fontWeight:600}} className="mono">{fmtGNF(d.montant)}</td>
                 <td style={{...td, textAlign:'right'}}>
                   <div style={{display:'flex', gap:6, justifyContent:'flex-end'}}>
@@ -4309,7 +4488,7 @@ function DepensesView({ site, updateSite }){
             ))}
             {filtered.length > 0 && (
               <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
-                <td colSpan={3} style={{...td, fontWeight:700}}>Total {labelPeriode}</td>
+                <td colSpan={4} style={{...td, fontWeight:700}}>Total {labelPeriode}</td>
                 <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalMois)}</td>
                 <td></td>
               </tr>
@@ -4334,6 +4513,13 @@ function DepensesView({ site, updateSite }){
             </div>
             <div><label>Description</label><input type="text" value={editDep.description} onChange={e=>setEditDep({...editDep, description:e.target.value})} /></div>
             <div><label>Montant (GNF)</label><input type="number" value={editDep.montant} onChange={e=>setEditDep({...editDep, montant:Number(e.target.value)})} /></div>
+            <div>
+              <label>Mode de paiement</label>
+              <select value={editDep.modePaiement||'Espèces'} onChange={e=>setEditDep({...editDep, modePaiement:e.target.value})}>
+                <option>Espèces</option>
+                <option>Orange Money</option>
+              </select>
+            </div>
             <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
               <button className="btn" onClick={()=>setEditDep(null)}>Annuler</button>
               <button className="btn btn-rust" onClick={()=>saveEditDepense(editDep)} disabled={!editDep.description||!editDep.montant}>Enregistrer</button>
@@ -4350,6 +4536,7 @@ function NewDepenseModal({ site, updateSite, onClose }){
   const [description, setDescription] = useState('');
   const [montant, setMontant] = useState('');
   const [categorie, setCategorie] = useState('Salaires');
+  const [modePaiement, setModePaiement] = useState('Espèces');
 
   function submit(){
     if(!description.trim() || !montant || !date) return;
@@ -4359,6 +4546,7 @@ function NewDepenseModal({ site, updateSite, onClose }){
       description: description.trim(),
       montant: Number(montant),
       categorie,
+      modePaiement,
     };
     updateSite({ ...site, depenses: [dep, ...(site.depenses||[])] });
     onClose();
@@ -4376,6 +4564,13 @@ function NewDepenseModal({ site, updateSite, onClose }){
         </div>
         <div><label>Description</label><input type="text" placeholder="Ex : Salaire Mamadou Alpha, Facture électricité…" value={description} onChange={e=>setDescription(e.target.value)} autoFocus/></div>
         <div><label>Montant (GNF)</label><input type="number" placeholder="0" value={montant} onChange={e=>setMontant(e.target.value)} /></div>
+        <div>
+          <label>Mode de paiement</label>
+          <select value={modePaiement} onChange={e=>setModePaiement(e.target.value)}>
+            <option>Espèces</option>
+            <option>Orange Money</option>
+          </select>
+        </div>
         <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
           <button className="btn" onClick={onClose}>Annuler</button>
           <button className="btn btn-rust" disabled={!description.trim()||!montant||!date} onClick={submit}>Enregistrer</button>
