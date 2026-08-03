@@ -1260,6 +1260,42 @@ const PARTS_DISTRIBUTION = [
 // Acteurs concernés par le remboursement d'investissement (80% versé, 20% vers Conservation du Capital Fixe)
 const ACTEURS_REMBOURSEMENT_INVESTISSEMENT = ['Mamadou Sanoussy Bah', 'Mamadou Alpha Bah', 'Nene Djiba Bah', 'Amadou Tidiane Bah'];
 
+// Certains employés (caissiers) sont aussi des acteurs de la répartition (ex: "Nene Djiba" = "Nene Djiba Bah").
+// On fait correspondre les noms pour remonter automatiquement leurs dépenses propres saisies dans "Détail mensuel".
+function nomsCorrespondent(nomEmploye, nomActeur){
+  const mots = (nomEmploye||'').toLowerCase().trim().split(/\s+/).filter(Boolean);
+  if(mots.length === 0) return false;
+  const acteurLower = (nomActeur||'').toLowerCase();
+  return mots.every(mot => acteurLower.includes(mot));
+}
+
+function calculerDepensesPropresEmployesParActeur(db, annee, periodeRepartition, moisRepartition, cumulRepartition){
+  const resultat = {};
+  PARTS_DISTRIBUTION.forEach(p => { resultat[p.nom] = 0; });
+  db.sites.forEach(site => {
+    const manuelAnnee = (site.detailMensuelManuel||{})[annee] || {};
+    for(let m=1; m<=12; m++){
+      if(periodeRepartition === 'mois'){
+        if(cumulRepartition){ if(m > moisRepartition) continue; }
+        else { if(m !== moisRepartition) continue; }
+      }
+      const parEmploye = normaliserMoisManuel(manuelAnnee[m]);
+      if(!parEmploye) continue;
+      Object.entries(parEmploye).forEach(([empId, valeurs]) => {
+        if(empId === '_legacy') return;
+        const emp = (site.employes||[]).find(e=>e.id===empId);
+        if(!emp) return;
+        const depensesPropres = Number(valeurs.depensesPropres)||0;
+        if(depensesPropres <= 0) return;
+        PARTS_DISTRIBUTION.forEach(p => {
+          if(nomsCorrespondent(emp.nom, p.nom)) resultat[p.nom] += depensesPropres;
+        });
+      });
+    }
+  });
+  return resultat;
+}
+
 const ANNEE_DEBUT_APP = 2026; // année de mise en place de l'application
 
 function calculerDonneesAnnee(db, annee){
@@ -1599,7 +1635,11 @@ function DistributionView({ db, setDb, anneeInitiale }){
 
   const depensesActeursPeriode = {};
   PARTS_DISTRIBUTION.forEach(p => { depensesActeursPeriode[p.nom] = filtrerDepensesParPeriode(depensesActeursActuel[p.nom]); });
-  const totalDepensesActeursPeriode = PARTS_DISTRIBUTION.reduce((s,p)=> s + (depensesActeursPeriode[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0), 0);
+  const depensesPropresEmployes = useMemo(
+    () => calculerDepensesPropresEmployesParActeur(db, annee, periodeRepartition, moisRepartition, cumulRepartition),
+    [db, annee, periodeRepartition, moisRepartition, cumulRepartition]
+  );
+  const totalDepensesActeursPeriode = PARTS_DISTRIBUTION.reduce((s,p)=> s + (depensesActeursPeriode[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0), 0);
 
   // ---- Totaux encaissés par mode de paiement (Espèces / Orange Money), pour la période choisie ----
   const totauxParMode = useMemo(() => {
@@ -1627,7 +1667,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
   const totalRedirigeVersCapitalFixe = remboursementActif ? PARTS_DISTRIBUTION.reduce((s,p) => {
     if(!ACTEURS_REMBOURSEMENT_INVESTISSEMENT.includes(p.nom)) return s;
     const montantBrutP = periodeDonnees.recetteNette * p.pct / 100;
-    const depensePropreP = (depensesActeursPeriode[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0);
+    const depensePropreP = (depensesActeursPeriode[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
     const montantNetP = montantBrutP - depensePropreP;
     return s + montantNetP * 0.2;
   }, 0) : 0;
@@ -1690,7 +1730,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
       <div className="card" style={{padding:'1.5rem', marginBottom:20}}>
         <h3 style={{margin:'0 0 6px', fontSize:15}}>💰 Dépenses propres de chaque acteur — {annee}</h3>
         <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 16px', lineHeight:1.5}}>
-          Dépenses personnelles engagées par chaque acteur sur son propre compte cette année-là (avances, retraits, achats personnels…), avec leur description. Elles seront déduites de sa part pour refléter son montant net réel — sans affecter la recette nette globale de l'entreprise.
+          Dépenses personnelles engagées par chaque acteur sur son propre compte cette année-là (avances, retraits, achats personnels…), avec leur description. Elles seront déduites de sa part pour refléter son montant net réel — sans affecter la recette nette globale de l'entreprise. Si un acteur est aussi caissier dans un pressing, ses « dépenses propres » saisies dans « Détail mensuel » s'ajoutent automatiquement ici.
         </p>
         <div style={{display:'grid', gap:18}}>
           {PARTS_DISTRIBUTION.map(p => {
@@ -1843,7 +1883,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
               const impayesPart = periodeDonnees.impayes * p.pct / 100;
               const montantBrut = periodeDonnees.recetteNette * p.pct / 100;
               const montantBrutAvantImpayes = periodeDonnees.recetteBrute * p.pct / 100;
-              const depensePropre = (depensesActeursPeriode[p.nom]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0);
+              const depensePropre = (depensesActeursPeriode[p.nom]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
               const montantNet = montantBrut - depensePropre;
               const cumule = impayesPart + montantNet;
               const estConcerne = remboursementActif && ACTEURS_REMBOURSEMENT_INVESTISSEMENT.includes(p.nom);
