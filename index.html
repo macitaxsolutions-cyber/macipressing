@@ -46,8 +46,6 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Archivo+Expanded:wght@600;700;800&family=Source+Sans+3:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root{
     --ink:#1A1F1C;
@@ -77,15 +75,15 @@
   body{
     background:var(--paper);
     color:var(--ink);
-    font-family:'Source Sans 3', sans-serif;
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
     -webkit-font-smoothing:antialiased;
   }
   #root{min-height:100vh;}
   h1,h2,h3,.display{
-    font-family:'Archivo Expanded', sans-serif;
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
     letter-spacing:-0.01em;
   }
-  .mono{font-family:'JetBrains Mono', monospace; letter-spacing:0.02em;}
+  .mono{font-family:ui-monospace,'Roboto Mono','Courier New',monospace; letter-spacing:0.02em;}
   button{font-family:inherit; cursor:pointer;}
   input,select,textarea{font-family:inherit; font-size:14px;}
   ::selection{background:var(--rust-light);}
@@ -659,8 +657,8 @@ function Logo({ size = 44, showText = true, textColor = 'var(--pine)', accentCol
       <LogoMark size={size} />
       {showText && (
         <div style={{lineHeight:1.05}}>
-          <div style={{fontFamily:"'Archivo Expanded',sans-serif", fontWeight:800, fontSize: size*0.36, color:textColor, letterSpacing:'0.01em'}}>MACI</div>
-          <div style={{fontFamily:"'Archivo Expanded',sans-serif", fontWeight:600, fontSize: size*0.22, color:accentColor, letterSpacing:'0.12em'}}>PRESSING</div>
+          <div style={{fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif", fontWeight:800, fontSize: size*0.36, color:textColor, letterSpacing:'0.01em'}}>MACI</div>
+          <div style={{fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif", fontWeight:600, fontSize: size*0.22, color:accentColor, letterSpacing:'0.12em'}}>PRESSING</div>
         </div>
       )}
     </div>
@@ -1127,7 +1125,7 @@ function Shell({ title, role, navItems, active, onNav, onLogout, children }){
         <div className="app-sidebar-brand" style={{display:'flex', alignItems:'center', gap:10, marginBottom:'2rem', padding:'0 0.5rem'}}>
           <LogoMark size={30} />
           <div>
-            <div style={{fontFamily:"'Archivo Expanded',sans-serif", fontSize:14.5, fontWeight:700, lineHeight:1.25}}>{title}</div>
+            <div style={{fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif", fontSize:14.5, fontWeight:700, lineHeight:1.25}}>{title}</div>
             <div className="mono app-sidebar-role" style={{fontSize:11, opacity:0.65}}>{role}</div>
           </div>
         </div>
@@ -2130,6 +2128,7 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
     { key:'employes', label:'Équipe', icon:'users' },
     { key:'notifications', label:'Notifications', icon:'bell' },
     { key:'depenses', label:'Dépenses', icon:'euro' },
+    { key:'detailMensuel', label:'Détail mensuel', icon:'chart' },
     { key:'remuneration', label:'Rémunérations', icon:'chart' },
     { key:'corbeille', label:'Corbeille', icon:'trash', badge: (site.corbeille||[]).length || undefined },
     { key:'parametres', label:'Paramètres', icon:'edit' },
@@ -2155,6 +2154,7 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
       {page === 'employes' && <EquipeView site={site} updateSite={updateSite} />}
       {page === 'notifications' && <NotificationsView site={site} />}
       {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} />}
+      {page === 'detailMensuel' && <DetailMensuelGerantView site={site} />}
       {page === 'remuneration' && <RemunerationGerantView site={site} />}
       {page === 'corbeille' && <CorbeilleView site={site} updateSite={updateSite} />}
       {page === 'parametres' && <ParametresView site={site} updateSite={updateSite} db={db} setDb={setDb} />}
@@ -2655,7 +2655,7 @@ function CommandesView({ site, updateSite, editable, employeId }){
               const client = site.clients.find(c => c.id === cmd.clientId);
               const total = calcCommandeTotal(cmd, site.services);
               return (
-                <tr key={cmd.id} className={isRdvCritical(cmd) ? 'blink-urgent' : undefined} style={{borderTop:'1px solid var(--line)', background: !isRdvCritical(cmd) && isRdvUrgent(cmd) ? 'var(--danger-light)' : undefined}}>
+                <tr key={cmd.id} className={isRdvCritical(cmd) ? 'blink-urgent' : undefined} style={{borderTop:'1px solid var(--line)', background: isRdvCritical(cmd) ? undefined : (isRdvUrgent(cmd) ? (cmd.statut === 'Prêt' ? 'var(--ok-light)' : 'var(--danger-light)') : undefined)}}>
                   <td style={{...td}}>
                     <span className="mono" style={{fontWeight:600}}>{cmd.numero}</span>
                     {cmd.express && <span className="tag" style={{background:'var(--rust-light)', color:'var(--rust)', marginLeft:6}}>⚡ Express</span>}
@@ -6013,6 +6013,316 @@ function RepasseurView({ site, updateSite, employeId }){
   );
 }
 
+/* ===================== DETAIL MENSUEL (espace caissier — vue par site) ===================== */
+
+function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave }){
+  const mesValeurs = (valeurs.parEmploye && valeurs.parEmploye[employeId]) || { recetteBrute: 0, depenses: 0, impayes: 0, depensesPropres: 0 };
+  const [recetteBrute, setRecetteBrute] = useState(String(mesValeurs.recetteBrute || ''));
+  const [impayes, setImpayes] = useState(String(mesValeurs.impayes || ''));
+  const [depenses, setDepenses] = useState(String(mesValeurs.depenses || ''));
+  const [depensesPropres, setDepensesPropres] = useState(String(mesValeurs.depensesPropres || ''));
+  const [ouvert, setOuvert] = useState(false);
+  const [flash, setFlash] = useState(false);
+
+  useEffect(() => {
+    const mv = (valeurs.parEmploye && valeurs.parEmploye[employeId]) || { recetteBrute: 0, depenses: 0, impayes: 0, depensesPropres: 0 };
+    setRecetteBrute(mv.recetteBrute ? String(mv.recetteBrute) : '');
+    setImpayes(mv.impayes ? String(mv.impayes) : '');
+    setDepenses(mv.depenses ? String(mv.depenses) : '');
+    setDepensesPropres(mv.depensesPropres ? String(mv.depensesPropres) : '');
+  }, [valeurs.mois, employeId]);
+
+  function save(){
+    onSave(valeurs.mois, {
+      recetteBrute: Number(recetteBrute)||0,
+      impayes: Number(impayes)||0,
+      depenses: Number(depenses)||0,
+      depensesPropres: Number(depensesPropres)||0,
+    });
+    setFlash(true);
+    setTimeout(()=>setFlash(false), 1200);
+  }
+
+  return (
+    <React.Fragment>
+      <tr style={{borderTop:'1px solid var(--line)'}}>
+        <td style={{...td, textTransform:'capitalize', fontWeight:600, whiteSpace:'nowrap'}}>
+          {valeurs.label}
+          {valeurs.manuel && <span className="tag" style={{fontSize:9, marginLeft:6, background:'var(--warn-light)', color:'var(--warn)'}}>Manuel</span>}
+        </td>
+        <td style={td} className="mono">{fmtGNF(valeurs.recetteBrute)}</td>
+        <td style={{...td, color: valeurs.impayes>0?'var(--danger)':'var(--steam)'}} className="mono">{valeurs.impayes>0?fmtGNF(valeurs.impayes):'—'}</td>
+        <td style={{...td, color: valeurs.depenses>0?'var(--danger)':'var(--steam)'}} className="mono">{fmtGNF(valeurs.depenses)}</td>
+        <td style={{...td, color: valeurs.depensesPropres>0?'var(--rust)':'var(--steam)'}} className="mono">{valeurs.depensesPropres>0?fmtGNF(valeurs.depensesPropres):'—'}</td>
+        <td style={{...td, fontWeight:700, color: valeurs.net<0?'var(--danger)':'var(--ink)'}} className="mono">{fmtGNF(valeurs.net)}</td>
+        <td style={{...td, textAlign:'right'}}>
+          <button className="btn btn-ghost btn-sm" onClick={()=>setOuvert(!ouvert)}>{ouvert ? 'Fermer' : 'Mes données'}</button>
+        </td>
+      </tr>
+      {ouvert && (
+        <tr style={{background:'var(--paper-2)'}}>
+          <td colSpan={7} style={{padding:'10px 14px'}}>
+            <div style={{fontSize:12, color:'var(--steam)', marginBottom:8}}>Vos chiffres pour ce mois ({monNom}) — n'affectent que votre propre saisie, cumulée avec celle des autres caissiers.</div>
+            <div style={{display:'flex', gap:10, alignItems:'flex-end', flexWrap:'wrap'}}>
+              {avantSeuil && (
+                <>
+                  <div><label>Ma recette brute</label><input type="number" value={recetteBrute} onChange={e=>setRecetteBrute(e.target.value)} style={{width:140}}/></div>
+                  <div><label>Mes impayés</label><input type="number" value={impayes} onChange={e=>setImpayes(e.target.value)} style={{width:140}}/></div>
+                  <div><label>Dépenses entreprise (moi)</label><input type="number" value={depenses} onChange={e=>setDepenses(e.target.value)} style={{width:140}}/></div>
+                </>
+              )}
+              <div><label>Mes dépenses propres</label><input type="number" value={depensesPropres} onChange={e=>setDepensesPropres(e.target.value)} style={{width:140}}/></div>
+              <button className="btn btn-sm" onClick={save}>{flash ? <><Icon name="check" size={13}/> Enregistré</> : 'Enreg.'}</button>
+            </div>
+            <p style={{fontSize:11, color:'var(--steam)', margin:'8px 0 0', lineHeight:1.4}}>
+              « Dépenses entreprise » = dépenses du pressing (fournitures, factures...). « Dépenses propres » = vos dépenses personnelles, toujours modifiables peu importe le mois.
+            </p>
+          </td>
+        </tr>
+      )}
+    </React.Fragment>
+  );
+}
+
+function normaliserMoisManuel(overrideMois){
+  if(!overrideMois) return null;
+  // ancien format (avant la saisie par caissier) : { recetteBrute, depenses } à plat
+  if(overrideMois.recetteBrute !== undefined || overrideMois.depenses !== undefined){
+    return { _legacy: { recetteBrute: Number(overrideMois.recetteBrute)||0, depenses: Number(overrideMois.depenses)||0, impayes: 0, depensesPropres: 0 } };
+  }
+  return overrideMois; // déjà au format { [employeId]: {recetteBrute, depenses, impayes, depensesPropres} }
+}
+
+function calculerDonneesMensuellesSite(site, annee){
+  const auto = Array.from({length:12}, (_,i) => ({
+    mois: i+1,
+    label: new Date(annee, i, 1).toLocaleDateString('fr-FR', {month:'long'}),
+    recetteBrute: 0,
+    recetteEncaissee: 0,
+    depenses: 0,
+  }));
+  (site.commandes||[]).forEach(c => {
+    if(c.dateCreation && c.dateCreation.slice(0,4) === String(annee)){
+      const m = Number(c.dateCreation.slice(5,7)) - 1;
+      const totalCmd = calcCommandeTotal(c, site.services);
+      auto[m].recetteBrute += totalCmd;
+      auto[m].recetteEncaissee += c.paiement === 'paye' ? totalCmd : (Number(c.acompte)||0);
+    }
+  });
+  (site.depenses||[]).forEach(d => {
+    if(d.date && d.date.slice(0,4) === String(annee)){
+      const m = Number(d.date.slice(5,7)) - 1;
+      auto[m].depenses += Number(d.montant)||0;
+    }
+  });
+  const manuel = (site.detailMensuelManuel||{})[annee] || {};
+  return auto.map(a => {
+    const avantSeuil = annee < 2026 || (annee === 2026 && a.mois < 9);
+    const parEmploye = normaliserMoisManuel(manuel[a.mois]) || {};
+    const depensesPropres = Object.values(parEmploye).reduce((s,v)=>s+(Number(v.depensesPropres)||0),0);
+    if(avantSeuil){
+      const rb = Object.values(parEmploye).reduce((s,v)=>s+(Number(v.recetteBrute)||0),0);
+      const dep = Object.values(parEmploye).reduce((s,v)=>s+(Number(v.depenses)||0),0);
+      const imp = Object.values(parEmploye).reduce((s,v)=>s+(Number(v.impayes)||0),0);
+      return { mois:a.mois, label:a.label, avantSeuil, recetteBrute: rb, impayes: imp, depenses: dep, depensesPropres, manuel: Object.keys(parEmploye).length>0, parEmploye, net: rb - imp - dep };
+    }
+    const imp = a.recetteBrute - a.recetteEncaissee;
+    return { mois:a.mois, label:a.label, avantSeuil, recetteBrute: a.recetteBrute, impayes: imp, depenses: a.depenses, depensesPropres, manuel: false, parEmploye, net: a.recetteBrute - imp - a.depenses };
+  });
+}
+
+function DetailMensuelSiteView({ site, updateSite, employeId }){
+  const currentYear = Number(todayISO().slice(0,4));
+  const anneesDisponibles = useMemo(() => {
+    const arr = [];
+    for(let y = currentYear; y >= ANNEE_DEBUT_APP - 3; y--) arr.push(y);
+    return arr;
+  }, [currentYear]);
+  const [annee, setAnnee] = useState(currentYear);
+
+  const monProfil = site.employes.find(e=>e.id===employeId);
+  const monNom = monProfil ? monProfil.nom : 'Moi';
+
+  const donneesParMois = useMemo(() => calculerDonneesMensuellesSite(site, annee), [site, annee]);
+
+  function saveMois(m, valeurs){
+    const manuelActuel = site.detailMensuelManuel || {};
+    const anneeActuelle = manuelActuel[annee] || {};
+    const moisNormalise = normaliserMoisManuel(anneeActuelle[m]) || {};
+    const nextMois = { ...moisNormalise, [employeId]: valeurs };
+    const nextAnnee = { ...anneeActuelle, [m]: nextMois };
+    updateSite({ ...site, detailMensuelManuel: { ...manuelActuel, [annee]: nextAnnee } });
+  }
+
+  const totalBrute = donneesParMois.reduce((s,m)=>s+m.recetteBrute,0);
+  const totalImpayes = donneesParMois.reduce((s,m)=>s+m.impayes,0);
+  const totalDepenses = donneesParMois.reduce((s,m)=>s+m.depenses,0);
+  const totalDepensesPropres = donneesParMois.reduce((s,m)=>s+m.depensesPropres,0);
+  const totalNet = donneesParMois.reduce((s,m)=>s+m.net,0);
+
+  return (
+    <div>
+      <PageHeader title="Détail mensuel" subtitle={`${site.nom} — chiffre d'affaires et dépenses par mois`}
+        right={
+          <select value={annee} onChange={e=>setAnnee(Number(e.target.value))} style={{width:'auto', minWidth:120}}>
+            {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        } />
+
+      <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
+        Les mois avant <strong>septembre 2026</strong> ont leur recette brute, impayés et dépenses entreprise modifiables. Les <strong>dépenses propres</strong> (personnelles) restent modifiables pour tous les mois. Cliquez « Mes données » pour entrer vos chiffres — votre saisie s'ajoute à celle des autres caissiers, elle ne la remplace jamais.
+      </p>
+
+      <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:24}}>
+        <StatCard label={`Recette brute ${annee}`} value={fmtGNF(totalBrute)} icon="euro" />
+        <StatCard label={`Dépenses entreprise ${annee}`} value={fmtGNF(totalDepenses)} icon="trash" tone="danger" />
+        <StatCard label={`Dépenses propres ${annee}`} value={fmtGNF(totalDepensesPropres)} icon="trash" tone="danger" />
+        <StatCard label={`Net ${annee}`} value={fmtGNF(totalNet)} icon="chart" tone={totalNet>=0?'default':'danger'} />
+      </div>
+
+      <div className="card" style={{overflow:'hidden'}}>
+        <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+          <thead>
+            <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+              <th style={th}>Mois</th>
+              <th style={th}>Recette brute</th>
+              <th style={th}>Impayés</th>
+              <th style={th}>Dépenses entreprise</th>
+              <th style={th}>Dépenses propres</th>
+              <th style={th}>Net</th>
+              <th style={th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {donneesParMois.map(m => (
+              <MoisRowCaissier key={m.mois} valeurs={m} avantSeuil={m.avantSeuil} employeId={employeId} monNom={monNom} onSave={saveMois} />
+            ))}
+            <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
+              <td style={{...td, fontWeight:700}}>Total {annee}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalBrute)}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{totalImpayes>0?fmtGNF(totalImpayes):'—'}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalDepenses)}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{totalDepensesPropres>0?fmtGNF(totalDepensesPropres):'—'}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalNet)}</td>
+              <td></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function DetailMensuelGerantView({ site }){
+  const currentYear = Number(todayISO().slice(0,4));
+  const anneesDisponibles = useMemo(() => {
+    const arr = [];
+    for(let y = currentYear; y >= ANNEE_DEBUT_APP - 3; y--) arr.push(y);
+    return arr;
+  }, [currentYear]);
+  const [annee, setAnnee] = useState(currentYear);
+  const [moisOuvert, setMoisOuvert] = useState(null);
+
+  function getEmpNom(id){
+    if(id === '_legacy') return 'Saisie antérieure (sans détail par caissier)';
+    const e = site.employes.find(emp=>emp.id===id);
+    return e ? e.nom : 'Employé supprimé';
+  }
+
+  const donneesParMois = useMemo(() => calculerDonneesMensuellesSite(site, annee), [site, annee]);
+
+  const totalBrute = donneesParMois.reduce((s,m)=>s+m.recetteBrute,0);
+  const totalImpayes = donneesParMois.reduce((s,m)=>s+m.impayes,0);
+  const totalDepenses = donneesParMois.reduce((s,m)=>s+m.depenses,0);
+  const totalDepensesPropres = donneesParMois.reduce((s,m)=>s+m.depensesPropres,0);
+  const totalNet = donneesParMois.reduce((s,m)=>s+m.net,0);
+
+  return (
+    <div>
+      <PageHeader title="Détail mensuel" subtitle={`${site.nom} — chiffre d'affaires et dépenses par mois, avec détail par caissier`}
+        right={
+          <select value={annee} onChange={e=>setAnnee(Number(e.target.value))} style={{width:'auto', minWidth:120}}>
+            {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        } />
+
+      <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
+        « Dépenses entreprise » = dépenses du pressing (fournitures, factures, salaires...). « Dépenses propres » = dépenses personnelles saisies par chaque caissier — les deux restent toujours distinctes.
+      </p>
+
+      <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:24}}>
+        <StatCard label={`Recette brute ${annee}`} value={fmtGNF(totalBrute)} icon="euro" />
+        <StatCard label={`Dépenses entreprise ${annee}`} value={fmtGNF(totalDepenses)} icon="trash" tone="danger" />
+        <StatCard label={`Dépenses propres ${annee}`} value={fmtGNF(totalDepensesPropres)} icon="trash" tone="danger" />
+        <StatCard label={`Net ${annee}`} value={fmtGNF(totalNet)} icon="chart" tone={totalNet>=0?'default':'danger'} />
+      </div>
+
+      <div className="card" style={{overflow:'hidden'}}>
+        <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+          <thead>
+            <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+              <th style={th}>Mois</th>
+              <th style={th}>Recette brute</th>
+              <th style={th}>Impayés</th>
+              <th style={th}>Dépenses entreprise</th>
+              <th style={th}>Dépenses propres</th>
+              <th style={th}>Net</th>
+              <th style={th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {donneesParMois.map(m => (
+              <React.Fragment key={m.mois}>
+                <tr style={{borderTop:'1px solid var(--line)'}}>
+                  <td style={{...td, textTransform:'capitalize', fontWeight:600}}>
+                    {m.label}
+                    {m.manuel && <span className="tag" style={{fontSize:9, marginLeft:6, background:'var(--warn-light)', color:'var(--warn)'}}>Manuel</span>}
+                  </td>
+                  <td style={td} className="mono">{fmtGNF(m.recetteBrute)}</td>
+                  <td style={{...td, color: m.impayes>0?'var(--danger)':'var(--steam)'}} className="mono">{m.impayes>0?fmtGNF(m.impayes):'—'}</td>
+                  <td style={{...td, color: m.depenses>0?'var(--danger)':'var(--steam)'}} className="mono">{fmtGNF(m.depenses)}</td>
+                  <td style={{...td, color: m.depensesPropres>0?'var(--rust)':'var(--steam)'}} className="mono">{m.depensesPropres>0?fmtGNF(m.depensesPropres):'—'}</td>
+                  <td style={{...td, fontWeight:700, color: m.net<0?'var(--danger)':'var(--ink)'}} className="mono">{fmtGNF(m.net)}</td>
+                  <td style={{...td, textAlign:'right'}}>
+                    {Object.keys(m.parEmploye||{}).length > 0 && (
+                      <button className="btn btn-ghost btn-sm" onClick={()=>setMoisOuvert(moisOuvert===m.mois?null:m.mois)}>
+                        {moisOuvert===m.mois ? 'Fermer' : 'Détail par caissier'}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+                {moisOuvert === m.mois && Object.keys(m.parEmploye||{}).length > 0 && (
+                  <tr style={{background:'var(--paper-2)'}}>
+                    <td colSpan={7} style={{padding:'10px 14px'}}>
+                      {Object.entries(m.parEmploye).map(([empId, v]) => (
+                        <div key={empId} style={{display:'flex', justifyContent:'space-between', padding:'4px 0', fontSize:13, borderBottom:'1px solid var(--line)'}}>
+                          <span>{getEmpNom(empId)}</span>
+                          <span className="mono">
+                            Recette : {fmtGNF(v.recetteBrute)} · Impayés : {fmtGNF(v.impayes||0)} · Dép. entreprise : {fmtGNF(v.depenses)} · Dép. propres : {fmtGNF(v.depensesPropres||0)}
+                          </span>
+                        </div>
+                      ))}
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            ))}
+            <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
+              <td style={{...td, fontWeight:700}}>Total {annee}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalBrute)}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{totalImpayes>0?fmtGNF(totalImpayes):'—'}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalDepenses)}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{totalDepensesPropres>0?fmtGNF(totalDepensesPropres):'—'}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalNet)}</td>
+              <td></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
   const site = db.sites.find(s => s.id === siteId);
   const monProfil = (site && employeId) ? site.employes.find(e=>e.id===employeId) : null;
@@ -6069,6 +6379,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
     { key:'marketing', label:'Promos & Relances', icon:'bell' },
     { key:'stock', label:'Stock', icon:'box' },
     { key:'depenses', label:'Dépenses', icon:'euro' },
+    { key:'detailMensuel', label:'Détail mensuel', icon:'chart' },
     { key:'remuneration', label:'Ma rémunération', icon:'chart' },
   ];
   return (
@@ -6079,6 +6390,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
       {page === 'clients' && <ClientsView site={site} updateSite={updateSite} />}
       {page === 'stock' && <StockView site={site} updateSite={updateSite} />}
       {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} />}
+      {page === 'detailMensuel' && <DetailMensuelSiteView site={site} updateSite={updateSite} employeId={employeId} />}
       {page === 'remuneration' && <RemunerationView site={site} updateSite={updateSite} db={db} siteId={siteId} employeId={employeId} />}
     </Shell>
   );
