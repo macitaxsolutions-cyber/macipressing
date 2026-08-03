@@ -1264,42 +1264,51 @@ const ANNEE_DEBUT_APP = 2026; // année de mise en place de l'application
 
 function calculerDonneesAnnee(db, annee){
   if(annee >= ANNEE_DEBUT_APP){
-    const autoParMois = {};
+    const parMois = {};
+    for(let m=1; m<=12; m++) parMois[m] = { recetteBrute:0, depenses:0, impayes:0 };
     db.sites.forEach(site => {
-      (site.commandes||[]).forEach(c => {
-        if(c.dateCreation && c.dateCreation.slice(0,4) === String(annee)){
-          const m = Number(c.dateCreation.slice(5,7));
-          if(!autoParMois[m]) autoParMois[m] = { recetteBrute:0, recetteEncaissee:0, depenses:0 };
-          const totalCmd = calcCommandeTotal(c, site.services);
-          autoParMois[m].recetteBrute += totalCmd;
-          autoParMois[m].recetteEncaissee += c.paiement === 'paye' ? totalCmd : (Number(c.acompte)||0);
+      const siteManuelAnnee = (site.detailMensuelManuel||{})[annee] || {};
+      for(let m=1; m<=12; m++){
+        const parEmploye = normaliserMoisManuel(siteManuelAnnee[m]);
+        if(parEmploye && Object.keys(parEmploye).length > 0){
+          parMois[m].recetteBrute += Object.values(parEmploye).reduce((s,v)=>s+(Number(v.recetteBrute)||0),0);
+          parMois[m].depenses += Object.values(parEmploye).reduce((s,v)=>s+(Number(v.depenses)||0),0);
+          parMois[m].impayes += Object.values(parEmploye).reduce((s,v)=>s+(Number(v.impayes)||0),0);
+        } else {
+          let rb=0, encaisse=0, dep=0;
+          (site.commandes||[]).forEach(c => {
+            if(c.dateCreation && c.dateCreation.slice(0,4) === String(annee) && Number(c.dateCreation.slice(5,7)) === m){
+              const totalCmd = calcCommandeTotal(c, site.services);
+              rb += totalCmd;
+              encaisse += c.paiement === 'paye' ? totalCmd : (Number(c.acompte)||0);
+            }
+          });
+          (site.depenses||[]).forEach(d => {
+            if(d.date && d.date.slice(0,4) === String(annee) && Number(d.date.slice(5,7)) === m){
+              dep += Number(d.montant)||0;
+            }
+          });
+          parMois[m].recetteBrute += rb;
+          parMois[m].depenses += dep;
+          parMois[m].impayes += (rb - encaisse);
         }
-      });
-      (site.depenses||[]).forEach(d => {
-        if(d.date && d.date.slice(0,4) === String(annee)){
-          const m = Number(d.date.slice(5,7));
-          if(!autoParMois[m]) autoParMois[m] = { recetteBrute:0, recetteEncaissee:0, depenses:0 };
-          autoParMois[m].depenses += Number(d.montant)||0;
-        }
-      });
+      }
     });
     const moisManuel = (db.historiqueAnnuel?.[annee]?.mois) || {};
-    let recetteBrute = 0, recetteEncaissee = 0, depenses = 0;
+    let recetteBrute = 0, depenses = 0, impayes = 0;
     for(let m=1; m<=12; m++){
       const override = moisManuel[m];
       if(override){
         recetteBrute += Number(override.recetteBrute)||0;
         depenses += Number(override.depenses)||0;
-        recetteEncaissee += (Number(override.recetteBrute)||0) - (Number(override.impayes)||0);
+        impayes += Number(override.impayes)||0;
       } else {
-        const a = autoParMois[m] || { recetteBrute:0, recetteEncaissee:0, depenses:0 };
-        recetteBrute += a.recetteBrute;
-        recetteEncaissee += a.recetteEncaissee;
-        depenses += a.depenses;
+        recetteBrute += parMois[m].recetteBrute;
+        depenses += parMois[m].depenses;
+        impayes += parMois[m].impayes;
       }
     }
-    const impayes = recetteBrute - recetteEncaissee;
-    return { recetteBrute, depenses, impayes, recetteNette: recetteEncaissee - depenses };
+    return { recetteBrute, depenses, impayes, recetteNette: recetteBrute - impayes - depenses };
   }
   const d = (db.historiqueAnnuel||{})[annee] || {};
   const recetteBrute = Number(d.recetteBrute)||0;
@@ -1361,7 +1370,7 @@ function ComparaisonAnneesView({ db, onOpenAnnee }){
   );
 }
 
-function MoisRow({ valeurs, onSave }){
+function MoisRow({ valeurs, onSave, onReset }){
   const [recetteBrute, setRecetteBrute] = useState(String(valeurs.recetteBrute || ''));
   const [depenses, setDepenses] = useState(String(valeurs.depenses || ''));
   const [impayes, setImpayes] = useState(String(valeurs.impayes || ''));
@@ -1391,8 +1400,13 @@ function MoisRow({ valeurs, onSave }){
       <td style={td}><input type="number" value={impayes} onChange={e=>setImpayes(e.target.value)} placeholder="0" style={{padding:'6px 8px', fontSize:13}} /></td>
       <td style={td}><input type="number" value={depenses} onChange={e=>setDepenses(e.target.value)} placeholder="0" style={{padding:'6px 8px', fontSize:13}} /></td>
       <td style={{...td, fontWeight:700, color: recetteNetteMois<0?'var(--danger)':'var(--ink)'}} className="mono">{fmtGNF(recetteNetteMois)}</td>
-      <td style={{...td, textAlign:'right'}}>
+      <td style={{...td, textAlign:'right', whiteSpace:'nowrap'}}>
         <button className="btn btn-sm" onClick={save}>{flash ? <Icon name="check" size={13}/> : 'Enreg.'}</button>
+        {valeurs.manuel && (
+          <button className="btn btn-ghost btn-sm" style={{marginLeft:6, color:'var(--rust)'}} onClick={()=>onReset(valeurs.mois)} title="Effacer la correction manuelle et revenir au calcul automatique">
+            🔄
+          </button>
+        )}
       </td>
     </tr>
   );
@@ -1479,24 +1493,39 @@ function DistributionView({ db, setDb, anneeInitiale }){
       mois: i+1,
       label: new Date(annee, i, 1).toLocaleDateString('fr-FR', {month:'long'}),
       recetteBrute: 0,
-      recetteEncaissee: 0,
       depenses: 0,
+      impayes: 0,
     }));
     db.sites.forEach(site => {
-      (site.commandes||[]).forEach(c => {
-        if(c.dateCreation && c.dateCreation.slice(0,4) === String(annee)){
-          const m = Number(c.dateCreation.slice(5,7)) - 1;
-          const totalCmd = calcCommandeTotal(c, site.services);
-          auto[m].recetteBrute += totalCmd;
-          auto[m].recetteEncaissee += c.paiement === 'paye' ? totalCmd : (Number(c.acompte)||0);
+      const siteManuelAnnee = (site.detailMensuelManuel||{})[annee] || {};
+      for(let mIdx = 0; mIdx < 12; mIdx++){
+        const moisNum = mIdx + 1;
+        const parEmploye = normaliserMoisManuel(siteManuelAnnee[moisNum]);
+        if(parEmploye && Object.keys(parEmploye).length > 0){
+          // Ce pressing a des données saisies par ses caissiers pour ce mois — on les utilise en priorité
+          auto[mIdx].recetteBrute += Object.values(parEmploye).reduce((s,v)=>s+(Number(v.recetteBrute)||0),0);
+          auto[mIdx].depenses += Object.values(parEmploye).reduce((s,v)=>s+(Number(v.depenses)||0),0);
+          auto[mIdx].impayes += Object.values(parEmploye).reduce((s,v)=>s+(Number(v.impayes)||0),0);
+        } else {
+          // Sinon, calcul à partir des commandes/dépenses réelles de ce pressing pour ce mois
+          let rb = 0, encaisse = 0, dep = 0;
+          (site.commandes||[]).forEach(c => {
+            if(c.dateCreation && c.dateCreation.slice(0,4) === String(annee) && Number(c.dateCreation.slice(5,7)) === moisNum){
+              const totalCmd = calcCommandeTotal(c, site.services);
+              rb += totalCmd;
+              encaisse += c.paiement === 'paye' ? totalCmd : (Number(c.acompte)||0);
+            }
+          });
+          (site.depenses||[]).forEach(d => {
+            if(d.date && d.date.slice(0,4) === String(annee) && Number(d.date.slice(5,7)) === moisNum){
+              dep += Number(d.montant)||0;
+            }
+          });
+          auto[mIdx].recetteBrute += rb;
+          auto[mIdx].depenses += dep;
+          auto[mIdx].impayes += (rb - encaisse);
         }
-      });
-      (site.depenses||[]).forEach(d => {
-        if(d.date && d.date.slice(0,4) === String(annee)){
-          const m = Number(d.date.slice(5,7)) - 1;
-          auto[m].depenses += Number(d.montant)||0;
-        }
-      });
+      }
     });
     const moisManuel = (db.historiqueAnnuel?.[annee]?.mois) || {};
     return auto.map(m => {
@@ -1511,11 +1540,10 @@ function DistributionView({ db, setDb, anneeInitiale }){
           manuel: true,
         };
       }
-      const impayesAuto = m.recetteBrute - m.recetteEncaissee;
       return {
         mois: m.mois, label: m.label,
-        recetteBrute: m.recetteBrute, depenses: m.depenses, impayes: impayesAuto,
-        recetteNette: m.recetteEncaissee - m.depenses,
+        recetteBrute: m.recetteBrute, depenses: m.depenses, impayes: m.impayes,
+        recetteNette: m.recetteBrute - m.impayes - m.depenses,
         manuel: false,
       };
     });
@@ -1526,6 +1554,12 @@ function DistributionView({ db, setDb, anneeInitiale }){
     const moisActuels = anneeActuelle.mois || {};
     const nextMois = { ...moisActuels, [m]: valeurs };
     setDb({ ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [annee]: { ...anneeActuelle, mois: nextMois } } });
+  }
+  function resetMois(m){
+    const anneeActuelle = (db.historiqueAnnuel||{})[annee] || {};
+    const moisActuels = { ...(anneeActuelle.mois || {}) };
+    delete moisActuels[m];
+    setDb({ ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [annee]: { ...anneeActuelle, mois: moisActuels } } });
   }
   const recetteBrute = estAnneeApp ? (donneesParMois ? donneesParMois.reduce((s,m)=>s+m.recetteBrute,0) : 0) : dataHisto.recetteBrute;
   const depensesAnnee = estAnneeApp ? (donneesParMois ? donneesParMois.reduce((s,m)=>s+m.depenses,0) : 0) : dataHisto.depenses;
@@ -1702,9 +1736,12 @@ function DistributionView({ db, setDb, anneeInitiale }){
 
       {estAnneeApp && donneesParMois && (
         <>
-          <h2 style={{fontSize:16, color:'var(--pine)', marginBottom:6}}>Détail mensuel — {annee}</h2>
+          <h2 style={{fontSize:16, color:'var(--pine)', marginBottom:6}}>Détail mensuel consolidé (tous pressings) — {annee}</h2>
           <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
             Les montants sont calculés automatiquement à partir des commandes et dépenses réelles de chaque mois. Pour un mois sans données dans l'application (ex : avant sa mise en place), corrigez les valeurs puis cliquez sur "Enreg." — vos saisies remplacent alors le calcul automatique pour ce mois.
+          </p>
+          <p style={{fontSize:12.5, background:'var(--pine-light)', color:'var(--pine)', padding:'8px 12px', borderRadius:8, margin:'0 0 14px', lineHeight:1.5}}>
+            🔎 Vous cherchez le détail saisi par chaque caissier ? Ce n'est pas ici — allez dans <strong>« Mes pressings »</strong>, ouvrez le pressing concerné, puis cliquez sur son onglet <strong>« Détail mensuel »</strong>.
           </p>
           <div className="card" style={{overflow:'hidden', marginBottom:24}}>
             <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
@@ -1720,7 +1757,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
               </thead>
               <tbody>
                 {donneesParMois.map(m => (
-                  <MoisRow key={m.mois} valeurs={m} onSave={saveMois} />
+                  <MoisRow key={m.mois} valeurs={m} onSave={saveMois} onReset={resetMois} />
                 ))}
                 <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
                   <td style={{...td, fontWeight:700}}>Total {annee}</td>
@@ -2574,9 +2611,7 @@ function CommandesView({ site, updateSite, editable, employeId }){
 
     if(client){
       let msg = '';
-      if(updated.statut === 'Prêt'){
-        msg = `Bonjour ${client.nom}, votre commande ${cmd.numero} chez ${site.nom} est prête à récupérer.${solde > 0 ? ` Solde à régler : ${fmtGNF(solde)}.` : ' Entièrement payée.'}`;
-      } else if(updated.statut === 'Récupéré'){
+      if(updated.statut === 'Récupéré'){
         const lignesDetail = cmd.lignes.map(l => {
           const svc = site.services.find(s=>s.id===l.serviceId);
           return svc ? `${l.qte}x ${svc.nom}` : '';
@@ -2586,7 +2621,7 @@ function CommandesView({ site, updateSite, editable, employeId }){
       if(msg){
         const notif = { id: uid('notif_'), clientId: client.id, message: msg, canal: client.canalPref || 'SMS', date: new Date().toISOString() };
         nextSite.notifications = [notif, ...nextSite.notifications].slice(0,300);
-        if(client.tel && (updated.statut === 'Prêt' || updated.statut === 'Récupéré')){
+        if(client.tel && updated.statut === 'Récupéré'){
           const tel = client.tel.replace(/\D/g,'');
           setTimeout(() => window.open(`https://wa.me/${tel}?text=${encodeURIComponent(msg)}`, '_blank'), 300);
         }
