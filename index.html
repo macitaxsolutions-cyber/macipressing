@@ -1,4 +1,5 @@
 
+
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -1180,11 +1181,14 @@ function getPaiementsCommande(c){
 }
 
 function calcCommandeTotal(commande, services){
-  return commande.lignes.reduce((sum, l) => {
+  const totalBrut = commande.lignes.reduce((sum, l) => {
     const svc = services.find(s => s.id === l.serviceId);
     const prix = svc ? svc.prix : 0;
     return sum + prix * l.qte;
   }, 0);
+  const rabais = Number(commande.rabais) || 0;
+  const montantExpress = Number(commande.montantExpress) || 0;
+  return totalBrut - rabais + montantExpress;
 }
 
 function pushNotification(site, updateSite, { clientId, message, canal }){
