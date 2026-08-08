@@ -6777,7 +6777,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
   // Espace repasseur — vue limitée
   if(isRepasseur){
     return (
-      <Shell title={site.nom} role={`Repasseur — ${monProfil.nom}`} navItems={[
+      <Shell title={site.nom} role={`${monProfil.nom} — Repasseur`} navItems={[
         { key:'repassage', label:'Repassage', icon:'shirt' },
         { key:'agenda', label:'Agenda du jour', icon:'clock' },
         { key:'remuneration', label:'Ma rémunération', icon:'chart' },
@@ -6802,7 +6802,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
     { key:'remuneration', label:'Ma rémunération', icon:'chart' },
   ];
   return (
-    <Shell title={site.nom} role="Espace employé" navItems={navItems} active={page} onNav={setPage} onLogout={onLogout}>
+    <Shell title={site.nom} role={`${monProfil ? monProfil.nom + ' — ' : ''}${monProfil ? monProfil.role : 'Espace employé'}`} navItems={navItems} active={page} onNav={setPage} onLogout={onLogout}>
       {page === 'caisse' && <CommandesView site={site} updateSite={updateSite} editable={true} employeId={employeId} />}
       {page === 'agenda' && <AgendaView site={site} />}
       {page === 'marketing' && <MarketingView site={site} updateSite={updateSite} />}
