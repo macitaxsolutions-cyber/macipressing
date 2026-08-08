@@ -29,6 +29,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-storage-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script>
   const firebaseConfig = {
     apiKey: "AIzaSyC9CbMGfZhcMIgOYwhywLdLqljIoPyCfGI",
@@ -255,6 +256,62 @@ const fmtDateTime = (iso) => {
   const d = new Date(iso);
   return d.toLocaleDateString('fr-FR',{day:'2-digit',month:'short'}) + ' à ' + d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
 };
+
+/* ===================== EXPORT CSV / PDF (tableaux) ===================== */
+
+function declencherTelechargement(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+}
+
+function exportTableToCSV(filename, headers, rows){
+  const escape = (v) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+  };
+  const lignes = [headers.map(escape).join(','), ...rows.map(r => r.map(escape).join(','))];
+  const csv = '\uFEFF' + lignes.join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  declencherTelechargement(blob, filename.endsWith('.csv') ? filename : filename + '.csv');
+}
+
+function exportTableToPDF({ filename, title, subtitle, headers, rows }){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  doc.setFont('helvetica','bold'); doc.setFontSize(14);
+  doc.text(title, 14, 15);
+  if(subtitle){
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+    doc.setTextColor(100);
+    doc.text(subtitle, 14, 21);
+    doc.setTextColor(20);
+  }
+  doc.autoTable({
+    head: [headers],
+    body: rows,
+    startY: subtitle ? 26 : 20,
+    styles: { font: 'helvetica', fontSize: 8.5, cellPadding: 2.5 },
+    headStyles: { fillColor: [27,58,54], textColor: 255, fontStyle: 'bold' },
+    alternateRowStyles: { fillColor: [246,242,232] },
+    margin: { left: 10, right: 10 },
+  });
+  doc.save(filename.endsWith('.pdf') ? filename : filename + '.pdf');
+}
+
+function ExportButtons({ onCSV, onPDF }){
+  return (
+    <div style={{display:'flex', gap:8}}>
+      <button className="btn btn-sm" onClick={onCSV}><Icon name="download" size={13}/> CSV</button>
+      <button className="btn btn-sm" onClick={onPDF}><Icon name="download" size={13}/> PDF</button>
+    </div>
+  );
+}
 
 function formatMoisAnnee(m){
   if(!m) return '';
@@ -628,6 +685,7 @@ const Icon = ({ name, size=18, style }) => {
     history: "M3 3v5h5 M3.05 13A9 9 0 1 0 6 5.3L3 8 M12 7v5l4 2",
     building: "M3 21h18 M5 21V7l8-4v18 M19 21V11l-6-4 M9 9v.01 M9 12v.01 M9 15v.01 M9 18v.01",
     layers: "M12 2 2 7l10 5 10-5-10-5z M2 17l10 5 10-5 M2 12l10 5 10-5",
+    download: "M12 3v12 M7 10l5 5 5-5 M4 21h16",
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
@@ -1176,7 +1234,7 @@ function PageHeader({ title, subtitle, right }){
 
 function getPaiementsCommande(c){
   if(c.paiements && c.paiements.length) return c.paiements;
-  if(c.modePaiement && Number(c.acompte) > 0) return [{ montant: Number(c.acompte), mode: c.modePaiement, date: c.dateCreation }];
+  if(c.modePaiement && Number(c.acompte) > 0) return [{ montant: Number(c.acompte), mode: c.modePaiement, date: c.dateCreation, employeId: c.caissierEmpId || null }];
   return [];
 }
 
@@ -1364,9 +1422,25 @@ function ComparaisonAnneesView({ db, onOpenAnnee }){
 
   const lignes = anneesDisponibles.map(y => ({ annee: y, ...calculerDonneesAnnee(db, y) }));
 
+  const comparaisonExportRows = lignes.map((l, i) => {
+    const precedente = lignes[i+1];
+    let evolution = null;
+    if(precedente && precedente.recetteNette !== 0){
+      evolution = ((l.recetteNette - precedente.recetteNette) / Math.abs(precedente.recetteNette)) * 100;
+    }
+    return [l.annee, Math.round(l.recetteBrute), Math.round(l.impayes), Math.round(l.depenses), Math.round(l.recetteNette), evolution===null ? '—' : `${evolution>=0?'+':''}${evolution.toFixed(1)}%`];
+  });
+  const COMPARAISON_HEADERS = ['Année', 'Recette brute', 'Impayés', 'Dépenses entreprise', 'Recette nette', 'Évolution'];
+
   return (
     <div>
       <PageHeader title="Comparaison annuelle" subtitle="Vue d'ensemble de toutes les années pour comparer et prendre des décisions" />
+      <div style={{display:'flex', justifyContent:'flex-end', marginBottom:10}}>
+        <ExportButtons
+          onCSV={()=>exportTableToCSV('comparaison-annuelle', COMPARAISON_HEADERS, comparaisonExportRows)}
+          onPDF={()=>exportTableToPDF({ filename:'comparaison-annuelle', title:'Comparaison annuelle', subtitle:'Maci Pressing', headers:COMPARAISON_HEADERS, rows:comparaisonExportRows })}
+        />
+      </div>
       <div className="card" style={{overflow:'hidden'}}>
         <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
           <thead>
@@ -1667,6 +1741,43 @@ function DistributionView({ db, setDb, anneeInitiale }){
     return totaux;
   }, [db, annee, periodeRepartition, moisRepartition, cumulRepartition, estAnneeApp]);
 
+  // ---- Historique détaillé des paiements individuels (Espèces / Orange Money), pour traçabilité ----
+  const [historiquePage, setHistoriquePage] = useState(1);
+  const [modeHistoriqueSelectionne, setModeHistoriqueSelectionne] = useState(null);
+  const historiquePaiements = useMemo(() => {
+    const liste = [];
+    db.sites.forEach(site => {
+      (site.commandes||[]).forEach(c => {
+        const client = (site.clients||[]).find(cl => cl.id === c.clientId);
+        getPaiementsCommande(c).forEach(pmt => {
+          if(!pmt.date) return;
+          const d = pmt.date.slice(0,10);
+          const y = Number(d.slice(0,4)), m = Number(d.slice(5,7));
+          if(y !== annee) return;
+          if(periodeRepartition === 'mois' && estAnneeApp){
+            if(cumulRepartition){ if(m > moisRepartition) return; }
+            else { if(m !== moisRepartition) return; }
+          }
+          const employeAttribue = pmt.employeId != null ? pmt.employeId : (c.caissierEmpId || null);
+          const employe = employeAttribue ? (site.employes||[]).find(e=>e.id===employeAttribue) : null;
+          liste.push({
+            id: pmt.id || `${c.id}_${pmt.date}`,
+            date: pmt.date,
+            site: site.nom,
+            ticket: c.numero,
+            client: client ? client.nom : 'Client inconnu',
+            employe: employe ? employe.nom : '—',
+            mode: pmt.mode || 'Espèces',
+            montant: Number(pmt.montant)
+          });
+        });
+      });
+    });
+    return liste.sort((a,b) => new Date(b.date) - new Date(a.date));
+  }, [db, annee, periodeRepartition, moisRepartition, cumulRepartition, estAnneeApp]);
+
+  useEffect(() => { setHistoriquePage(1); }, [annee, periodeRepartition, moisRepartition, cumulRepartition]);
+
   // Remboursement d'investissement : 20% du net perçu des 4 acteurs concernés est redirigé vers la Conservation du Capital Fixe
   const totalRedirigeVersCapitalFixe = remboursementActif ? PARTS_DISTRIBUTION.reduce((s,p) => {
     if(!ACTEURS_REMBOURSEMENT_INVESTISSEMENT.includes(p.nom)) return s;
@@ -1675,6 +1786,24 @@ function DistributionView({ db, setDb, anneeInitiale }){
     const montantNetP = montantBrutP - depensePropreP;
     return s + montantNetP * 0.2;
   }, 0) : 0;
+
+  // ---- Données du tableau "Répartition entre les acteurs", pour export CSV/PDF ----
+  const lignesRepartitionExport = useMemo(() => {
+    return PARTS_DISTRIBUTION.map(p => {
+      const impayesPart = periodeDonnees.impayes * p.pct / 100;
+      const montantBrut = periodeDonnees.recetteNette * p.pct / 100;
+      const montantBrutAvantImpayes = periodeDonnees.recetteBrute * p.pct / 100;
+      const depensePropre = (depensesActeursPeriode[p.nom]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
+      const montantNet = montantBrut - depensePropre;
+      const cumule = impayesPart + montantNet;
+      const estConcerne = remboursementActif && ACTEURS_REMBOURSEMENT_INVESTISSEMENT.includes(p.nom);
+      const montantAVerser = p.nom === 'Conservation du Capital Fixe'
+        ? montantNet + totalRedirigeVersCapitalFixe
+        : (estConcerne ? montantNet * 0.8 : montantNet);
+      return [p.nom, `${p.pct}%`, Math.round(montantBrutAvantImpayes), Math.round(impayesPart), Math.round(cumule), Math.round(depensePropre), Math.round(montantNet), Math.round(montantAVerser)];
+    });
+  }, [periodeDonnees, depensesActeursPeriode, depensesPropresEmployes, remboursementActif, totalRedirigeVersCapitalFixe]);
+  const REPARTITION_HEADERS = ['Bénéficiaire', 'Part', "Montant brut avant impayés", 'Impayés (part)', 'Cumulé', 'Dépenses propres', 'Net perçu', 'Montant à verser'];
 
   return (
     <div>
@@ -1858,16 +1987,92 @@ function DistributionView({ db, setDb, anneeInitiale }){
 
       <h2 style={{fontSize:16, color:'var(--pine)', marginBottom:6}}>Total encaissé par mode de paiement</h2>
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
-        Montants réellement reçus des clients (acomptes et encaissements) — {periodeLabel}, tous pressings confondus.
+        Montants réellement reçus des clients (acomptes et encaissements) — {periodeLabel}, tous pressings confondus. Cliquez sur une carte pour voir le détail des paiements.
       </p>
-      <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:14, marginBottom:24}}>
-        <StatCard label="Espèces" value={fmtGNF(totauxParMode['Espèces']||0)} icon="euro" />
-        <StatCard label="Orange Money" value={fmtGNF(totauxParMode['Orange Money']||0)} icon="euro" />
+      <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:14, marginBottom:14}}>
+        <div onClick={()=>{ setModeHistoriqueSelectionne(modeHistoriqueSelectionne==='Espèces' ? null : 'Espèces'); setHistoriquePage(1); }}
+          style={{cursor:'pointer', borderRadius:12, outline: modeHistoriqueSelectionne==='Espèces' ? '2px solid var(--pine)' : 'none', outlineOffset:2}}>
+          <StatCard label="Espèces" value={fmtGNF(totauxParMode['Espèces']||0)} icon="euro" />
+        </div>
+        <div onClick={()=>{ setModeHistoriqueSelectionne(modeHistoriqueSelectionne==='Orange Money' ? null : 'Orange Money'); setHistoriquePage(1); }}
+          style={{cursor:'pointer', borderRadius:12, outline: modeHistoriqueSelectionne==='Orange Money' ? '2px solid var(--pine)' : 'none', outlineOffset:2}}>
+          <StatCard label="Orange Money" value={fmtGNF(totauxParMode['Orange Money']||0)} icon="euro" />
+        </div>
       </div>
+
+      {modeHistoriqueSelectionne && (() => {
+        const paiementsFiltres = historiquePaiements.filter(p => p.mode === modeHistoriqueSelectionne);
+        const parPage = 15;
+        const nbPages = Math.ceil(paiementsFiltres.length / parPage) || 1;
+        const pageAffichee = Math.min(historiquePage, nbPages) || 1;
+        const items = paiementsFiltres.slice((pageAffichee-1)*parPage, pageAffichee*parPage);
+        return (
+          <div style={{marginBottom:24}}>
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10, marginBottom:6}}>
+              <h3 style={{fontSize:14.5, color:'var(--pine)', margin:0}}>Historique — {modeHistoriqueSelectionne} — {periodeLabel}</h3>
+              {paiementsFiltres.length > 0 && (
+                <ExportButtons
+                  onCSV={()=>exportTableToCSV(`historique-${modeHistoriqueSelectionne}-${annee}`, ['Date','Pressing','Ticket','Client','Employé','Montant'], paiementsFiltres.map(p=>[fmtDateTime(p.date), p.site, p.ticket, p.client, p.employe, Math.round(p.montant)]))}
+                  onPDF={()=>exportTableToPDF({ filename:`historique-${modeHistoriqueSelectionne}-${annee}`, title:`Historique — ${modeHistoriqueSelectionne}`, subtitle:`Maci Pressing — ${periodeLabel}`, headers:['Date','Pressing','Ticket','Client','Employé','Montant'], rows:paiementsFiltres.map(p=>[fmtDateTime(p.date), p.site, p.ticket, p.client, p.employe, fmtGNFPdf(p.montant)]) })}
+                />
+              )}
+            </div>
+            <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 10px', lineHeight:1.5}}>
+              {paiementsFiltres.length} paiement(s) en {modeHistoriqueSelectionne} sur cette période.
+            </p>
+            {paiementsFiltres.length === 0 ? (
+              <div className="card" style={{padding:'1.25rem', textAlign:'center', color:'var(--steam)', fontSize:13}}>
+                Aucun paiement en {modeHistoriqueSelectionne} sur cette période.
+              </div>
+            ) : (
+              <div className="card" style={{overflow:'hidden'}}>
+                <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
+                  <thead>
+                    <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                      <th style={th}>Date</th>
+                      <th style={th}>Pressing</th>
+                      <th style={th}>Ticket</th>
+                      <th style={th}>Client</th>
+                      <th style={th}>Employé</th>
+                      <th style={th}>Montant</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map(p => (
+                      <tr key={p.id} style={{borderTop:'1px solid var(--line)'}}>
+                        <td style={td}>{fmtDateTime(p.date)}</td>
+                        <td style={td}>{p.site}</td>
+                        <td style={{...td}} className="mono">{p.ticket}</td>
+                        <td style={td}>{p.client}</td>
+                        <td style={td}>{p.employe}</td>
+                        <td style={{...td, fontWeight:600}} className="mono">{fmtGNF(p.montant)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {nbPages > 1 && (
+                  <div style={{display:'flex', justifyContent:'center', alignItems:'center', gap:10, padding:'10px 0', borderTop:'1px solid var(--line)'}}>
+                    <button className="btn btn-sm" disabled={pageAffichee<=1} onClick={()=>setHistoriquePage(pageAffichee-1)}>← Précédent</button>
+                    <span style={{fontSize:12.5, color:'var(--steam)'}}>Page {pageAffichee} / {nbPages}</span>
+                    <button className="btn btn-sm" disabled={pageAffichee>=nbPages} onClick={()=>setHistoriquePage(pageAffichee+1)}>Suivant →</button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
         « Impayés (part de l'acteur) » indique combien reviendrait à chaque personne si les factures actuellement en attente étaient un jour réglées — à titre d'information seulement. « Montant brut avant impayés (Part de l'acteur) » montre la part projetée de chacun sur la recette brute totale, avant toute déduction. Le montant à distribuer réellement reste celui de la colonne <strong>« Net perçu »</strong>, qui exclut déjà l'argent pas encore encaissé et les dépenses, pour ne jamais distribuer ce que l'entreprise n'a pas.
       </p>
+      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10, marginBottom:10}}>
+        <h2 style={{fontSize:16, color:'var(--ink)', margin:0}}>Répartition entre les acteurs — {periodeLabel}</h2>
+        <ExportButtons
+          onCSV={()=>exportTableToCSV(`repartition-acteurs-${annee}`, REPARTITION_HEADERS, lignesRepartitionExport)}
+          onPDF={()=>exportTableToPDF({ filename:`repartition-acteurs-${annee}`, title:'Répartition entre les acteurs', subtitle:`Maci Pressing — ${periodeLabel}`, headers:REPARTITION_HEADERS, rows:lignesRepartitionExport })}
+        />
+      </div>
       <div className="card" style={{overflow:'hidden'}}>
         <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
           <thead>
@@ -2679,7 +2884,7 @@ function CommandesView({ site, updateSite, editable, employeId }){
   function enregistrerPaiement(cmd, montant, mode){
     const total = calcCommandeTotal(cmd, site.services);
     const nouvelAcompte = Math.min((Number(cmd.acompte)||0) + Number(montant), total);
-    const nouveauPaiement = { id: uid('pmt_'), montant: Number(montant), mode, date: new Date().toISOString() };
+    const nouveauPaiement = { id: uid('pmt_'), montant: Number(montant), mode, date: new Date().toISOString(), employeId: employeId || null };
     const updated = { ...cmd, acompte: nouvelAcompte, paiement: nouvelAcompte >= total ? 'paye' : 'impaye', modePaiement: mode, paiements: [...(cmd.paiements||[]), nouveauPaiement] };
     updateSite({ ...site, commandes: site.commandes.map(c => c.id === updated.id ? updated : c) });
   }
@@ -2943,7 +3148,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
       paiement: montantAcompte >= total ? 'paye' : 'impaye',
       acompte: montantAcompte,
       modePaiement: montantAcompte > 0 ? modePaiementDepot : null,
-      paiements: montantAcompte > 0 ? [{ id: uid('pmt_'), montant: montantAcompte, mode: modePaiementDepot, date: new Date().toISOString() }] : [],
+      paiements: montantAcompte > 0 ? [{ id: uid('pmt_'), montant: montantAcompte, mode: modePaiementDepot, date: new Date().toISOString(), employeId: employeId || null }] : [],
       rabais: montantRabais,
       totalBrut: totalBrut,
       express: express,
@@ -3564,6 +3769,14 @@ function generateReceiptPDFBlob(cmd, site, client, total, acompte, solde){
   setPdfColor(doc, '#1A1F1C');
   doc.setFontSize(9);
   y += 4.8;
+
+  if(cmd.rabais > 0 || cmd.montantExpress > 0){
+    setPdfColor(doc, '#666666');
+    doc.text('Sous-total', mx, y);
+    doc.text(fmtGNFPdf(cmd.totalBrut || total), W-mx, y, {align:'right'});
+    setPdfColor(doc, '#1A1F1C');
+    y += 4.8;
+  }
 
   if(cmd.rabais > 0){
     setPdfColor(doc, '#C76B3F');
@@ -5537,6 +5750,132 @@ function ServicesEditor({ site, updateSite }){
 
 /* ===================== REMUNERATION EMPLOYES ===================== */
 
+/* ===================== MES ENCAISSEMENTS (espace caissier — Espèces / Orange Money) ===================== */
+
+function MesEncaissementsView({ site, employeId }){
+  const [periode, setPeriode] = useState('jour');
+  const [moisChoisi, setMoisChoisi] = useState(todayISO().slice(0,7));
+  const [anneeChoisie, setAnneeChoisie] = useState(Number(todayISO().slice(0,4)));
+
+  const today = todayISO();
+  const getWeekDates = () => {
+    const d = new Date(today + 'T00:00:00');
+    const day = d.getDay() || 7;
+    const monday = new Date(d); monday.setDate(d.getDate() - day + 1);
+    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+    const toISO = (dt) => dt.toISOString().slice(0,10);
+    return { start: toISO(monday), end: toISO(sunday) };
+  };
+  const week = getWeekDates();
+
+  // Tous les paiements réellement encaissés par ce caissier, avec date/mode/montant
+  const mesPaiements = useMemo(() => {
+    const liste = [];
+    (site.commandes||[]).forEach(c => {
+      const client = (site.clients||[]).find(cl => cl.id === c.clientId);
+      getPaiementsCommande(c).forEach(pmt => {
+        if(!pmt.date) return;
+        const employeAttribue = pmt.employeId != null ? pmt.employeId : (c.caissierEmpId || null);
+        if(employeAttribue !== employeId) return;
+        liste.push({
+          id: pmt.id || `${c.id}_${pmt.date}`,
+          date: pmt.date,
+          jour: pmt.date.slice(0,10),
+          mois: pmt.date.slice(0,7),
+          annee: Number(pmt.date.slice(0,4)),
+          ticket: c.numero,
+          client: client ? client.nom : 'Client inconnu',
+          mode: pmt.mode || 'Espèces',
+          montant: Number(pmt.montant)
+        });
+      });
+    });
+    return liste.sort((a,b) => new Date(b.date) - new Date(a.date));
+  }, [site, employeId]);
+
+  const anneesDisponibles = useMemo(() => {
+    const set = new Set(mesPaiements.map(p => p.annee));
+    set.add(Number(todayISO().slice(0,4)));
+    return Array.from(set).sort((a,b)=>b-a);
+  }, [mesPaiements]);
+
+  const paiementsPeriode = useMemo(() => {
+    if(periode === 'jour') return mesPaiements.filter(p => p.jour === today);
+    if(periode === 'semaine') return mesPaiements.filter(p => p.jour >= week.start && p.jour <= week.end);
+    if(periode === 'mois') return mesPaiements.filter(p => p.mois === moisChoisi);
+    return mesPaiements.filter(p => p.annee === anneeChoisie);
+  }, [mesPaiements, periode, today, week, moisChoisi, anneeChoisie]);
+
+  const totalEspeces = paiementsPeriode.filter(p=>p.mode==='Espèces').reduce((s,p)=>s+p.montant,0);
+  const totalOrangeMoney = paiementsPeriode.filter(p=>p.mode==='Orange Money').reduce((s,p)=>s+p.montant,0);
+  const totalGeneral = totalEspeces + totalOrangeMoney;
+
+  const periodeLabel = periode==='jour' ? "Aujourd'hui" : periode==='semaine' ? 'Cette semaine' : periode==='mois' ? 'Ce mois' : 'Cette année';
+
+  return (
+    <div>
+      <PageHeader title="Mes encaissements" subtitle="Argent que vous avez personnellement reçu, par mode de paiement" />
+
+      <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
+        {['jour','semaine','mois','annee'].map(v => (
+          <button key={v} className="btn btn-sm" onClick={()=>setPeriode(v)}
+            style={{background:periode===v?'var(--pine)':'transparent', color:periode===v?'var(--white)':'var(--ink)', borderColor:periode===v?'var(--pine)':'var(--line-strong)', textTransform:'capitalize'}}>
+            {v === 'jour' ? "Aujourd'hui" : v === 'semaine' ? 'Cette semaine' : v === 'mois' ? 'Ce mois' : 'Cette année'}
+          </button>
+        ))}
+        {periode === 'mois' && (
+          <input type="month" value={moisChoisi} onChange={e=>setMoisChoisi(e.target.value)} style={{width:'auto'}} />
+        )}
+        {periode === 'annee' && (
+          <select value={anneeChoisie} onChange={e=>setAnneeChoisie(Number(e.target.value))} style={{width:'auto', minWidth:100}}>
+            {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        )}
+      </div>
+
+      <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20}}>
+        <StatCard label="Espèces" value={fmtGNF(totalEspeces)} icon="euro" />
+        <StatCard label="Orange Money" value={fmtGNF(totalOrangeMoney)} icon="euro" />
+        <StatCard label={`Total — ${periodeLabel}`} value={fmtGNF(totalGeneral)} icon="chart" />
+      </div>
+
+      <h3 style={{fontSize:14.5, color:'var(--pine)', marginBottom:6}}>Détail des paiements reçus — {periodeLabel}</h3>
+      {paiementsPeriode.length === 0 ? (
+        <div className="card" style={{padding:'1.25rem', textAlign:'center', color:'var(--steam)', fontSize:13}}>
+          Aucun paiement reçu sur cette période.
+        </div>
+      ) : (
+        <div className="card" style={{overflow:'hidden'}}>
+          <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
+            <thead>
+              <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                <th style={th}>Date</th>
+                <th style={th}>Ticket</th>
+                <th style={th}>Client</th>
+                <th style={th}>Mode</th>
+                <th style={th}>Montant</th>
+              </tr>
+            </thead>
+            <tbody>
+              {paiementsPeriode.map(p => (
+                <tr key={p.id} style={{borderTop:'1px solid var(--line)'}}>
+                  <td style={td}>{fmtDateTime(p.date)}</td>
+                  <td style={{...td}} className="mono">{p.ticket}</td>
+                  <td style={td}>{p.client}</td>
+                  <td style={td}>
+                    <span className="tag" style={{background: p.mode==='Orange Money' ? '#FFF3E0' : 'var(--paper-2)', color: p.mode==='Orange Money' ? '#E65100' : 'var(--ink)'}}>{p.mode}</span>
+                  </td>
+                  <td style={{...td, fontWeight:600}} className="mono">{fmtGNF(p.montant)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RemunerationView({ site, updateSite, db, siteId, employeId }){
   const [type, setType] = useState('repassage');
   const [date, setDate] = useState(todayISO());
@@ -6459,6 +6798,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
     { key:'stock', label:'Stock', icon:'box' },
     { key:'depenses', label:'Dépenses', icon:'euro' },
     { key:'detailMensuel', label:'Détail mensuel', icon:'chart' },
+    { key:'encaissements', label:'Mes encaissements', icon:'euro' },
     { key:'remuneration', label:'Ma rémunération', icon:'chart' },
   ];
   return (
@@ -6470,6 +6810,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
       {page === 'stock' && <StockView site={site} updateSite={updateSite} />}
       {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} />}
       {page === 'detailMensuel' && <DetailMensuelSiteView site={site} updateSite={updateSite} employeId={employeId} />}
+      {page === 'encaissements' && <MesEncaissementsView site={site} employeId={employeId} />}
       {page === 'remuneration' && <RemunerationView site={site} updateSite={updateSite} db={db} siteId={siteId} employeId={employeId} />}
     </Shell>
   );
