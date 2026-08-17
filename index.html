@@ -2433,13 +2433,13 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
       </div>
       {page === 'dashboard' && <Dashboard site={site} updateSite={updateSite} siteTitle={site.nom} />}
       {page === 'agenda' && <AgendaView site={site} />}
-      {page === 'commandes' && <CommandesView site={site} updateSite={updateSite} editable={true} />}
-      {page === 'clients' && <ClientsView site={site} updateSite={updateSite} />}
+      {page === 'commandes' && <CommandesView site={site} updateSite={updateSite} editable={true} db={db} />}
+      {page === 'clients' && <ClientsView site={site} updateSite={updateSite} db={db} />}
       {page === 'marketing' && <MarketingView site={site} updateSite={updateSite} />}
-      {page === 'stock' && <StockView site={site} updateSite={updateSite} />}
-      {page === 'employes' && <EquipeView site={site} updateSite={updateSite} />}
+      {page === 'stock' && <StockView site={site} updateSite={updateSite} db={db} />}
+      {page === 'employes' && <EquipeView site={site} updateSite={updateSite} db={db} />}
       {page === 'notifications' && <NotificationsView site={site} />}
-      {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} />}
+      {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} db={db} />}
       {page === 'detailMensuel' && <DetailMensuelGerantView site={site} />}
       {page === 'remuneration' && <RemunerationGerantView site={site} />}
       {page === 'corbeille' && <CorbeilleView site={site} updateSite={updateSite} />}
@@ -2457,6 +2457,7 @@ const CORBEILLE_TYPE_LABELS = {
   stock: '📦 Article de stock',
   service: '🧺 Service',
   employe: '👤 Employé',
+  client: '🧾 Client',
   depense: '💸 Dépense',
 };
 
@@ -2484,6 +2485,8 @@ function CorbeilleView({ site, updateSite }){
       nextSite.services = [...nextSite.services, entry.data];
     } else if(entry.type === 'employe'){
       nextSite.employes = [...nextSite.employes, entry.data];
+    } else if(entry.type === 'client'){
+      nextSite.clients = [...nextSite.clients, entry.data];
     } else if(entry.type === 'depense'){
       nextSite.depenses = [entry.data, ...nextSite.depenses];
     }
@@ -2728,7 +2731,7 @@ function SortableTh({ label, field, sortBy, sortDir, onSort }){
   );
 }
 
-function CommandesView({ site, updateSite, editable, employeId }){
+function CommandesView({ site, updateSite, editable, employeId, db }){
   const [filter, setFilter] = useState('Toutes');
   const [search, setSearch] = useState('');
   const [showNew, setShowNew] = useState(false);
@@ -3009,7 +3012,7 @@ function CommandesView({ site, updateSite, editable, employeId }){
       {showNew && <NewCommandeModal site={site} updateSite={updateSite} employeId={employeId} onClose={()=>setShowNew(false)} />}
       {openTicket && <TicketModal cmd={openTicket} site={site} onClose={()=>setOpenTicket(null)} />}
       {editCmd && <EditCommandeModal cmd={editCmd} site={site} updateSite={updateSite} onClose={()=>setEditCmd(null)} />}
-      {confirmDeleteCmd && <ConfirmDelete db={site} message={`Supprimer définitivement la commande ${confirmDeleteCmd.numero} ? Cette action est irréversible.`}
+      {confirmDeleteCmd && <ConfirmDelete db={db} message={`Supprimer définitivement la commande ${confirmDeleteCmd.numero} ? Cette action est irréversible.`}
         onConfirm={()=>{ deleteCommande(confirmDeleteCmd.id); setConfirmDeleteCmd(null); }}
         onCancel={()=>setConfirmDeleteCmd(null)} />}
       {showNewClient && <NewClientModal site={site} updateSite={updateSite} onClose={()=>setShowNewClient(false)} />}
@@ -4137,11 +4140,12 @@ function MarketingView({ site, updateSite }){
   );
 }
 
-function ClientsView({ site, updateSite }){
+function ClientsView({ site, updateSite, db }){
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState(null);
   const [showNew, setShowNew] = useState(false);
   const [editClient, setEditClient] = useState(null);
+  const [confirmClient, setConfirmClient] = useState(null);
 
   const filtered = useMemo(() => {
     if(!search.trim()) return site.clients;
@@ -4159,6 +4163,12 @@ function ClientsView({ site, updateSite }){
   function saveEditClient(updated){
     updateSite({ ...site, clients: site.clients.map(c => c.id===updated.id ? updated : c) });
     setEditClient(null);
+  }
+
+  function removeClient(id){
+    const client = site.clients.find(c => c.id===id);
+    const entry = { id: uid('trash_'), type:'client', label: client ? `Client : ${client.nom}` : 'Client', data: client, dateSuppression: new Date().toISOString() };
+    updateSite({ ...site, clients: site.clients.filter(c => c.id!==id), corbeille: [entry, ...(site.corbeille||[])] });
   }
 
   return (
@@ -4186,6 +4196,9 @@ function ClientsView({ site, updateSite }){
                   <button className="btn btn-ghost btn-sm" style={{padding:'4px 7px'}} onClick={()=>setEditClient(c)} title="Modifier">
                     <Icon name="edit" size={13}/>
                   </button>
+                  <button className="btn btn-ghost btn-sm" style={{padding:'4px 7px', color:'var(--danger)'}} onClick={()=>setConfirmClient(c)} title="Supprimer">
+                    <Icon name="trash" size={13}/>
+                  </button>
                 </div>
               </div>
               <div style={{display:'flex', gap:14, marginTop:12, fontSize:12.5, color:'var(--steam)', cursor:'pointer'}} onClick={()=>setSelected(c)}>
@@ -4201,6 +4214,17 @@ function ClientsView({ site, updateSite }){
       {showNew && <NewClientModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
       {selected && <ClientDetailModal client={selected} site={site} onClose={()=>setSelected(null)} onEdit={(c)=>{ setSelected(null); setEditClient(c); }} />}
       {editClient && <EditClientModal client={editClient} onSave={saveEditClient} onClose={()=>setEditClient(null)} />}
+      {confirmClient && (() => {
+        const st = clientStats(confirmClient.id);
+        const avertissement = st.count > 0 ? ` Ce client a ${st.count} commande(s) enregistrée(s) — elles resteront dans l'historique mais afficheront « Client inconnu » à la place de son nom.` : '';
+        return (
+          <ConfirmDelete db={db}
+            message={`Supprimer définitivement le client « ${confirmClient.nom} » ?${avertissement}`}
+            onConfirm={()=>{ removeClient(confirmClient.id); setConfirmClient(null); }}
+            onCancel={()=>setConfirmClient(null)}
+          />
+        );
+      })()}
     </div>
   );
 }
@@ -4339,7 +4363,7 @@ function StatMini({ label, value }){
 
 /* ===================== STOCK ===================== */
 
-function StockView({ site, updateSite }){
+function StockView({ site, updateSite, db }){
   const [showNew, setShowNew] = useState(false);
   const [confirmItem, setConfirmItem] = useState(null);
   const [editItem, setEditItem] = useState(null);
@@ -4470,7 +4494,7 @@ function NewStockModal({ site, updateSite, onClose }){
 
 /* ===================== EQUIPE ===================== */
 
-function EquipeView({ site, updateSite }){
+function EquipeView({ site, updateSite, db }){
   const [showNew, setShowNew] = useState(false);
   const [showPass, setShowPass] = useState({});
   const [confirmEmp, setConfirmEmp] = useState(null);
@@ -4616,7 +4640,7 @@ function NewEmployeModal({ site, updateSite, onClose }){
 
 const CATEGORIES_DEPENSES = ['Salaires', 'Électricité', 'Loyer', 'Fournitures', 'Autres'];
 
-function DepensesView({ site, updateSite }){
+function DepensesView({ site, updateSite, db }){
   const [showNew, setShowNew] = useState(false);
   const [typePeriode, setTypePeriode] = useState('mois'); // 'jour' | 'mois' | 'annee'
   const [filterJour, setFilterJour] = useState(todayISO());
@@ -4784,7 +4808,7 @@ function DepensesView({ site, updateSite }){
       </div>
 
       {showNew && <NewDepenseModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
-      {confirmDep && <ConfirmDelete db={site} message={`Supprimer la dépense « ${confirmDep.description} » (${fmtGNF(confirmDep.montant)}) ?`}
+      {confirmDep && <ConfirmDelete db={db} message={`Supprimer la dépense « ${confirmDep.description} » (${fmtGNF(confirmDep.montant)}) ?`}
         onConfirm={()=>{ removeDepense(confirmDep.id); setConfirmDep(null); }}
         onCancel={()=>setConfirmDep(null)} />}
       {editDep && (
@@ -5436,7 +5460,7 @@ function ParametresView({ site, updateSite, db, setDb }){
           </div>
         </div>
 
-        <ServicesEditor site={site} updateSite={updateSite} />
+        <ServicesEditor site={site} updateSite={updateSite} db={db} />
       </div>
 
       {/* Changement mot de passe gérant */}
@@ -5654,7 +5678,7 @@ function ParametresView({ site, updateSite, db, setDb }){
   );
 }
 
-function ServicesEditor({ site, updateSite }){
+function ServicesEditor({ site, updateSite, db }){
   const [nom, setNom] = useState('');
   const [prix, setPrix] = useState('');
   const [categorie, setCategorie] = useState('Nettoyage');
@@ -6803,12 +6827,12 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
   ];
   return (
     <Shell title={site.nom} role={`${monProfil ? monProfil.nom + ' — ' : ''}${monProfil ? monProfil.role : 'Espace employé'}`} navItems={navItems} active={page} onNav={setPage} onLogout={onLogout}>
-      {page === 'caisse' && <CommandesView site={site} updateSite={updateSite} editable={true} employeId={employeId} />}
+      {page === 'caisse' && <CommandesView site={site} updateSite={updateSite} editable={true} employeId={employeId} db={db} />}
       {page === 'agenda' && <AgendaView site={site} />}
       {page === 'marketing' && <MarketingView site={site} updateSite={updateSite} />}
-      {page === 'clients' && <ClientsView site={site} updateSite={updateSite} />}
-      {page === 'stock' && <StockView site={site} updateSite={updateSite} />}
-      {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} />}
+      {page === 'clients' && <ClientsView site={site} updateSite={updateSite} db={db} />}
+      {page === 'stock' && <StockView site={site} updateSite={updateSite} db={db} />}
+      {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} db={db} />}
       {page === 'detailMensuel' && <DetailMensuelSiteView site={site} updateSite={updateSite} employeId={employeId} />}
       {page === 'encaissements' && <MesEncaissementsView site={site} employeId={employeId} />}
       {page === 'remuneration' && <RemunerationView site={site} updateSite={updateSite} db={db} siteId={siteId} employeId={employeId} />}
