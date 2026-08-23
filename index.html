@@ -1,5 +1,6 @@
 
 
+
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -4639,10 +4640,13 @@ function NewEmployeModal({ site, updateSite, onClose }){
 /* ===================== DEPENSES ===================== */
 
 const CATEGORIES_DEPENSES = ['Salaires', 'Électricité', 'Loyer', 'Fournitures', 'Autres'];
+const CATEGORIES_DEPENSES_AFFICHAGE = ['Salaires', 'Électricité', 'Loyer', 'Livraison', 'Fournitures', 'Autres'];
 
 function DepensesView({ site, updateSite, db }){
   const [showNew, setShowNew] = useState(false);
-  const [typePeriode, setTypePeriode] = useState('mois'); // 'jour' | 'mois' | 'annee'
+  const [showPrestation, setShowPrestation] = useState(false);
+  const [showRepassage, setShowRepassage] = useState(false);
+  const [typePeriode, setTypePeriode] = useState('mois'); // 'jour' | 'semaine' | 'mois' | 'annee'
   const [filterJour, setFilterJour] = useState(todayISO());
   const [filterMois, setFilterMois] = useState(todayISO().slice(0,7));
   const [filterAnnee, setFilterAnnee] = useState(todayISO().slice(0,4));
@@ -4650,24 +4654,49 @@ function DepensesView({ site, updateSite, db }){
   const [editDep, setEditDep] = useState(null);
 
   const depenses = (site.depenses || []);
+  const remunerations = (site.remunerations || []);
+
+  const getWeekDates = (jourReference) => {
+    const d = new Date(jourReference + 'T00:00:00');
+    const day = d.getDay() || 7;
+    const monday = new Date(d); monday.setDate(d.getDate() - day + 1);
+    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+    const toISO = (dt) => dt.toISOString().slice(0,10);
+    return { start: toISO(monday), end: toISO(sunday) };
+  };
+  const semaineActuelle = getWeekDates(filterJour);
+
+  function estDansPeriode(dateStr){
+    const d = (dateStr||'').slice(0,10);
+    if(typePeriode === 'jour') return d === filterJour;
+    if(typePeriode === 'semaine') return d >= semaineActuelle.start && d <= semaineActuelle.end;
+    if(typePeriode === 'mois') return d.slice(0,7) === filterMois;
+    return d.slice(0,4) === filterAnnee;
+  }
 
   const filtered = useMemo(() => {
-    let list = [...depenses];
-    if(typePeriode === 'jour') list = list.filter(d => d.date === filterJour);
-    else if(typePeriode === 'mois') list = list.filter(d => d.date.slice(0,7) === filterMois);
-    else if(typePeriode === 'annee') list = list.filter(d => d.date.slice(0,4) === filterAnnee);
-    return list.sort((a,b) => new Date(b.date) - new Date(a.date));
+    return [...depenses].filter(d => estDansPeriode(d.date)).sort((a,b) => new Date(b.date) - new Date(a.date));
   }, [depenses, typePeriode, filterJour, filterMois, filterAnnee]);
 
-  const totalMois = filtered.reduce((s,d) => s + Number(d.montant), 0);
+  // Repassages/livraisons enregistrés AVANT la création automatique de dépenses (données historiques),
+  // à inclure quand même dans la charge réelle de l'entreprise pour ne rien sous-estimer
+  const remunerationsOrphelines = useMemo(() => {
+    const idsAvecDepense = new Set(depenses.filter(d=>d.autoPrestationId).map(d=>d.autoPrestationId));
+    return remunerations.filter(r => (r.type==='repassage' || r.type==='livraison') && !idsAvecDepense.has(r.id) && estDansPeriode(r.date));
+  }, [remunerations, depenses, typePeriode, filterJour, filterMois, filterAnnee]);
+  const totalOrphelines = remunerationsOrphelines.reduce((s,r)=>s+Number(r.montant),0);
+
+  const totalMois = filtered.reduce((s,d) => s + Number(d.montant), 0) + totalOrphelines;
 
   const parCategorie = useMemo(() => {
     const acc = {};
     filtered.forEach(d => {
-      acc[d.categorie] = (acc[d.categorie]||0) + Number(d.montant);
+      const cat = d.categorie === 'Prestations' ? 'Livraison' : d.categorie;
+      acc[cat] = (acc[cat]||0) + Number(d.montant);
     });
+    if(totalOrphelines > 0) acc['Livraison'] = (acc['Livraison']||0) + totalOrphelines;
     return acc;
-  }, [filtered]);
+  }, [filtered, totalOrphelines]);
 
   const parMode = useMemo(() => {
     const acc = {};
@@ -4703,17 +4732,24 @@ function DepensesView({ site, updateSite, db }){
   }, [depenses]);
 
   const labelPeriode = typePeriode === 'jour' ? fmtDate(filterJour)
+    : typePeriode === 'semaine' ? `semaine du ${fmtDate(semaineActuelle.start)} au ${fmtDate(semaineActuelle.end)}`
     : typePeriode === 'annee' ? filterAnnee
     : new Date(filterMois+'-01').toLocaleDateString('fr-FR',{month:'long',year:'numeric'});
 
   return (
     <div>
       <PageHeader title="Dépenses" subtitle={`Total ${labelPeriode} : ${fmtGNF(totalMois)}`}
-        right={<button className="btn btn-rust" onClick={()=>setShowNew(true)}><Icon name="plus" size={15}/> Nouvelle dépense</button>} />
+        right={
+          <div style={{display:'flex', gap:8}}>
+            <button className="btn btn-sm" onClick={()=>setShowRepassage(v=>!v)}><Icon name="shirt" size={15}/> Suivi repassage</button>
+            <button className="btn btn-sm" onClick={()=>setShowPrestation(true)}><Icon name="shirt" size={15}/> Livraison (par zone)</button>
+            <button className="btn btn-rust" onClick={()=>setShowNew(true)}><Icon name="plus" size={15}/> Nouvelle dépense</button>
+          </div>
+        } />
 
       {/* Filtre par période */}
       <div style={{display:'flex', gap:10, marginBottom:18, alignItems:'center', flexWrap:'wrap'}}>
-        {[{key:'jour', label:'Jour'}, {key:'mois', label:'Mois'}, {key:'annee', label:'Année'}].map(opt => (
+        {[{key:'jour', label:'Jour'}, {key:'semaine', label:'Semaine'}, {key:'mois', label:'Mois'}, {key:'annee', label:'Année'}].map(opt => (
           <button key={opt.key} className="btn btn-sm" onClick={()=>setTypePeriode(opt.key)}
             style={{background: typePeriode===opt.key ? 'var(--pine)' : 'transparent', color: typePeriode===opt.key ? 'var(--white)' : 'var(--ink)', borderColor: typePeriode===opt.key ? 'var(--pine)' : 'var(--line-strong)'}}>
             {opt.label}
@@ -4721,6 +4757,12 @@ function DepensesView({ site, updateSite, db }){
         ))}
         {typePeriode === 'jour' && (
           <input type="date" value={filterJour} onChange={e=>setFilterJour(e.target.value)} style={{width:'auto'}} />
+        )}
+        {typePeriode === 'semaine' && (
+          <div style={{display:'flex', alignItems:'center', gap:8}}>
+            <input type="date" value={filterJour} onChange={e=>setFilterJour(e.target.value)} style={{width:'auto'}} />
+            <span style={{fontSize:12.5, color:'var(--steam)'}}>Semaine du {fmtDate(semaineActuelle.start)} au {fmtDate(semaineActuelle.end)}</span>
+          </div>
         )}
         {typePeriode === 'mois' && (
           <select value={filterMois} onChange={e=>setFilterMois(e.target.value)} style={{width:'auto', minWidth:160}}>
@@ -4736,10 +4778,22 @@ function DepensesView({ site, updateSite, db }){
         )}
       </div>
 
+      {/* Total dépenses (cumul de toutes les catégories) */}
+      {(filtered.length > 0 || totalOrphelines > 0) && (
+        <div style={{marginBottom:14}}>
+          <StatCard label={`Total dépenses — ${labelPeriode}`} value={fmtGNF(CATEGORIES_DEPENSES_AFFICHAGE.reduce((s,cat)=>s+(parCategorie[cat]||0),0))} icon="euro" tone="danger" />
+          {totalOrphelines > 0 && (
+            <p style={{fontSize:11.5, color:'var(--steam)', margin:'4px 0 0'}}>Inclut {fmtGNF(totalOrphelines)} de repassage/livraison historique (enregistré avant la création automatique de dépenses).</p>
+          )}
+        </div>
+      )}
+
+      {showRepassage && <RepassageApercuView site={site} updateSite={updateSite} />}
+
       {/* Résumé par catégorie */}
       {filtered.length > 0 && (
-        <div style={{display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:10, marginBottom:14}}>
-          {CATEGORIES_DEPENSES.map(cat => (
+        <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(110px, 1fr))', gap:10, marginBottom:14}}>
+          {CATEGORIES_DEPENSES_AFFICHAGE.map(cat => (
             <div key={cat} className="card" style={{padding:'0.9rem 1rem'}}>
               <div style={{fontSize:11.5, color:'var(--steam)', fontWeight:600, textTransform:'uppercase'}}>{cat}</div>
               <div className="mono" style={{fontSize:15, fontWeight:700, color:'var(--pine)', marginTop:4}}>{fmtGNF(parCategorie[cat]||0)}</div>
@@ -4786,7 +4840,7 @@ function DepensesView({ site, updateSite, db }){
                 <td style={{...td, color:'var(--danger)', fontWeight:600}} className="mono">{fmtGNF(d.montant)}</td>
                 <td style={{...td, textAlign:'right'}}>
                   <div style={{display:'flex', gap:6, justifyContent:'flex-end'}}>
-                    <button className="btn btn-ghost btn-sm" style={{color:'var(--pine)'}} onClick={()=>setEditDep({...d})}>
+                    <button className="btn btn-ghost btn-sm" style={{color:'var(--pine)'}} onClick={()=>setEditDep({...d, categorie: d.categorie==='Prestations' ? 'Livraison' : d.categorie})}>
                       <Icon name="edit" size={14}/>
                     </button>
                     <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>setConfirmDep(d)}>
@@ -4808,6 +4862,7 @@ function DepensesView({ site, updateSite, db }){
       </div>
 
       {showNew && <NewDepenseModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
+      {showPrestation && <NewPrestationModal site={site} updateSite={updateSite} onClose={()=>setShowPrestation(false)} />}
       {confirmDep && <ConfirmDelete db={db} message={`Supprimer la dépense « ${confirmDep.description} » (${fmtGNF(confirmDep.montant)}) ?`}
         onConfirm={()=>{ removeDepense(confirmDep.id); setConfirmDep(null); }}
         onCancel={()=>setConfirmDep(null)} />}
@@ -4818,7 +4873,7 @@ function DepensesView({ site, updateSite, db }){
             <div>
               <label>Catégorie</label>
               <select value={editDep.categorie} onChange={e=>setEditDep({...editDep, categorie:e.target.value})}>
-                {CATEGORIES_DEPENSES.map(c => <option key={c}>{c}</option>)}
+                {CATEGORIES_DEPENSES_AFFICHAGE.map(c => <option key={c}>{c}</option>)}
               </select>
             </div>
             <div><label>Description</label><input type="text" value={editDep.description} onChange={e=>setEditDep({...editDep, description:e.target.value})} /></div>
@@ -4838,6 +4893,161 @@ function DepensesView({ site, updateSite, db }){
         </ModalShell>
       )}
     </div>
+  );
+}
+
+function NewPrestationModal({ site, updateSite, onClose }){
+  const [type, setType] = useState('livraison');
+  const [date, setDate] = useState(todayISO());
+  const [employeId, setEmployeId] = useState('');
+  const [selectedArticles, setSelectedArticles] = useState([]);
+  const [zoneId, setZoneId] = useState('');
+
+  const config = site.configRemuneration || { tarifsRepassage: [], zones: [] };
+  const tarifsRepassage = config.tarifsRepassage || [];
+  const remunerations = site.remunerations || [];
+
+  function addArticle(tarifId){
+    setSelectedArticles(prev => {
+      const exist = prev.find(a=>a.tarifId===tarifId);
+      if(exist) return prev.map(a=>a.tarifId===tarifId ? {...a, qte:a.qte+1} : a);
+      return [...prev, {tarifId, qte:1}];
+    });
+  }
+  function setArticleQte(tarifId, qte){
+    setSelectedArticles(prev => prev.map(a=>a.tarifId===tarifId ? {...a, qte:Math.max(0,qte)} : a).filter(a=>a.qte>0));
+  }
+
+  const montantRepassage = selectedArticles.reduce((s,a) => {
+    const tarif = tarifsRepassage.find(t=>t.id===a.tarifId);
+    return s + (tarif ? tarif.prix * a.qte : 0);
+  }, 0);
+
+  function calculerMontant(){
+    if(type === 'repassage') return montantRepassage;
+    const zone = config.zones?.find(z=>z.id===zoneId);
+    return zone ? Number(zone.montant) : 0;
+  }
+  const montantPreview = calculerMontant();
+
+  function enregistrer(){
+    const montant = calculerMontant();
+    if(montant <= 0 || !date || !employeId) return;
+    const zone = type === 'livraison' ? config.zones?.find(z=>z.id===zoneId) : null;
+    const detailRepassage = selectedArticles.map(a => {
+      const t = tarifsRepassage.find(t=>t.id===a.tarifId);
+      return t ? `${a.qte}x ${t.nom} (${fmtGNF(t.prix)})` : '';
+    }).filter(Boolean).join(', ');
+
+    const rem = {
+      id: uid('rem_'),
+      date,
+      type,
+      montant,
+      detail: type === 'repassage' ? detailRepassage : `Livraison — ${zone?.nom || ''}`,
+      employeId,
+    };
+    const empNom = (site.employes.find(e=>e.id===employeId)||{}).nom || 'Employé';
+    const dep = {
+      id: uid('dep_'),
+      date,
+      description: `Prestation ${type === 'repassage' ? 'repassage' : 'livraison'} — ${empNom} (${rem.detail})`,
+      montant,
+      categorie: 'Livraison',
+      modePaiement: 'Espèces',
+      autoPrestationId: rem.id,
+    };
+    updateSite({ ...site, remunerations: [rem, ...remunerations], depenses: [dep, ...(site.depenses||[])] });
+    onClose();
+  }
+
+  return (
+    <ModalShell title="Livraison (par zone)" onClose={onClose} width={480}>
+      <div style={{display:'grid', gap:14}}>
+        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12}}>
+          <div>
+            <label>Date</label>
+            <input type="date" value={date} onChange={e=>setDate(e.target.value)} max={todayISO()} />
+          </div>
+          <div>
+            <label>Employé</label>
+            <select value={employeId} onChange={e=>setEmployeId(e.target.value)}>
+              <option value="">Choisir un employé…</option>
+              {site.employes.map(e => <option key={e.id} value={e.id}>{e.nom}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {type === 'repassage' ? (
+          <div>
+            <label>Articles repassés</label>
+            {tarifsRepassage.length > 0 ? (
+              <>
+                <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:6, marginBottom:8}}>
+                  {tarifsRepassage.map(t => (
+                    <button key={t.id} className="btn btn-sm"
+                      style={{justifyContent:'space-between', display:'flex', background: selectedArticles.find(a=>a.tarifId===t.id) ? 'var(--pine-light)' : 'transparent', borderColor: selectedArticles.find(a=>a.tarifId===t.id) ? 'var(--pine)' : 'var(--line-strong)'}}
+                      onClick={()=>addArticle(t.id)}>
+                      <span>{t.nom}</span><span className="mono" style={{color:'var(--steam)'}}>{fmtGNF(t.prix)}</span>
+                    </button>
+                  ))}
+                </div>
+                {selectedArticles.length > 0 && (
+                  <div style={{background:'var(--paper-2)', borderRadius:8, padding:'10px 12px'}}>
+                    {selectedArticles.map(a => {
+                      const t = tarifsRepassage.find(x=>x.id===a.tarifId);
+                      if(!t) return null;
+                      return (
+                        <div key={a.tarifId} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'4px 0'}}>
+                          <span style={{fontSize:13}}>{t.nom}</span>
+                          <div style={{display:'flex', alignItems:'center', gap:6}}>
+                            <button className="btn btn-sm" style={{padding:'1px 7px'}} onClick={()=>setArticleQte(a.tarifId, a.qte-1)}>−</button>
+                            <span className="mono" style={{fontSize:13}}>{a.qte}</span>
+                            <button className="btn btn-sm" style={{padding:'1px 7px'}} onClick={()=>setArticleQte(a.tarifId, a.qte+1)}>+</button>
+                            <span className="mono" style={{fontSize:12, color:'var(--pine)', minWidth:70, textAlign:'right'}}>{fmtGNF(t.prix*a.qte)}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{padding:'9px 12px', background:'var(--warn-light)', borderRadius:8, fontSize:13, color:'var(--warn)'}}>
+                ⚠️ Configure d'abord les tarifs de repassage dans Paramètres.
+              </div>
+            )}
+          </div>
+        ) : (
+          <div>
+            <label>Zone de livraison</label>
+            {config.zones?.length > 0 ? (
+              <select value={zoneId} onChange={e=>setZoneId(e.target.value)}>
+                <option value="">Choisir une zone…</option>
+                {config.zones.map(z => (
+                  <option key={z.id} value={z.id}>{z.nom} — {fmtGNF(z.montant)}</option>
+                ))}
+              </select>
+            ) : (
+              <div style={{padding:'9px 12px', background:'var(--warn-light)', borderRadius:8, fontSize:13, color:'var(--warn)'}}>
+                ⚠️ Configure d'abord les zones de livraison dans Paramètres.
+              </div>
+            )}
+          </div>
+        )}
+
+        {montantPreview > 0 && (
+          <div style={{fontSize:13, color:'var(--pine)', fontWeight:600}}>
+            💰 Total : {fmtGNF(montantPreview)}
+          </div>
+        )}
+        <button className="btn btn-rust" style={{width:'100%'}}
+          disabled={montantPreview <= 0 || !employeId}
+          onClick={enregistrer}>
+          Enregistrer
+        </button>
+      </div>
+    </ModalShell>
   );
 }
 
@@ -5776,6 +5986,164 @@ function ServicesEditor({ site, updateSite, db }){
 
 /* ===================== MES ENCAISSEMENTS (espace caissier — Espèces / Orange Money) ===================== */
 
+/* ===================== SUIVI REPASSAGE (espace caissier — lecture seule) ===================== */
+
+function RepassageApercuView({ site, updateSite }){
+  const [periode, setPeriode] = useState('jour');
+  const [moisChoisi, setMoisChoisi] = useState(todayISO().slice(0,7));
+  const [anneeChoisie, setAnneeChoisie] = useState(Number(todayISO().slice(0,4)));
+  const [modeChoisi, setModeChoisi] = useState({});
+  const today = todayISO();
+
+  const repassages = useMemo(() => (site.remunerations||[]).filter(r => r.type === 'repassage'), [site.remunerations]);
+
+  const anneesDisponibles = useMemo(() => {
+    const set = new Set(repassages.map(r => Number(r.date.slice(0,4))));
+    set.add(Number(todayISO().slice(0,4)));
+    return Array.from(set).sort((a,b)=>b-a);
+  }, [repassages]);
+
+  const moisDisponibles = useMemo(() => {
+    const mois = new Set(repassages.map(r => r.date.slice(0,7)));
+    mois.add(todayISO().slice(0,7));
+    return [...mois].sort().reverse();
+  }, [repassages]);
+
+  const filtres = useMemo(() => {
+    if(periode === 'jour') return repassages.filter(r => (r.date||'').slice(0,10) === today);
+    if(periode === 'mois') return repassages.filter(r => r.date.slice(0,7) === moisChoisi);
+    return repassages.filter(r => Number(r.date.slice(0,4)) === anneeChoisie);
+  }, [repassages, periode, today, moisChoisi, anneeChoisie]);
+
+  const parRepasseur = useMemo(() => {
+    const acc = {};
+    filtres.forEach(r => {
+      const empId = r.employeId || '_inconnu';
+      const empNom = (site.employes.find(e=>e.id===r.employeId)||{}).nom || 'Employé inconnu';
+      if(!acc[empId]) acc[empId] = { nom: empNom, totalMontant:0, totalArticles:0, articles:{}, entrees:[] };
+      acc[empId].totalMontant += Number(r.montant);
+      acc[empId].entrees.push(r);
+      if(r.detail){
+        r.detail.split(', ').forEach(part => {
+          const match = part.match(/(\d+)x (.+?) \(/);
+          if(match){
+            const nom = match[2], qte = Number(match[1]);
+            acc[empId].articles[nom] = (acc[empId].articles[nom]||0) + qte;
+            acc[empId].totalArticles += qte;
+          }
+        });
+      }
+    });
+    Object.values(acc).forEach(p => p.entrees.sort((a,b) => new Date(b.date) - new Date(a.date)));
+    return acc;
+  }, [filtres, site.employes]);
+
+  function marquerPaye(rem, mode){
+    const nextRemunerations = (site.remunerations||[]).map(r => r.id === rem.id
+      ? { ...r, statutPaiement: 'paye', modePaiementRepasseur: mode, datePaiement: new Date().toISOString() }
+      : r);
+    updateSite({ ...site, remunerations: nextRemunerations });
+  }
+
+  const totalGeneral = filtres.reduce((s,r)=>s+Number(r.montant),0);
+  const totalArticlesGeneral = Object.values(parRepasseur).reduce((s,p)=>s+p.totalArticles,0);
+  const periodeLabel = periode==='jour' ? "Aujourd'hui" : periode==='mois' ? 'Ce mois' : 'Cette année';
+  const repasseurIds = Object.keys(parRepasseur);
+
+  return (
+    <div className="card" style={{padding:'1.5rem', marginBottom:20}}>
+      <h3 style={{margin:'0 0 4px', fontSize:15}}>👔 Suivi repassage</h3>
+      <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px'}}>Articles repassés, totaux, et paiement des repasseurs</p>
+
+      <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
+        {['jour','mois','annee'].map(v => (
+          <button key={v} className="btn btn-sm" onClick={()=>setPeriode(v)}
+            style={{background:periode===v?'var(--pine)':'transparent', color:periode===v?'var(--white)':'var(--ink)', borderColor:periode===v?'var(--pine)':'var(--line-strong)'}}>
+            {v === 'jour' ? "Aujourd'hui" : v === 'mois' ? 'Ce mois' : 'Cette année'}
+          </button>
+        ))}
+        {periode === 'mois' && (
+          <select value={moisChoisi} onChange={e=>setMoisChoisi(e.target.value)} style={{width:'auto', minWidth:160}}>
+            {moisDisponibles.map(m => <option key={m} value={m}>{formatMoisAnnee(m)}</option>)}
+          </select>
+        )}
+        {periode === 'annee' && (
+          <select value={anneeChoisie} onChange={e=>setAnneeChoisie(Number(e.target.value))} style={{width:'auto', minWidth:100}}>
+            {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        )}
+      </div>
+
+      <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:14, marginBottom:20}}>
+        <StatCard label={`Total articles repassés — ${periodeLabel}`} value={totalArticlesGeneral} icon="shirt" />
+        <StatCard label={`Total — ${periodeLabel}`} value={fmtGNF(totalGeneral)} icon="euro" />
+      </div>
+
+      {repasseurIds.length === 0 ? (
+        <div className="card" style={{padding:'1.25rem', textAlign:'center', color:'var(--steam)', fontSize:13}}>
+          Aucun repassage enregistré sur cette période.
+        </div>
+      ) : repasseurIds.map(empId => {
+        const p = parRepasseur[empId];
+        const articlesList = Object.entries(p.articles);
+        return (
+          <div key={empId} className="card" style={{padding:'1.25rem', marginBottom:14}}>
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10}}>
+              <h3 style={{margin:0, fontSize:15}}>👔 {p.nom}</h3>
+              <span className="mono" style={{fontWeight:700, color:'var(--pine)'}}>{fmtGNF(p.totalMontant)}</span>
+            </div>
+            {articlesList.length > 0 && (
+              <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(140px, 1fr))', gap:8, marginBottom:14}}>
+                {articlesList.map(([nomArticle, qte]) => (
+                  <div key={nomArticle} style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                    <span style={{fontSize:13}}>{nomArticle}</span>
+                    <span className="mono" style={{fontSize:13, fontWeight:600}}>{qte}x</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{fontSize:12, color:'var(--steam)', marginBottom:6, fontWeight:600, textTransform:'uppercase'}}>Paiement de ce repasseur</div>
+            <div style={{display:'grid', gap:8}}>
+              {p.entrees.map(r => {
+                const key = r.id;
+                const modeSel = modeChoisi[key] || 'Espèces';
+                return (
+                  <div key={key} style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, padding:'8px 10px', background:'var(--paper-2)', borderRadius:8, flexWrap:'wrap'}}>
+                    <div style={{fontSize:12.5}}>
+                      <span style={{color:'var(--steam)'}}>{fmtDate(r.date)}</span> — <span className="mono" style={{fontWeight:600}}>{fmtGNF(r.montant)}</span>
+                    </div>
+                    {r.statutPaiement === 'paye' ? (
+                      <div style={{display:'flex', alignItems:'center', gap:6}}>
+                        <span className="tag" style={{background: r.modePaiementRepasseur==='Orange Money' ? '#FFF3E0' : 'var(--pine-light)', color: r.modePaiementRepasseur==='Orange Money' ? '#E65100' : 'var(--pine)'}}>
+                          ✓ Payé — {r.modePaiementRepasseur}
+                        </span>
+                        {r.valideParRepasseur ? (
+                          <span className="tag" style={{background:'var(--pine-light)', color:'var(--pine)'}}>✓ Confirmé par le repasseur</span>
+                        ) : (
+                          <span className="tag" style={{background:'var(--warn-light)', color:'var(--warn)'}}>En attente de confirmation</span>
+                        )}
+                      </div>
+                    ) : (
+                      <div style={{display:'flex', alignItems:'center', gap:6}}>
+                        <select value={modeSel} onChange={e=>setModeChoisi(prev=>({...prev, [key]: e.target.value}))} style={{width:'auto', fontSize:12.5, padding:'4px 8px'}}>
+                          <option value="Espèces">Espèces</option>
+                          <option value="Orange Money">Orange Money</option>
+                        </select>
+                        <button className="btn btn-sm" onClick={()=>marquerPaye(r, modeSel)}>Marquer payé</button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function MesEncaissementsView({ site, employeId }){
   const [periode, setPeriode] = useState('jour');
   const [moisChoisi, setMoisChoisi] = useState(todayISO().slice(0,7));
@@ -5930,9 +6298,23 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
   // Filtrer uniquement les repassages DE CET EMPLOYÉ
   const repassageOnly = remunerations.filter(r => r.type === 'repassage' && r.employeId === employeId);
 
+  // Paiements marqués "payé" par le caissier, en attente de confirmation de réception par CET employé (tous types)
+  const paiementsAValider = useMemo(() => {
+    return remunerations
+      .filter(r => r.employeId === employeId && r.statutPaiement === 'paye' && !r.valideParRepasseur)
+      .sort((a,b) => new Date(b.date) - new Date(a.date));
+  }, [remunerations, employeId]);
+
+  function validerReception(rem){
+    const nextRemunerations = remunerations.map(r => r.id === rem.id
+      ? { ...r, valideParRepasseur: true, dateValidationRepasseur: new Date().toISOString() }
+      : r);
+    updateSite({ ...site, remunerations: nextRemunerations });
+  }
+
   // Bilan journalier
   const bilanJour = useMemo(() => {
-    const rems = repassageOnly.filter(r => r.date === today);
+    const rems = repassageOnly.filter(r => (r.date||'').slice(0,10) === today);
     const totalMontant = rems.reduce((s,r)=>s+Number(r.montant),0);
     // Agréger les articles
     const articlesCount = {};
@@ -6056,7 +6438,7 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
       date,
       description: `Prestation ${type === 'repassage' ? 'repassage' : 'livraison'} — ${empNom} (${rem.detail})`,
       montant,
-      categorie: 'Salaires',
+      categorie: 'Livraison',
       modePaiement: 'Espèces',
       autoPrestationId: rem.id,
     };
@@ -6070,6 +6452,24 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
   return (
     <div>
       <PageHeader title={`Ma rémunération${monProfil ? ` — ${monProfil.nom}` : ''}`} subtitle={`Total ${formatMoisAnnee(filterMois)} : ${fmtGNF(totalMois)}`} />
+
+      {paiementsAValider.length > 0 && (
+        <div className="card" style={{padding:'1.25rem', marginBottom:20, borderColor:'var(--warn)'}}>
+          <h3 style={{margin:'0 0 4px', fontSize:15}}>💰 Paiements à confirmer</h3>
+          <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 12px'}}>Le caissier indique vous avoir payé — confirmez que vous avez bien reçu l'argent.</p>
+          <div style={{display:'grid', gap:8}}>
+            {paiementsAValider.map(r => (
+              <div key={r.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, padding:'10px 12px', background:'var(--warn-light)', borderRadius:8, flexWrap:'wrap'}}>
+                <div style={{fontSize:13}}>
+                  <span style={{fontWeight:600}}>{fmtGNF(r.montant)}</span> — {r.type === 'repassage' ? '👔 Repassage' : '🚗 Livraison'} du {fmtDate(r.date)}
+                  <span className="tag" style={{marginLeft:8, background: r.modePaiementRepasseur==='Orange Money' ? '#FFF3E0' : 'var(--pine-light)', color: r.modePaiementRepasseur==='Orange Money' ? '#E65100' : 'var(--pine)'}}>{r.modePaiementRepasseur}</span>
+                </div>
+                <button className="btn btn-rust btn-sm" onClick={()=>validerReception(r)}>J'ai bien reçu</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20}}>
         <StatCard label="Total ce mois" value={fmtGNF(totalMois)} icon="euro" />
@@ -6467,7 +6867,7 @@ function RepasseurView({ site, updateSite, employeId }){
 
 /* ===================== DETAIL MENSUEL (espace caissier — vue par site) ===================== */
 
-function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave }){
+function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave, montantRecu }){
   const mesValeurs = (valeurs.parEmploye && valeurs.parEmploye[employeId]) || { recetteBrute: 0, depenses: 0, impayes: 0, depensesPropres: 0 };
   const [recetteBrute, setRecetteBrute] = useState(String(mesValeurs.recetteBrute || ''));
   const [impayes, setImpayes] = useState(String(mesValeurs.impayes || ''));
@@ -6524,6 +6924,14 @@ function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave }){
                 </>
               )}
               <div><label>Mes dépenses propres</label><input type="number" value={depensesPropres} onChange={e=>setDepensesPropres(e.target.value)} style={{width:140}}/></div>
+              <div>
+                <label>Montant net reçu (Espèces)</label>
+                <div className="mono" style={{padding:'8px 10px', background:'var(--paper-2)', borderRadius:8, fontSize:13, fontWeight:600, minWidth:140}}>{fmtGNF(montantRecu ? montantRecu.especes : 0)}</div>
+              </div>
+              <div>
+                <label>Montant net reçu (Orange Money)</label>
+                <div className="mono" style={{padding:'8px 10px', background:'var(--paper-2)', borderRadius:8, fontSize:13, fontWeight:600, minWidth:140}}>{fmtGNF(montantRecu ? montantRecu.orangeMoney : 0)}</div>
+              </div>
               <button className="btn btn-sm" onClick={save}>{flash ? <><Icon name="check" size={13}/> Enregistré</> : 'Enreg.'}</button>
             </div>
             <p style={{fontSize:11, color:'var(--steam)', margin:'8px 0 0', lineHeight:1.4}}>
@@ -6597,6 +7005,24 @@ function DetailMensuelSiteView({ site, updateSite, employeId }){
 
   const donneesParMois = useMemo(() => calculerDonneesMensuellesSite(site, annee), [site, annee]);
 
+  // Montant réellement encaissé par CET employé (caissier), par mois, séparé Espèces / Orange Money
+  const montantRecuParMois = useMemo(() => {
+    const acc = {};
+    (site.commandes||[]).forEach(c => {
+      getPaiementsCommande(c).forEach(pmt => {
+        if(!pmt.date) return;
+        const employeAttribue = pmt.employeId != null ? pmt.employeId : (c.caissierEmpId || null);
+        if(employeAttribue !== employeId) return;
+        const mois = pmt.date.slice(0,7);
+        if(Number(mois.slice(0,4)) !== annee) return;
+        if(!acc[mois]) acc[mois] = { especes: 0, orangeMoney: 0 };
+        if(pmt.mode === 'Orange Money') acc[mois].orangeMoney += Number(pmt.montant);
+        else acc[mois].especes += Number(pmt.montant);
+      });
+    });
+    return acc;
+  }, [site, employeId, annee]);
+
   function saveMois(m, valeurs){
     const manuelActuel = site.detailMensuelManuel || {};
     const anneeActuelle = manuelActuel[annee] || {};
@@ -6647,7 +7073,7 @@ function DetailMensuelSiteView({ site, updateSite, employeId }){
           </thead>
           <tbody>
             {donneesParMois.map(m => (
-              <MoisRowCaissier key={m.mois} valeurs={m} avantSeuil={m.avantSeuil} employeId={employeId} monNom={monNom} onSave={saveMois} />
+              <MoisRowCaissier key={m.mois} valeurs={m} avantSeuil={m.avantSeuil} employeId={employeId} monNom={monNom} onSave={saveMois} montantRecu={montantRecuParMois[m.mois] || {especes:0, orangeMoney:0}} />
             ))}
             <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
               <td style={{...td, fontWeight:700}}>Total {annee}</td>
