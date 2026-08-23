@@ -6033,7 +6033,7 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
     return zone ? Number(zone.montant) : 0;
   }
 
-  function enregistrer(){
+    function enregistrer(){
     const montant = calculerMontant();
     if(montant <= 0 || !date) return;
     const zone = type === 'livraison' ? config.zones?.find(z=>z.id===zoneId) : null;
@@ -6050,7 +6050,17 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
       detail: type === 'repassage' ? detailRepassage : `Livraison — ${zone?.nom || ''}`,
       employeId: employeId || null,
     };
-    updateSite({ ...site, remunerations: [rem, ...remunerations] });
+    const empNom = (site.employes.find(e=>e.id===employeId)||{}).nom || 'Employé';
+    const dep = {
+      id: uid('dep_'),
+      date,
+      description: `Prestation ${type === 'repassage' ? 'repassage' : 'livraison'} — ${empNom} (${rem.detail})`,
+      montant,
+      categorie: 'Salaires',
+      modePaiement: 'Espèces',
+      autoPrestationId: rem.id,
+    };
+    updateSite({ ...site, remunerations: [rem, ...remunerations], depenses: [dep, ...(site.depenses||[])] });
     setSelectedArticles([]);
     setZoneId('');
   }
