@@ -3076,6 +3076,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
   const [newClientIndicatif, setNewClientIndicatif] = useState('+224');
   const [newClientTel, setNewClientTel] = useState('');
   const [lignes, setLignes] = useState([]);
+  const [dateDepot, setDateDepot] = useState(todayISO());
   const [dateRetrait, setDateRetrait] = useState('');
   const [notes, setNotes] = useState('');
   const [dateRdv, setDateRdv] = useState('');
@@ -3142,6 +3143,9 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
 
     const seq = site.seq;
     const montantAcompte = Number(acompte) || 0;
+    const now = new Date();
+    const heureActuelle = now.toTimeString().slice(0,8);
+    const dateCreationFinale = `${dateDepot || todayISO()}T${heureActuelle}`;
     const cmd = {
       id: uid('cmd_'),
       numero: ticketNumber(site.code, seq),
@@ -3152,13 +3156,13 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
       paiement: montantAcompte >= total ? 'paye' : 'impaye',
       acompte: montantAcompte,
       modePaiement: montantAcompte > 0 ? modePaiementDepot : null,
-      paiements: montantAcompte > 0 ? [{ id: uid('pmt_'), montant: montantAcompte, mode: modePaiementDepot, date: new Date().toISOString(), employeId: employeId || null }] : [],
+      paiements: montantAcompte > 0 ? [{ id: uid('pmt_'), montant: montantAcompte, mode: modePaiementDepot, date: dateCreationFinale, employeId: employeId || null }] : [],
       rabais: montantRabais,
       totalBrut: totalBrut,
       express: express,
       expressMajoration: express ? Number(expressMajoration)||0 : 0,
       montantExpress: montantExpress,
-      dateCreation: new Date().toISOString(),
+      dateCreation: dateCreationFinale,
       dateRetraitPrevue: dateRetrait || null,
       dateRdvRecuperation: dateRdv || (express ? todayISO() : null),
       heureRdvRecuperation: heureRdv || null,
@@ -3232,6 +3236,14 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
               </div>
               <button className="btn btn-ghost btn-sm" style={{gridColumn:'1/-1', justifySelf:'start'}} onClick={()=>setNewClientMode(false)}>← Choisir un client existant</button>
             </div>
+          )}
+        </div>
+
+        <div>
+          <label>Date de dépôt</label>
+          <input type="date" value={dateDepot} onChange={e=>setDateDepot(e.target.value)} max={todayISO()} style={{maxWidth:200}} />
+          {dateDepot !== todayISO() && (
+            <p style={{fontSize:11.5, color:'var(--warn)', margin:'4px 0 0'}}>⚠️ Date antérieure à aujourd'hui — utile pour rattraper une commande papier prise avant le lancement de l'app.</p>
           )}
         </div>
 
@@ -4645,7 +4657,6 @@ const CATEGORIES_DEPENSES_AFFICHAGE = ['Salaires', 'Électricité', 'Loyer', 'Li
 function DepensesView({ site, updateSite, db }){
   const [showNew, setShowNew] = useState(false);
   const [showPrestation, setShowPrestation] = useState(false);
-  const [showRepassage, setShowRepassage] = useState(false);
   const [typePeriode, setTypePeriode] = useState('mois'); // 'jour' | 'semaine' | 'mois' | 'annee'
   const [filterJour, setFilterJour] = useState(todayISO());
   const [filterMois, setFilterMois] = useState(todayISO().slice(0,7));
@@ -4741,7 +4752,6 @@ function DepensesView({ site, updateSite, db }){
       <PageHeader title="Dépenses" subtitle={`Total ${labelPeriode} : ${fmtGNF(totalMois)}`}
         right={
           <div style={{display:'flex', gap:8}}>
-            <button className="btn btn-sm" onClick={()=>setShowRepassage(v=>!v)}><Icon name="shirt" size={15}/> Suivi repassage</button>
             <button className="btn btn-sm" onClick={()=>setShowPrestation(true)}><Icon name="shirt" size={15}/> Livraison (par zone)</button>
             <button className="btn btn-rust" onClick={()=>setShowNew(true)}><Icon name="plus" size={15}/> Nouvelle dépense</button>
           </div>
@@ -4787,8 +4797,6 @@ function DepensesView({ site, updateSite, db }){
           )}
         </div>
       )}
-
-      {showRepassage && <RepassageApercuView site={site} updateSite={updateSite} />}
 
       {/* Résumé par catégorie */}
       {filtered.length > 0 && (
@@ -5988,12 +5996,90 @@ function ServicesEditor({ site, updateSite, db }){
 
 /* ===================== SUIVI REPASSAGE (espace caissier — lecture seule) ===================== */
 
+/* ===================== PAIEMENTS À CONFIRMER (espace repasseur) ===================== */
+
+function PaiementsAValiderView({ site, updateSite, employeId }){
+  const remunerations = site.remunerations || [];
+
+  const paiementsAValider = useMemo(() => {
+    return remunerations
+      .filter(r => r.employeId === employeId && r.statutPaiement === 'paye' && !r.valideParRepasseur)
+      .sort((a,b) => new Date(b.date) - new Date(a.date));
+  }, [remunerations, employeId]);
+
+  const paiementsConfirmes = useMemo(() => {
+    return remunerations
+      .filter(r => r.employeId === employeId && r.valideParRepasseur)
+      .sort((a,b) => new Date(b.dateValidationRepasseur||b.date) - new Date(a.dateValidationRepasseur||a.date))
+      .slice(0, 10);
+  }, [remunerations, employeId]);
+
+  function validerReception(rem){
+    const nextRemunerations = remunerations.map(r => r.id === rem.id
+      ? { ...r, valideParRepasseur: true, dateValidationRepasseur: new Date().toISOString() }
+      : r);
+    updateSite({ ...site, remunerations: nextRemunerations });
+  }
+
+  return (
+    <div>
+      <PageHeader title="Suivi repassage" subtitle="Confirmez les paiements reçus du caissier" />
+
+      {paiementsAValider.length === 0 ? (
+        <div className="card" style={{padding:'1.25rem', textAlign:'center', color:'var(--steam)', fontSize:13, marginBottom:20}}>
+          Aucun paiement en attente de confirmation.
+        </div>
+      ) : (
+        <div className="card" style={{padding:'1.25rem', marginBottom:20, borderColor:'var(--warn)'}}>
+          <h3 style={{margin:'0 0 4px', fontSize:15}}>💰 Paiements à confirmer</h3>
+          <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 12px'}}>Le caissier indique vous avoir payé — confirmez que vous avez bien reçu l'argent.</p>
+          <div style={{display:'grid', gap:8}}>
+            {paiementsAValider.map(r => (
+              <div key={r.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, padding:'10px 12px', background:'var(--warn-light)', borderRadius:8, flexWrap:'wrap'}}>
+                <div style={{fontSize:13}}>
+                  <span style={{fontWeight:600}}>{fmtGNF(r.montant)}</span> — {r.type === 'repassage' ? '👔 Repassage' : '🚗 Livraison'} du {fmtDate(r.date)}
+                  <span className="tag" style={{marginLeft:8, background: r.modePaiementRepasseur==='Orange Money' ? '#FFF3E0' : 'var(--pine-light)', color: r.modePaiementRepasseur==='Orange Money' ? '#E65100' : 'var(--pine)'}}>{r.modePaiementRepasseur}</span>
+                </div>
+                <button className="btn btn-rust btn-sm" onClick={()=>validerReception(r)}>J'ai bien reçu</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {paiementsConfirmes.length > 0 && (
+        <div>
+          <h3 style={{margin:'0 0 10px', fontSize:14, color:'var(--steam)'}}>Confirmés récemment</h3>
+          <div style={{display:'grid', gap:6}}>
+            {paiementsConfirmes.map(r => (
+              <div key={r.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 10px', background:'var(--paper-2)', borderRadius:8, fontSize:12.5}}>
+                <span>{fmtGNF(r.montant)} — {r.type === 'repassage' ? '👔 Repassage' : '🚗 Livraison'} du {fmtDate(r.date)} ({r.modePaiementRepasseur})</span>
+                <span className="tag" style={{background:'var(--pine-light)', color:'var(--pine)'}}>✓ Confirmé</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RepassageApercuView({ site, updateSite }){
   const [periode, setPeriode] = useState('jour');
   const [moisChoisi, setMoisChoisi] = useState(todayISO().slice(0,7));
   const [anneeChoisie, setAnneeChoisie] = useState(Number(todayISO().slice(0,4)));
   const [modeChoisi, setModeChoisi] = useState({});
   const today = todayISO();
+
+  const getWeekDates = () => {
+    const d = new Date(today + 'T00:00:00');
+    const day = d.getDay() || 7;
+    const monday = new Date(d); monday.setDate(d.getDate() - day + 1);
+    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+    const toISO = (dt) => dt.toISOString().slice(0,10);
+    return { start: toISO(monday), end: toISO(sunday) };
+  };
+  const semaine = getWeekDates();
 
   const repassages = useMemo(() => (site.remunerations||[]).filter(r => r.type === 'repassage'), [site.remunerations]);
 
@@ -6011,9 +6097,10 @@ function RepassageApercuView({ site, updateSite }){
 
   const filtres = useMemo(() => {
     if(periode === 'jour') return repassages.filter(r => (r.date||'').slice(0,10) === today);
+    if(periode === 'semaine') return repassages.filter(r => { const d=(r.date||'').slice(0,10); return d >= semaine.start && d <= semaine.end; });
     if(periode === 'mois') return repassages.filter(r => r.date.slice(0,7) === moisChoisi);
     return repassages.filter(r => Number(r.date.slice(0,4)) === anneeChoisie);
-  }, [repassages, periode, today, moisChoisi, anneeChoisie]);
+  }, [repassages, periode, today, semaine, moisChoisi, anneeChoisie]);
 
   const parRepasseur = useMemo(() => {
     const acc = {};
@@ -6034,32 +6121,43 @@ function RepassageApercuView({ site, updateSite }){
         });
       }
     });
-    Object.values(acc).forEach(p => p.entrees.sort((a,b) => new Date(b.date) - new Date(a.date)));
+    Object.values(acc).forEach(p => {
+      p.entrees.sort((a,b) => new Date(b.date) - new Date(a.date));
+      p.nonPayees = p.entrees.filter(r => r.statutPaiement !== 'paye');
+      p.payees = p.entrees.filter(r => r.statutPaiement === 'paye');
+      p.totalNonPaye = p.nonPayees.reduce((s,r)=>s+Number(r.montant),0);
+      p.totalPaye = p.payees.reduce((s,r)=>s+Number(r.montant),0);
+      p.totalConfirme = p.payees.filter(r=>r.valideParRepasseur).length;
+    });
     return acc;
   }, [filtres, site.employes]);
 
-  function marquerPaye(rem, mode){
-    const nextRemunerations = (site.remunerations||[]).map(r => r.id === rem.id
-      ? { ...r, statutPaiement: 'paye', modePaiementRepasseur: mode, datePaiement: new Date().toISOString() }
+  function marquerPayeGroupe(empId, mode){
+    const p = parRepasseur[empId];
+    if(!p || p.nonPayees.length === 0) return;
+    const idsAPayer = new Set(p.nonPayees.map(r=>r.id));
+    const nowISO = new Date().toISOString();
+    const nextRemunerations = (site.remunerations||[]).map(r => idsAPayer.has(r.id)
+      ? { ...r, statutPaiement: 'paye', modePaiementRepasseur: mode, datePaiement: nowISO }
       : r);
     updateSite({ ...site, remunerations: nextRemunerations });
   }
 
   const totalGeneral = filtres.reduce((s,r)=>s+Number(r.montant),0);
   const totalArticlesGeneral = Object.values(parRepasseur).reduce((s,p)=>s+p.totalArticles,0);
-  const periodeLabel = periode==='jour' ? "Aujourd'hui" : periode==='mois' ? 'Ce mois' : 'Cette année';
+  const periodeLabel = periode==='jour' ? "Aujourd'hui" : periode==='semaine' ? 'Cette semaine' : periode==='mois' ? 'Ce mois' : 'Cette année';
   const repasseurIds = Object.keys(parRepasseur);
 
   return (
     <div className="card" style={{padding:'1.5rem', marginBottom:20}}>
       <h3 style={{margin:'0 0 4px', fontSize:15}}>👔 Suivi repassage</h3>
-      <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px'}}>Articles repassés, totaux, et paiement des repasseurs</p>
+      <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px'}}>Articles repassés, totaux, et paiement des repasseurs — groupé par période</p>
 
       <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
-        {['jour','mois','annee'].map(v => (
+        {['jour','semaine','mois','annee'].map(v => (
           <button key={v} className="btn btn-sm" onClick={()=>setPeriode(v)}
             style={{background:periode===v?'var(--pine)':'transparent', color:periode===v?'var(--white)':'var(--ink)', borderColor:periode===v?'var(--pine)':'var(--line-strong)'}}>
-            {v === 'jour' ? "Aujourd'hui" : v === 'mois' ? 'Ce mois' : 'Cette année'}
+            {v === 'jour' ? "Aujourd'hui" : v === 'semaine' ? 'Cette semaine' : v === 'mois' ? 'Ce mois' : 'Cette année'}
           </button>
         ))}
         {periode === 'mois' && (
@@ -6086,6 +6184,7 @@ function RepassageApercuView({ site, updateSite }){
       ) : repasseurIds.map(empId => {
         const p = parRepasseur[empId];
         const articlesList = Object.entries(p.articles);
+        const modeSel = modeChoisi[empId] || 'Espèces';
         return (
           <div key={empId} className="card" style={{padding:'1.25rem', marginBottom:14}}>
             <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10}}>
@@ -6103,46 +6202,38 @@ function RepassageApercuView({ site, updateSite }){
               </div>
             )}
 
-            <div style={{fontSize:12, color:'var(--steam)', marginBottom:6, fontWeight:600, textTransform:'uppercase'}}>Paiement de ce repasseur</div>
-            <div style={{display:'grid', gap:8}}>
-              {p.entrees.map(r => {
-                const key = r.id;
-                const modeSel = modeChoisi[key] || 'Espèces';
-                return (
-                  <div key={key} style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, padding:'8px 10px', background:'var(--paper-2)', borderRadius:8, flexWrap:'wrap'}}>
-                    <div style={{fontSize:12.5}}>
-                      <span style={{color:'var(--steam)'}}>{fmtDate(r.date)}</span> — <span className="mono" style={{fontWeight:600}}>{fmtGNF(r.montant)}</span>
-                    </div>
-                    {r.statutPaiement === 'paye' ? (
-                      <div style={{display:'flex', alignItems:'center', gap:6}}>
-                        <span className="tag" style={{background: r.modePaiementRepasseur==='Orange Money' ? '#FFF3E0' : 'var(--pine-light)', color: r.modePaiementRepasseur==='Orange Money' ? '#E65100' : 'var(--pine)'}}>
-                          ✓ Payé — {r.modePaiementRepasseur}
-                        </span>
-                        {r.valideParRepasseur ? (
-                          <span className="tag" style={{background:'var(--pine-light)', color:'var(--pine)'}}>✓ Confirmé par le repasseur</span>
-                        ) : (
-                          <span className="tag" style={{background:'var(--warn-light)', color:'var(--warn)'}}>En attente de confirmation</span>
-                        )}
-                      </div>
-                    ) : (
-                      <div style={{display:'flex', alignItems:'center', gap:6}}>
-                        <select value={modeSel} onChange={e=>setModeChoisi(prev=>({...prev, [key]: e.target.value}))} style={{width:'auto', fontSize:12.5, padding:'4px 8px'}}>
-                          <option value="Espèces">Espèces</option>
-                          <option value="Orange Money">Orange Money</option>
-                        </select>
-                        <button className="btn btn-sm" onClick={()=>marquerPaye(r, modeSel)}>Marquer payé</button>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+            <div style={{fontSize:12, color:'var(--steam)', marginBottom:6, fontWeight:600, textTransform:'uppercase'}}>Paiement — {periodeLabel}</div>
+
+            {p.totalPaye > 0 && (
+              <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:8, flexWrap:'wrap'}}>
+                <span className="tag" style={{background:'var(--pine-light)', color:'var(--pine)'}}>✓ Déjà payé : {fmtGNF(p.totalPaye)}</span>
+                <span style={{fontSize:12, color:'var(--steam)'}}>({p.totalConfirme}/{p.payees.length} confirmé(s) par le repasseur)</span>
+              </div>
+            )}
+
+            {p.nonPayees.length > 0 ? (
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, padding:'10px 12px', background:'var(--warn-light)', borderRadius:8, flexWrap:'wrap'}}>
+                <div style={{fontSize:13}}>
+                  <span style={{fontWeight:600}}>{fmtGNF(p.totalNonPaye)}</span> à payer ({p.nonPayees.length} prestation(s) — {periodeLabel.toLowerCase()})
+                </div>
+                <div style={{display:'flex', alignItems:'center', gap:6}}>
+                  <select value={modeSel} onChange={e=>setModeChoisi(prev=>({...prev, [empId]: e.target.value}))} style={{width:'auto', fontSize:12.5, padding:'4px 8px'}}>
+                    <option value="Espèces">Espèces</option>
+                    <option value="Orange Money">Orange Money</option>
+                  </select>
+                  <button className="btn btn-rust btn-sm" onClick={()=>marquerPayeGroupe(empId, modeSel)}>Marquer {periodeLabel.toLowerCase()} payé</button>
+                </div>
+              </div>
+            ) : (
+              <p style={{fontSize:12.5, color:'var(--steam)', margin:0}}>Tout est payé pour cette période.</p>
+            )}
           </div>
         );
       })}
     </div>
   );
 }
+
 
 function MesEncaissementsView({ site, employeId }){
   const [periode, setPeriode] = useState('jour');
@@ -6298,20 +6389,6 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
   // Filtrer uniquement les repassages DE CET EMPLOYÉ
   const repassageOnly = remunerations.filter(r => r.type === 'repassage' && r.employeId === employeId);
 
-  // Paiements marqués "payé" par le caissier, en attente de confirmation de réception par CET employé (tous types)
-  const paiementsAValider = useMemo(() => {
-    return remunerations
-      .filter(r => r.employeId === employeId && r.statutPaiement === 'paye' && !r.valideParRepasseur)
-      .sort((a,b) => new Date(b.date) - new Date(a.date));
-  }, [remunerations, employeId]);
-
-  function validerReception(rem){
-    const nextRemunerations = remunerations.map(r => r.id === rem.id
-      ? { ...r, valideParRepasseur: true, dateValidationRepasseur: new Date().toISOString() }
-      : r);
-    updateSite({ ...site, remunerations: nextRemunerations });
-  }
-
   // Bilan journalier
   const bilanJour = useMemo(() => {
     const rems = repassageOnly.filter(r => (r.date||'').slice(0,10) === today);
@@ -6452,24 +6529,6 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
   return (
     <div>
       <PageHeader title={`Ma rémunération${monProfil ? ` — ${monProfil.nom}` : ''}`} subtitle={`Total ${formatMoisAnnee(filterMois)} : ${fmtGNF(totalMois)}`} />
-
-      {paiementsAValider.length > 0 && (
-        <div className="card" style={{padding:'1.25rem', marginBottom:20, borderColor:'var(--warn)'}}>
-          <h3 style={{margin:'0 0 4px', fontSize:15}}>💰 Paiements à confirmer</h3>
-          <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 12px'}}>Le caissier indique vous avoir payé — confirmez que vous avez bien reçu l'argent.</p>
-          <div style={{display:'grid', gap:8}}>
-            {paiementsAValider.map(r => (
-              <div key={r.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, padding:'10px 12px', background:'var(--warn-light)', borderRadius:8, flexWrap:'wrap'}}>
-                <div style={{fontSize:13}}>
-                  <span style={{fontWeight:600}}>{fmtGNF(r.montant)}</span> — {r.type === 'repassage' ? '👔 Repassage' : '🚗 Livraison'} du {fmtDate(r.date)}
-                  <span className="tag" style={{marginLeft:8, background: r.modePaiementRepasseur==='Orange Money' ? '#FFF3E0' : 'var(--pine-light)', color: r.modePaiementRepasseur==='Orange Money' ? '#E65100' : 'var(--pine)'}}>{r.modePaiementRepasseur}</span>
-                </div>
-                <button className="btn btn-rust btn-sm" onClick={()=>validerReception(r)}>J'ai bien reçu</button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20}}>
         <StatCard label="Total ce mois" value={fmtGNF(totalMois)} icon="euro" />
@@ -6868,28 +6927,35 @@ function RepasseurView({ site, updateSite, employeId }){
 /* ===================== DETAIL MENSUEL (espace caissier — vue par site) ===================== */
 
 function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave, montantRecu }){
-  const mesValeurs = (valeurs.parEmploye && valeurs.parEmploye[employeId]) || { recetteBrute: 0, depenses: 0, impayes: 0, depensesPropres: 0 };
+  const mesValeurs = (valeurs.parEmploye && valeurs.parEmploye[employeId]) || { recetteBrute: 0, depenses: 0, impayes: 0, depensesPropres: 0, montantRecuEspeces: 0, montantRecuOrangeMoney: 0 };
   const [recetteBrute, setRecetteBrute] = useState(String(mesValeurs.recetteBrute || ''));
-  const [impayes, setImpayes] = useState(String(mesValeurs.impayes || ''));
   const [depenses, setDepenses] = useState(String(mesValeurs.depenses || ''));
   const [depensesPropres, setDepensesPropres] = useState(String(mesValeurs.depensesPropres || ''));
+  const [montantRecuEspeces, setMontantRecuEspeces] = useState(String(mesValeurs.montantRecuEspeces || ''));
+  const [montantRecuOrangeMoney, setMontantRecuOrangeMoney] = useState(String(mesValeurs.montantRecuOrangeMoney || ''));
   const [ouvert, setOuvert] = useState(false);
   const [flash, setFlash] = useState(false);
 
   useEffect(() => {
-    const mv = (valeurs.parEmploye && valeurs.parEmploye[employeId]) || { recetteBrute: 0, depenses: 0, impayes: 0, depensesPropres: 0 };
+    const mv = (valeurs.parEmploye && valeurs.parEmploye[employeId]) || { recetteBrute: 0, depenses: 0, impayes: 0, depensesPropres: 0, montantRecuEspeces: 0, montantRecuOrangeMoney: 0 };
     setRecetteBrute(mv.recetteBrute ? String(mv.recetteBrute) : '');
-    setImpayes(mv.impayes ? String(mv.impayes) : '');
     setDepenses(mv.depenses ? String(mv.depenses) : '');
     setDepensesPropres(mv.depensesPropres ? String(mv.depensesPropres) : '');
+    setMontantRecuEspeces(mv.montantRecuEspeces ? String(mv.montantRecuEspeces) : '');
+    setMontantRecuOrangeMoney(mv.montantRecuOrangeMoney ? String(mv.montantRecuOrangeMoney) : '');
   }, [valeurs.mois, employeId]);
+
+  // Impayés = ce qui reste de la recette brute une fois les deux nets (Espèces + Orange Money) déduits
+  const impayesCalcule = Math.max(0, (Number(recetteBrute)||0) - ((Number(montantRecuEspeces)||0) + (Number(montantRecuOrangeMoney)||0)));
 
   function save(){
     onSave(valeurs.mois, {
       recetteBrute: Number(recetteBrute)||0,
-      impayes: Number(impayes)||0,
+      impayes: impayesCalcule,
       depenses: Number(depenses)||0,
       depensesPropres: Number(depensesPropres)||0,
+      montantRecuEspeces: Number(montantRecuEspeces)||0,
+      montantRecuOrangeMoney: Number(montantRecuOrangeMoney)||0,
     });
     setFlash(true);
     setTimeout(()=>setFlash(false), 1200);
@@ -6919,23 +6985,35 @@ function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave, monta
               {avantSeuil && (
                 <>
                   <div><label>Ma recette brute</label><input type="number" value={recetteBrute} onChange={e=>setRecetteBrute(e.target.value)} style={{width:140}}/></div>
-                  <div><label>Mes impayés</label><input type="number" value={impayes} onChange={e=>setImpayes(e.target.value)} style={{width:140}}/></div>
                   <div><label>Dépenses entreprise (moi)</label><input type="number" value={depenses} onChange={e=>setDepenses(e.target.value)} style={{width:140}}/></div>
                 </>
               )}
               <div><label>Mes dépenses propres</label><input type="number" value={depensesPropres} onChange={e=>setDepensesPropres(e.target.value)} style={{width:140}}/></div>
-              <div>
-                <label>Montant net reçu (Espèces)</label>
-                <div className="mono" style={{padding:'8px 10px', background:'var(--paper-2)', borderRadius:8, fontSize:13, fontWeight:600, minWidth:140}}>{fmtGNF(montantRecu ? montantRecu.especes : 0)}</div>
-              </div>
-              <div>
-                <label>Montant net reçu (Orange Money)</label>
-                <div className="mono" style={{padding:'8px 10px', background:'var(--paper-2)', borderRadius:8, fontSize:13, fontWeight:600, minWidth:140}}>{fmtGNF(montantRecu ? montantRecu.orangeMoney : 0)}</div>
-              </div>
+              {avantSeuil ? (
+                <>
+                  <div><label>Montant net reçu (Espèces)</label><input type="number" value={montantRecuEspeces} onChange={e=>setMontantRecuEspeces(e.target.value)} style={{width:140}}/></div>
+                  <div><label>Montant net reçu (Orange Money)</label><input type="number" value={montantRecuOrangeMoney} onChange={e=>setMontantRecuOrangeMoney(e.target.value)} style={{width:140}}/></div>
+                  <div>
+                    <label>Mes impayés (calculé)</label>
+                    <div className="mono" style={{padding:'8px 10px', background:'var(--paper-2)', borderRadius:8, fontSize:13, fontWeight:600, minWidth:140, color: impayesCalcule>0?'var(--danger)':'var(--ink)'}}>{fmtGNF(impayesCalcule)}</div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label>Montant net reçu (Espèces)</label>
+                    <div className="mono" style={{padding:'8px 10px', background:'var(--paper-2)', borderRadius:8, fontSize:13, fontWeight:600, minWidth:140}}>{fmtGNF(montantRecu ? montantRecu.especes : 0)}</div>
+                  </div>
+                  <div>
+                    <label>Montant net reçu (Orange Money)</label>
+                    <div className="mono" style={{padding:'8px 10px', background:'var(--paper-2)', borderRadius:8, fontSize:13, fontWeight:600, minWidth:140}}>{fmtGNF(montantRecu ? montantRecu.orangeMoney : 0)}</div>
+                  </div>
+                </>
+              )}
               <button className="btn btn-sm" onClick={save}>{flash ? <><Icon name="check" size={13}/> Enregistré</> : 'Enreg.'}</button>
             </div>
             <p style={{fontSize:11, color:'var(--steam)', margin:'8px 0 0', lineHeight:1.4}}>
-              « Dépenses entreprise » = dépenses du pressing (fournitures, factures...). « Dépenses propres » = vos dépenses personnelles, toujours modifiables peu importe le mois.
+              « Dépenses entreprise » = dépenses du pressing (fournitures, factures...). « Dépenses propres » = vos dépenses personnelles, toujours modifiables peu importe le mois. « Mes impayés » = Recette brute − (Net Espèces + Net Orange Money), calculé automatiquement.
             </p>
           </td>
         </tr>
@@ -7241,10 +7319,12 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
         { key:'repassage', label:'Repassage', icon:'shirt' },
         { key:'agenda', label:'Agenda du jour', icon:'clock' },
         { key:'remuneration', label:'Ma rémunération', icon:'chart' },
+        { key:'suiviRepassage', label:'Suivi repassage', icon:'euro' },
       ]} active={page} onNav={setPage} onLogout={onLogout}>
         {page === 'repassage' && <RepasseurView site={site} updateSite={updateSite} employeId={employeId} />}
         {page === 'agenda' && <AgendaView site={site} />}
         {page === 'remuneration' && <RemunerationView site={site} updateSite={updateSite} db={db} siteId={siteId} employeId={employeId} />}
+        {page === 'suiviRepassage' && <PaiementsAValiderView site={site} updateSite={updateSite} employeId={employeId} />}
       </Shell>
     );
   }
@@ -7260,6 +7340,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
     { key:'detailMensuel', label:'Détail mensuel', icon:'chart' },
     { key:'encaissements', label:'Mes encaissements', icon:'euro' },
     { key:'remuneration', label:'Ma rémunération', icon:'chart' },
+    { key:'suiviRepassage', label:'Suivi repassage', icon:'euro' },
   ];
   return (
     <Shell title={site.nom} role={`${monProfil ? monProfil.nom + ' — ' : ''}${monProfil ? monProfil.role : 'Espace employé'}`} navItems={navItems} active={page} onNav={setPage} onLogout={onLogout}>
@@ -7272,6 +7353,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
       {page === 'detailMensuel' && <DetailMensuelSiteView site={site} updateSite={updateSite} employeId={employeId} />}
       {page === 'encaissements' && <MesEncaissementsView site={site} employeId={employeId} />}
       {page === 'remuneration' && <RemunerationView site={site} updateSite={updateSite} db={db} siteId={siteId} employeId={employeId} />}
+      {page === 'suiviRepassage' && <RepassageApercuView site={site} updateSite={updateSite} />}
     </Shell>
   );
 }
