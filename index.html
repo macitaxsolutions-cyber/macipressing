@@ -2847,17 +2847,34 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
         if(articlesRepasses.length > 0){
           const montantRepasseur = articlesRepasses.reduce((s,a)=>s+(a.prix*a.qte),0);
           const detailRepasseur = articlesRepasses.map(a=>`${a.qte}x ${a.nom} (${fmtGNF(a.prix)})`).join(', ');
+          const clientNomRem = client ? client.nom : 'Client inconnu';
+          const ticketSuffixRem = cmd.numero.slice(-4);
           const rem = {
             id: uid('rem_'),
             date: todayISO(),
             type: 'repassage',
             montant: montantRepasseur,
             detail: detailRepasseur,
+            commandeId: cmd.id,
             commandeNumero: cmd.numero,
+            clientNom: clientNomRem,
+            ticketSuffix: ticketSuffixRem,
             employeId: employeId || null,
             auto: true,
           };
+          const empNomRem = (site.employes.find(e=>e.id===employeId)||{}).nom || 'Employé';
+          const depRem = {
+            id: uid('dep_'),
+            date: rem.date,
+            description: `Prestation repassage — ${clientNomRem} (#${ticketSuffixRem}) — ${empNomRem}`,
+            montant: montantRepasseur,
+            categorie: 'Paiement',
+            modePaiement: 'Espèces',
+            autoPrestationId: rem.id,
+            saisiPar: employeId || null,
+          };
           nextSite.remunerations = [rem, ...(nextSite.remunerations||[])];
+          nextSite.depenses = [depRem, ...(nextSite.depenses||[])];
         }
       }
     }
@@ -4845,19 +4862,51 @@ function DepensesView({ site, updateSite, db, employeId }){
 
       {/* Liste des dépenses */}
       {(() => {
+        const commandesPourAssociation = [...(site.commandes||[])]
+          .sort((a,b) => new Date(b.dateCreation) - new Date(a.dateCreation))
+          .slice(0, 150)
+          .map(c => ({ id: c.id, numero: c.numero, clientNom: (site.clients.find(cl=>cl.id===c.clientId)||{}).nom || 'Client inconnu' }));
+
+        function statutConfirmation(rem){
+          if(!rem) return null;
+          if(rem.statutPaiement !== 'paye') return { label: 'Non payé', color: 'var(--steam)', bg: 'var(--paper-2)' };
+          return rem.valideParRepasseur
+            ? { label: '✓ Confirmé', color: 'var(--pine)', bg: 'var(--pine-light)' }
+            : { label: 'Non confirmé', color: 'var(--warn)', bg: 'var(--warn-light)' };
+        }
+
+        function associerCommande(remId, cmdId){
+          const cmd = commandesPourAssociation.find(c => c.id === cmdId);
+          if(!cmd) return;
+          const nextRemunerations = remunerations.map(r => r.id === remId
+            ? { ...r, commandeId: cmd.id, clientNom: cmd.clientNom, ticketSuffix: cmd.numero.slice(-4) }
+            : r);
+          updateSite({ ...site, remunerations: nextRemunerations });
+        }
+
         const lignesBrutes = [
-          ...filtered.map(d => ({
-            id: d.id, date: d.date, description: d.description,
-            categorie: categorieAffichee(d, remunerations), mode: d.modePaiement || 'Espèces',
-            saisiParNom: d.saisiPar ? ((site.employes.find(e=>e.id===d.saisiPar)||{}).nom || 'Employé supprimé') : 'Gérant',
-            montant: Number(d.montant), original: d, isOrphan: false,
-          })),
-          ...remunerationsOrphelines.map(r => ({
-            id: r.id, date: r.date,
-            description: `Prestation ${r.type === 'repassage' ? 'repassage' : 'livraison'} — ${(site.employes.find(e=>e.id===r.employeId)||{}).nom || 'Employé'}`,
-            categorie: r.type === 'repassage' ? 'Paiement' : 'Livraison', mode: r.modePaiementRepasseur || 'Espèces',
-            saisiParNom: '—', montant: Number(r.montant), original: r, isOrphan: true,
-          })),
+          ...filtered.map(d => {
+            const remLiee = d.autoPrestationId ? remunerations.find(r => r.id === d.autoPrestationId) : null;
+            return {
+              id: d.id, date: d.date, description: d.description,
+              categorie: categorieAffichee(d, remunerations), mode: d.modePaiement || 'Espèces',
+              saisiParNom: d.saisiPar ? ((site.employes.find(e=>e.id===d.saisiPar)||{}).nom || 'Employé supprimé') : 'Gérant',
+              montant: Number(d.montant), original: d, isOrphan: false,
+              confirmation: statutConfirmation(remLiee), remLieeId: remLiee ? remLiee.id : null,
+            };
+          }),
+          ...remunerationsOrphelines.map(r => {
+            const empNom = (site.employes.find(e=>e.id===r.employeId)||{}).nom || 'Employé';
+            const description = r.commandeId
+              ? `Prestation ${r.type === 'repassage' ? 'repassage' : 'livraison'} — ${r.clientNom} (#${r.ticketSuffix}) — ${empNom}`
+              : `Prestation ${r.type === 'repassage' ? 'repassage' : 'livraison'} — ${empNom}`;
+            return {
+              id: r.id, date: r.date, description,
+              categorie: r.type === 'repassage' ? 'Paiement' : 'Livraison', mode: r.modePaiementRepasseur || 'Espèces',
+              saisiParNom: '—', montant: Number(r.montant), original: r, isOrphan: true,
+              confirmation: statutConfirmation(r), remLieeId: r.id, aBesoinAssociation: r.type === 'repassage' && !r.commandeId,
+            };
+          }),
         ];
         const categoriesDispo = [...new Set(lignesBrutes.map(l=>l.categorie))].sort();
         const saisiParDispo = [...new Set(lignesBrutes.map(l=>l.saisiParNom))].sort();
@@ -4882,8 +4931,8 @@ function DepensesView({ site, updateSite, db, employeId }){
         const thTriable = (col, label) => (
           <th style={{...th, cursor:'pointer', userSelect:'none'}} onClick={()=>trierPar(col)}>{label}{flecheTri(col)}</th>
         );
-        const EXPORT_HEADERS = ['Date','Description','Catégorie','Mode','Saisi par','Montant'];
-        const exportRows = lignesTableau.map(l => [fmtDate(l.date), l.description, l.categorie, l.mode, l.saisiParNom, Math.round(l.montant)]);
+        const EXPORT_HEADERS = ['Date','Description','Catégorie','Mode','Saisi par','Confirmation','Montant'];
+        const exportRows = lignesTableau.map(l => [fmtDate(l.date), l.description, l.categorie, l.mode, l.saisiParNom, l.confirmation ? l.confirmation.label.replace('✓ ','') : '', Math.round(l.montant)]);
 
         return (
         <>
@@ -4920,13 +4969,14 @@ function DepensesView({ site, updateSite, db, employeId }){
               {thTriable('categorie', 'Catégorie')}
               {thTriable('mode', 'Mode')}
               {thTriable('saisiParNom', 'Saisi par')}
+              <th style={th}>Confirmation</th>
               {thTriable('montant', 'Montant')}
               <th style={th}></th>
             </tr>
           </thead>
           <tbody>
             {lignesTableau.length === 0 && (
-              <tr><td colSpan={6} style={{...td, textAlign:'center', color:'var(--steam)', padding:'2rem'}}>Aucune dépense enregistrée pour ce mois.</td></tr>
+              <tr><td colSpan={7} style={{...td, textAlign:'center', color:'var(--steam)', padding:'2rem'}}>Aucune dépense enregistrée pour ce mois.</td></tr>
             )}
             {lignesTableau.map(l => (
               <tr key={l.id} style={{borderTop:'1px solid var(--line)'}}>
@@ -4934,10 +4984,25 @@ function DepensesView({ site, updateSite, db, employeId }){
                 <td style={td}>
                   {l.description}
                   {l.isOrphan && <span className="tag" style={{marginLeft:6, fontSize:9.5, background:'var(--warn-light)', color:'var(--warn)'}}>Historique</span>}
+                  {l.aBesoinAssociation && (
+                    <div style={{marginTop:4}}>
+                      <select defaultValue="" onChange={e=>{ if(e.target.value) associerCommande(l.remLieeId, e.target.value); }} style={{fontSize:11.5, padding:'3px 6px', width:'auto'}}>
+                        <option value="" disabled>🔗 Associer à un client/ticket…</option>
+                        {commandesPourAssociation.map(c => (
+                          <option key={c.id} value={c.id}>{c.numero} — {c.clientNom}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                 </td>
                 <td style={td}><span className="tag tag-recu">{l.categorie}</span></td>
                 <td style={td}>{l.mode}</td>
                 <td style={{...td, color:'var(--steam)'}}>{l.saisiParNom}</td>
+                <td style={td}>
+                  {l.confirmation && (
+                    <span className="tag" style={{background:l.confirmation.bg, color:l.confirmation.color}}>{l.confirmation.label}</span>
+                  )}
+                </td>
                 <td style={{...td, color:'var(--danger)', fontWeight:600}} className="mono">{fmtGNF(l.montant)}</td>
                 <td style={{...td, textAlign:'right'}}>
                   {!l.isOrphan && (
@@ -4955,7 +5020,7 @@ function DepensesView({ site, updateSite, db, employeId }){
             ))}
             {lignesTableau.length > 0 && (
               <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
-                <td colSpan={5} style={{...td, fontWeight:700}}>Total {(filtreCategorie!=='toutes'||filtreMode!=='tous'||filtreSaisiPar!=='tous') ? '(filtré)' : labelPeriode}</td>
+                <td colSpan={6} style={{...td, fontWeight:700}}>Total {(filtreCategorie!=='toutes'||filtreMode!=='tous'||filtreSaisiPar!=='tous') ? '(filtré)' : labelPeriode}</td>
                 <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(lignesTableau.reduce((s,l)=>s+l.montant,0))}</td>
                 <td></td>
               </tr>
@@ -6464,12 +6529,20 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
   const [date, setDate] = useState(todayISO());
   const [selectedArticles, setSelectedArticles] = useState([]);
   const [zoneId, setZoneId] = useState('');
+  const [commandeId, setCommandeId] = useState('');
   const [filterMois, setFilterMois] = useState(todayISO().slice(0,7));
   const [bilanView, setBilanView] = useState('jour');
 
   const config = site.configRemuneration || { tarifsRepassage: [], zones: [] };
   const tarifsRepassage = config.tarifsRepassage || [];
   const remunerations = site.remunerations || [];
+
+  const commandesDisponibles = useMemo(() => {
+    return [...(site.commandes||[])]
+      .sort((a,b) => new Date(b.dateCreation) - new Date(a.dateCreation))
+      .slice(0, 100)
+      .map(c => ({ id: c.id, numero: c.numero, clientNom: (site.clients.find(cl=>cl.id===c.clientId)||{}).nom || 'Client inconnu' }));
+  }, [site.commandes, site.clients]);
 
   // Nom de l'employé connecté
   const monProfil = employeId ? site.employes.find(e=>e.id===employeId) : null;
@@ -6595,7 +6668,9 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
     function enregistrer(){
     const montant = calculerMontant();
     if(montant <= 0 || !date) return;
+    if(type === 'repassage' && !commandeId) return;
     const zone = type === 'livraison' ? config.zones?.find(z=>z.id===zoneId) : null;
+    const commandeChoisie = type === 'repassage' ? commandesDisponibles.find(c=>c.id===commandeId) : null;
     const detailRepassage = selectedArticles.map(a => {
       const t = tarifsRepassage.find(t=>t.id===a.tarifId);
       return t ? `${a.qte}x ${t.nom} (${fmtGNF(t.prix)})` : '';
@@ -6608,12 +6683,18 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
       montant,
       detail: type === 'repassage' ? detailRepassage : `Livraison — ${zone?.nom || ''}`,
       employeId: employeId || null,
+      commandeId: type === 'repassage' ? commandeId : null,
+      clientNom: commandeChoisie ? commandeChoisie.clientNom : null,
+      ticketSuffix: commandeChoisie ? commandeChoisie.numero.slice(-4) : null,
     };
     const empNom = (site.employes.find(e=>e.id===employeId)||{}).nom || 'Employé';
+    const descriptionRepassage = commandeChoisie
+      ? `Prestation repassage — ${commandeChoisie.clientNom} (#${commandeChoisie.numero.slice(-4)}) — ${empNom}`
+      : `Prestation repassage — ${empNom} (${rem.detail})`;
     const dep = {
       id: uid('dep_'),
       date,
-      description: `Prestation ${type === 'repassage' ? 'repassage' : 'livraison'} — ${empNom} (${rem.detail})`,
+      description: type === 'repassage' ? descriptionRepassage : `Prestation livraison — ${empNom} (${rem.detail})`,
       montant,
       categorie: type === 'repassage' ? 'Paiement' : 'Livraison',
       modePaiement: 'Espèces',
@@ -6623,6 +6704,7 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
     updateSite({ ...site, remunerations: [rem, ...remunerations], depenses: [dep, ...(site.depenses||[])] });
     setSelectedArticles([]);
     setZoneId('');
+    setCommandeId('');
   }
 
   const montantPreview = calculerMontant();
@@ -6656,6 +6738,19 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
             <label>Date</label>
             <input type="date" value={date} onChange={e=>setDate(e.target.value)} max={todayISO()} />
           </div>
+
+          {type === 'repassage' && (
+            <div style={{gridColumn:'1/-1'}}>
+              <label>Commande / Client <span style={{color:'var(--danger)'}}>*</span></label>
+              <select value={commandeId} onChange={e=>setCommandeId(e.target.value)}>
+                <option value="">Choisir la commande concernée…</option>
+                {commandesDisponibles.map(c => (
+                  <option key={c.id} value={c.id}>{c.numero} — {c.clientNom}</option>
+                ))}
+              </select>
+              {!commandeId && <p style={{fontSize:11.5, color:'var(--warn)', margin:'4px 0 0'}}>Obligatoire — sélectionne le ticket du client concerné.</p>}
+            </div>
+          )}
 
           {type === 'repassage' ? (
             <div>
@@ -6722,7 +6817,7 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
               </div>
             )}
             <button className="btn btn-rust" style={{width:'100%'}}
-              disabled={montantPreview <= 0}
+              disabled={montantPreview <= 0 || (type === 'repassage' && !commandeId)}
               onClick={enregistrer}>
               Enregistrer
             </button>
@@ -6945,8 +7040,23 @@ function RepasseurView({ site, updateSite, employeId }){
       if(articlesRepasses.length > 0){
         const montant = articlesRepasses.reduce((s,a)=>s+(a.prix*a.qte),0);
         const detail = articlesRepasses.map(a=>`${a.qte}x ${a.nom} (${fmtGNF(a.prix)})`).join(', ');
-        const rem = { id: uid('rem_'), date: todayISO(), type:'repassage', montant, detail, commandeNumero: cmd.numero, employeId, auto: true };
+        const client = site.clients.find(c => c.id === cmd.clientId);
+        const clientNomRem = client ? client.nom : 'Client inconnu';
+        const ticketSuffixRem = cmd.numero.slice(-4);
+        const rem = { id: uid('rem_'), date: todayISO(), type:'repassage', montant, detail, commandeId: cmd.id, commandeNumero: cmd.numero, clientNom: clientNomRem, ticketSuffix: ticketSuffixRem, employeId, auto: true };
+        const empNomRem = (site.employes.find(e=>e.id===employeId)||{}).nom || 'Employé';
+        const depRem = {
+          id: uid('dep_'),
+          date: rem.date,
+          description: `Prestation repassage — ${clientNomRem} (#${ticketSuffixRem}) — ${empNomRem}`,
+          montant,
+          categorie: 'Paiement',
+          modePaiement: 'Espèces',
+          autoPrestationId: rem.id,
+          saisiPar: employeId || null,
+        };
         nextSite.remunerations = [rem, ...(nextSite.remunerations||[])];
+        nextSite.depenses = [depRem, ...(nextSite.depenses||[])];
       }
     }
     updateSite(nextSite);
