@@ -4652,9 +4652,23 @@ function NewEmployeModal({ site, updateSite, onClose }){
 /* ===================== DEPENSES ===================== */
 
 const CATEGORIES_DEPENSES = ['Salaires', 'Électricité', 'Loyer', 'Fournitures', 'Autres'];
-const CATEGORIES_DEPENSES_AFFICHAGE = ['Salaires', 'Électricité', 'Loyer', 'Livraison', 'Fournitures', 'Autres'];
+const CATEGORIES_DEPENSES_AFFICHAGE = ['Salaires', 'Électricité', 'Loyer', 'Paiement', 'Livraison', 'Fournitures', 'Autres'];
 
-function DepensesView({ site, updateSite, db }){
+// Résout la catégorie réellement affichée pour une dépense — corrige l'étiquette des anciennes
+// dépenses de repassage encore enregistrées sous 'Livraison' ou 'Prestations' (avant la séparation
+// Paiement/Livraison), en retrouvant le type réel via la prestation liée (remunerations).
+function categorieAffichee(d, remunerations){
+  if(d.categorie === 'Prestations' || d.categorie === 'Livraison'){
+    if(d.autoPrestationId){
+      const rem = (remunerations||[]).find(r => r.id === d.autoPrestationId);
+      if(rem && rem.type === 'repassage') return 'Paiement';
+    }
+    return 'Livraison';
+  }
+  return d.categorie;
+}
+
+function DepensesView({ site, updateSite, db, employeId }){
   const [showNew, setShowNew] = useState(false);
   const [showPrestation, setShowPrestation] = useState(false);
   const [typePeriode, setTypePeriode] = useState('mois'); // 'jour' | 'semaine' | 'mois' | 'annee'
@@ -4663,6 +4677,11 @@ function DepensesView({ site, updateSite, db }){
   const [filterAnnee, setFilterAnnee] = useState(todayISO().slice(0,4));
   const [confirmDep, setConfirmDep] = useState(null);
   const [editDep, setEditDep] = useState(null);
+  const [triColonne, setTriColonne] = useState('date');
+  const [triSens, setTriSens] = useState('desc'); // 'asc' | 'desc'
+  const [filtreCategorie, setFiltreCategorie] = useState('toutes');
+  const [filtreMode, setFiltreMode] = useState('tous');
+  const [filtreSaisiPar, setFiltreSaisiPar] = useState('tous');
 
   const depenses = (site.depenses || []);
   const remunerations = (site.remunerations || []);
@@ -4702,12 +4721,14 @@ function DepensesView({ site, updateSite, db }){
   const parCategorie = useMemo(() => {
     const acc = {};
     filtered.forEach(d => {
-      const cat = d.categorie === 'Prestations' ? 'Livraison' : d.categorie;
-      acc[cat] = (acc[cat]||0) + Number(d.montant);
+      acc[categorieAffichee(d, remunerations)] = (acc[categorieAffichee(d, remunerations)]||0) + Number(d.montant);
     });
-    if(totalOrphelines > 0) acc['Livraison'] = (acc['Livraison']||0) + totalOrphelines;
+    remunerationsOrphelines.forEach(r => {
+      const cat = r.type === 'repassage' ? 'Paiement' : 'Livraison';
+      acc[cat] = (acc[cat]||0) + Number(r.montant);
+    });
     return acc;
-  }, [filtered, totalOrphelines]);
+  }, [filtered, remunerationsOrphelines, remunerations]);
 
   const parMode = useMemo(() => {
     const acc = {};
@@ -4823,54 +4844,131 @@ function DepensesView({ site, updateSite, db }){
       )}
 
       {/* Liste des dépenses */}
-      <div className="card" style={{overflow:'hidden'}}>
+      {(() => {
+        const lignesBrutes = [
+          ...filtered.map(d => ({
+            id: d.id, date: d.date, description: d.description,
+            categorie: categorieAffichee(d, remunerations), mode: d.modePaiement || 'Espèces',
+            saisiParNom: d.saisiPar ? ((site.employes.find(e=>e.id===d.saisiPar)||{}).nom || 'Employé supprimé') : 'Gérant',
+            montant: Number(d.montant), original: d, isOrphan: false,
+          })),
+          ...remunerationsOrphelines.map(r => ({
+            id: r.id, date: r.date,
+            description: `Prestation ${r.type === 'repassage' ? 'repassage' : 'livraison'} — ${(site.employes.find(e=>e.id===r.employeId)||{}).nom || 'Employé'}`,
+            categorie: r.type === 'repassage' ? 'Paiement' : 'Livraison', mode: r.modePaiementRepasseur || 'Espèces',
+            saisiParNom: '—', montant: Number(r.montant), original: r, isOrphan: true,
+          })),
+        ];
+        const categoriesDispo = [...new Set(lignesBrutes.map(l=>l.categorie))].sort();
+        const saisiParDispo = [...new Set(lignesBrutes.map(l=>l.saisiParNom))].sort();
+        const lignesFiltrees = lignesBrutes.filter(l =>
+          (filtreCategorie === 'toutes' || l.categorie === filtreCategorie) &&
+          (filtreMode === 'tous' || l.mode === filtreMode) &&
+          (filtreSaisiPar === 'tous' || l.saisiParNom === filtreSaisiPar)
+        );
+        const collator = new Intl.Collator('fr');
+        const lignesTableau = [...lignesFiltrees].sort((a,b) => {
+          let cmp = 0;
+          if(triColonne === 'date') cmp = new Date(a.date) - new Date(b.date);
+          else if(triColonne === 'montant') cmp = a.montant - b.montant;
+          else cmp = collator.compare(String(a[triColonne]||''), String(b[triColonne]||''));
+          return triSens === 'asc' ? cmp : -cmp;
+        });
+        function trierPar(col){
+          if(triColonne === col) setTriSens(s => s === 'asc' ? 'desc' : 'asc');
+          else { setTriColonne(col); setTriSens(col==='date' ? 'desc' : 'asc'); }
+        }
+        const flecheTri = (col) => triColonne === col ? (triSens === 'asc' ? ' ▲' : ' ▼') : '';
+        const thTriable = (col, label) => (
+          <th style={{...th, cursor:'pointer', userSelect:'none'}} onClick={()=>trierPar(col)}>{label}{flecheTri(col)}</th>
+        );
+        const EXPORT_HEADERS = ['Date','Description','Catégorie','Mode','Saisi par','Montant'];
+        const exportRows = lignesTableau.map(l => [fmtDate(l.date), l.description, l.categorie, l.mode, l.saisiParNom, Math.round(l.montant)]);
+
+        return (
+        <>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10, marginBottom:10}}>
+          <div style={{display:'flex', gap:8, flexWrap:'wrap', alignItems:'center'}}>
+            <select value={filtreCategorie} onChange={e=>setFiltreCategorie(e.target.value)} style={{width:'auto', fontSize:12.5, padding:'6px 8px'}}>
+              <option value="toutes">Toutes catégories</option>
+              {categoriesDispo.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <select value={filtreMode} onChange={e=>setFiltreMode(e.target.value)} style={{width:'auto', fontSize:12.5, padding:'6px 8px'}}>
+              <option value="tous">Tous modes</option>
+              <option value="Espèces">Espèces</option>
+              <option value="Orange Money">Orange Money</option>
+            </select>
+            <select value={filtreSaisiPar} onChange={e=>setFiltreSaisiPar(e.target.value)} style={{width:'auto', fontSize:12.5, padding:'6px 8px'}}>
+              <option value="tous">Tous — saisi par</option>
+              {saisiParDispo.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+            {(filtreCategorie!=='toutes'||filtreMode!=='tous'||filtreSaisiPar!=='tous') && (
+              <button className="btn btn-ghost btn-sm" onClick={()=>{ setFiltreCategorie('toutes'); setFiltreMode('tous'); setFiltreSaisiPar('tous'); }}>✕ Réinitialiser</button>
+            )}
+          </div>
+          <ExportButtons
+            onCSV={()=>exportTableToCSV(`depenses-${labelPeriode}`, EXPORT_HEADERS, exportRows)}
+            onPDF={()=>exportTableToPDF({ filename:`depenses-${labelPeriode}`, title:'Dépenses', subtitle:`Maci Pressing — ${labelPeriode}`, headers:EXPORT_HEADERS, rows:exportRows })}
+          />
+        </div>
+        <div className="card" style={{overflow:'hidden'}}>
         <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
           <thead>
             <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
-              <th style={th}>Date</th>
-              <th style={th}>Description</th>
-              <th style={th}>Catégorie</th>
-              <th style={th}>Mode</th>
-              <th style={th}>Montant</th>
+              {thTriable('date', 'Date')}
+              {thTriable('description', 'Description')}
+              {thTriable('categorie', 'Catégorie')}
+              {thTriable('mode', 'Mode')}
+              {thTriable('saisiParNom', 'Saisi par')}
+              {thTriable('montant', 'Montant')}
               <th style={th}></th>
             </tr>
           </thead>
           <tbody>
-            {filtered.length === 0 && (
-              <tr><td colSpan={5} style={{...td, textAlign:'center', color:'var(--steam)', padding:'2rem'}}>Aucune dépense enregistrée pour ce mois.</td></tr>
+            {lignesTableau.length === 0 && (
+              <tr><td colSpan={6} style={{...td, textAlign:'center', color:'var(--steam)', padding:'2rem'}}>Aucune dépense enregistrée pour ce mois.</td></tr>
             )}
-            {filtered.map(d => (
-              <tr key={d.id} style={{borderTop:'1px solid var(--line)'}}>
-                <td style={td}>{fmtDate(d.date)}</td>
-                <td style={td}>{d.description}</td>
-                <td style={td}><span className="tag tag-recu">{d.categorie}</span></td>
-                <td style={td}>{d.modePaiement || 'Espèces'}</td>
-                <td style={{...td, color:'var(--danger)', fontWeight:600}} className="mono">{fmtGNF(d.montant)}</td>
+            {lignesTableau.map(l => (
+              <tr key={l.id} style={{borderTop:'1px solid var(--line)'}}>
+                <td style={td}>{fmtDate(l.date)}</td>
+                <td style={td}>
+                  {l.description}
+                  {l.isOrphan && <span className="tag" style={{marginLeft:6, fontSize:9.5, background:'var(--warn-light)', color:'var(--warn)'}}>Historique</span>}
+                </td>
+                <td style={td}><span className="tag tag-recu">{l.categorie}</span></td>
+                <td style={td}>{l.mode}</td>
+                <td style={{...td, color:'var(--steam)'}}>{l.saisiParNom}</td>
+                <td style={{...td, color:'var(--danger)', fontWeight:600}} className="mono">{fmtGNF(l.montant)}</td>
                 <td style={{...td, textAlign:'right'}}>
-                  <div style={{display:'flex', gap:6, justifyContent:'flex-end'}}>
-                    <button className="btn btn-ghost btn-sm" style={{color:'var(--pine)'}} onClick={()=>setEditDep({...d, categorie: d.categorie==='Prestations' ? 'Livraison' : d.categorie})}>
-                      <Icon name="edit" size={14}/>
-                    </button>
-                    <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>setConfirmDep(d)}>
-                      <Icon name="trash" size={14}/>
-                    </button>
-                  </div>
+                  {!l.isOrphan && (
+                    <div style={{display:'flex', gap:6, justifyContent:'flex-end'}}>
+                      <button className="btn btn-ghost btn-sm" style={{color:'var(--pine)'}} onClick={()=>setEditDep({...l.original, categorie: categorieAffichee(l.original, remunerations)})}>
+                        <Icon name="edit" size={14}/>
+                      </button>
+                      <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>setConfirmDep(l.original)}>
+                        <Icon name="trash" size={14}/>
+                      </button>
+                    </div>
+                  )}
                 </td>
               </tr>
             ))}
-            {filtered.length > 0 && (
+            {lignesTableau.length > 0 && (
               <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
-                <td colSpan={4} style={{...td, fontWeight:700}}>Total {labelPeriode}</td>
-                <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalMois)}</td>
+                <td colSpan={5} style={{...td, fontWeight:700}}>Total {(filtreCategorie!=='toutes'||filtreMode!=='tous'||filtreSaisiPar!=='tous') ? '(filtré)' : labelPeriode}</td>
+                <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(lignesTableau.reduce((s,l)=>s+l.montant,0))}</td>
                 <td></td>
               </tr>
             )}
           </tbody>
         </table>
-      </div>
+        </div>
+        </>
+        );
+      })()}
 
-      {showNew && <NewDepenseModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
-      {showPrestation && <NewPrestationModal site={site} updateSite={updateSite} onClose={()=>setShowPrestation(false)} />}
+      {showNew && <NewDepenseModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} employeId={employeId} />}
+      {showPrestation && <NewPrestationModal site={site} updateSite={updateSite} onClose={()=>setShowPrestation(false)} caissierId={employeId} />}
       {confirmDep && <ConfirmDelete db={db} message={`Supprimer la dépense « ${confirmDep.description} » (${fmtGNF(confirmDep.montant)}) ?`}
         onConfirm={()=>{ removeDepense(confirmDep.id); setConfirmDep(null); }}
         onCancel={()=>setConfirmDep(null)} />}
@@ -4904,7 +5002,7 @@ function DepensesView({ site, updateSite, db }){
   );
 }
 
-function NewPrestationModal({ site, updateSite, onClose }){
+function NewPrestationModal({ site, updateSite, onClose, caissierId }){
   const [type, setType] = useState('livraison');
   const [date, setDate] = useState(todayISO());
   const [employeId, setEmployeId] = useState('');
@@ -4961,9 +5059,10 @@ function NewPrestationModal({ site, updateSite, onClose }){
       date,
       description: `Prestation ${type === 'repassage' ? 'repassage' : 'livraison'} — ${empNom} (${rem.detail})`,
       montant,
-      categorie: 'Livraison',
+      categorie: type === 'repassage' ? 'Paiement' : 'Livraison',
       modePaiement: 'Espèces',
       autoPrestationId: rem.id,
+      saisiPar: caissierId || null,
     };
     updateSite({ ...site, remunerations: [rem, ...remunerations], depenses: [dep, ...(site.depenses||[])] });
     onClose();
@@ -5059,7 +5158,7 @@ function NewPrestationModal({ site, updateSite, onClose }){
   );
 }
 
-function NewDepenseModal({ site, updateSite, onClose }){
+function NewDepenseModal({ site, updateSite, onClose, employeId }){
   const [date, setDate] = useState(todayISO());
   const [description, setDescription] = useState('');
   const [montant, setMontant] = useState('');
@@ -5075,6 +5174,7 @@ function NewDepenseModal({ site, updateSite, onClose }){
       montant: Number(montant),
       categorie,
       modePaiement,
+      saisiPar: employeId || null,
     };
     updateSite({ ...site, depenses: [dep, ...(site.depenses||[])] });
     onClose();
@@ -6515,9 +6615,10 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
       date,
       description: `Prestation ${type === 'repassage' ? 'repassage' : 'livraison'} — ${empNom} (${rem.detail})`,
       montant,
-      categorie: 'Livraison',
+      categorie: type === 'repassage' ? 'Paiement' : 'Livraison',
       modePaiement: 'Espèces',
       autoPrestationId: rem.id,
+      saisiPar: employeId || null,
     };
     updateSite({ ...site, remunerations: [rem, ...remunerations], depenses: [dep, ...(site.depenses||[])] });
     setSelectedArticles([]);
@@ -7349,7 +7450,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
       {page === 'marketing' && <MarketingView site={site} updateSite={updateSite} />}
       {page === 'clients' && <ClientsView site={site} updateSite={updateSite} db={db} />}
       {page === 'stock' && <StockView site={site} updateSite={updateSite} db={db} />}
-      {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} db={db} />}
+      {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} db={db} employeId={employeId} />}
       {page === 'detailMensuel' && <DetailMensuelSiteView site={site} updateSite={updateSite} employeId={employeId} />}
       {page === 'encaissements' && <MesEncaissementsView site={site} employeId={employeId} />}
       {page === 'remuneration' && <RemunerationView site={site} updateSite={updateSite} db={db} siteId={siteId} employeId={employeId} />}
