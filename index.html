@@ -4688,7 +4688,7 @@ function categorieAffichee(d, remunerations){
 function DepensesView({ site, updateSite, db, employeId }){
   const [showNew, setShowNew] = useState(false);
   const [showPrestation, setShowPrestation] = useState(false);
-  const [typePeriode, setTypePeriode] = useState('mois'); // 'jour' | 'semaine' | 'mois' | 'annee'
+  const [typePeriode, setTypePeriode] = useState('jour'); // 'jour' | 'semaine' | 'mois' | 'annee'
   const [filterJour, setFilterJour] = useState(todayISO());
   const [filterMois, setFilterMois] = useState(todayISO().slice(0,7));
   const [filterAnnee, setFilterAnnee] = useState(todayISO().slice(0,4));
@@ -4862,26 +4862,13 @@ function DepensesView({ site, updateSite, db, employeId }){
 
       {/* Liste des dépenses */}
       {(() => {
-        const commandesPourAssociation = [...(site.commandes||[])]
-          .sort((a,b) => new Date(b.dateCreation) - new Date(a.dateCreation))
-          .slice(0, 150)
-          .map(c => ({ id: c.id, numero: c.numero, clientNom: (site.clients.find(cl=>cl.id===c.clientId)||{}).nom || 'Client inconnu' }));
-
         function statutConfirmation(rem){
           if(!rem) return null;
+          if(rem.type === 'livraison') return null;
           if(rem.statutPaiement !== 'paye') return { label: 'Non payé', color: 'var(--steam)', bg: 'var(--paper-2)' };
           return rem.valideParRepasseur
             ? { label: '✓ Confirmé', color: 'var(--pine)', bg: 'var(--pine-light)' }
             : { label: 'Non confirmé', color: 'var(--warn)', bg: 'var(--warn-light)' };
-        }
-
-        function associerCommande(remId, cmdId){
-          const cmd = commandesPourAssociation.find(c => c.id === cmdId);
-          if(!cmd) return;
-          const nextRemunerations = remunerations.map(r => r.id === remId
-            ? { ...r, commandeId: cmd.id, clientNom: cmd.clientNom, ticketSuffix: cmd.numero.slice(-4) }
-            : r);
-          updateSite({ ...site, remunerations: nextRemunerations });
         }
 
         const lignesBrutes = [
@@ -4904,7 +4891,7 @@ function DepensesView({ site, updateSite, db, employeId }){
               id: r.id, date: r.date, description,
               categorie: r.type === 'repassage' ? 'Paiement' : 'Livraison', mode: r.modePaiementRepasseur || 'Espèces',
               saisiParNom: '—', montant: Number(r.montant), original: r, isOrphan: true,
-              confirmation: statutConfirmation(r), remLieeId: r.id, aBesoinAssociation: r.type === 'repassage' && !r.commandeId,
+              confirmation: statutConfirmation(r), remLieeId: r.id,
             };
           }),
         ];
@@ -4984,16 +4971,6 @@ function DepensesView({ site, updateSite, db, employeId }){
                 <td style={td}>
                   {l.description}
                   {l.isOrphan && <span className="tag" style={{marginLeft:6, fontSize:9.5, background:'var(--warn-light)', color:'var(--warn)'}}>Historique</span>}
-                  {l.aBesoinAssociation && (
-                    <div style={{marginTop:4}}>
-                      <select defaultValue="" onChange={e=>{ if(e.target.value) associerCommande(l.remLieeId, e.target.value); }} style={{fontSize:11.5, padding:'3px 6px', width:'auto'}}>
-                        <option value="" disabled>🔗 Associer à un client/ticket…</option>
-                        {commandesPourAssociation.map(c => (
-                          <option key={c.id} value={c.id}>{c.numero} — {c.clientNom}</option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
                 </td>
                 <td style={td}><span className="tag tag-recu">{l.categorie}</span></td>
                 <td style={td}>{l.mode}</td>
@@ -5073,6 +5050,7 @@ function NewPrestationModal({ site, updateSite, onClose, caissierId }){
   const [employeId, setEmployeId] = useState('');
   const [selectedArticles, setSelectedArticles] = useState([]);
   const [zoneId, setZoneId] = useState('');
+  const [modePaiementLivraison, setModePaiementLivraison] = useState('Espèces');
 
   const config = site.configRemuneration || { tarifsRepassage: [], zones: [] };
   const tarifsRepassage = config.tarifsRepassage || [];
@@ -5117,6 +5095,9 @@ function NewPrestationModal({ site, updateSite, onClose, caissierId }){
       montant,
       detail: type === 'repassage' ? detailRepassage : `Livraison — ${zone?.nom || ''}`,
       employeId,
+      statutPaiement: type === 'livraison' ? 'paye' : undefined,
+      modePaiementRepasseur: type === 'livraison' ? modePaiementLivraison : undefined,
+      datePaiement: type === 'livraison' ? new Date().toISOString() : undefined,
     };
     const empNom = (site.employes.find(e=>e.id===employeId)||{}).nom || 'Employé';
     const dep = {
@@ -5125,7 +5106,7 @@ function NewPrestationModal({ site, updateSite, onClose, caissierId }){
       description: `Prestation ${type === 'repassage' ? 'repassage' : 'livraison'} — ${empNom} (${rem.detail})`,
       montant,
       categorie: type === 'repassage' ? 'Paiement' : 'Livraison',
-      modePaiement: 'Espèces',
+      modePaiement: type === 'livraison' ? modePaiementLivraison : 'Espèces',
       autoPrestationId: rem.id,
       saisiPar: caissierId || null,
     };
@@ -5205,6 +5186,19 @@ function NewPrestationModal({ site, updateSite, onClose, caissierId }){
                 ⚠️ Configure d'abord les zones de livraison dans Paramètres.
               </div>
             )}
+            <div style={{marginTop:12}}>
+              <label>Payé par</label>
+              <div style={{display:'flex', gap:8}}>
+                <button type="button" className="btn btn-sm" onClick={()=>setModePaiementLivraison('Espèces')}
+                  style={{background: modePaiementLivraison==='Espèces'?'var(--pine)':'transparent', color: modePaiementLivraison==='Espèces'?'var(--white)':'var(--ink)', borderColor: modePaiementLivraison==='Espèces'?'var(--pine)':'var(--line-strong)'}}>
+                  Espèces
+                </button>
+                <button type="button" className="btn btn-sm" onClick={()=>setModePaiementLivraison('Orange Money')}
+                  style={{background: modePaiementLivraison==='Orange Money'?'var(--pine)':'transparent', color: modePaiementLivraison==='Orange Money'?'var(--white)':'var(--ink)', borderColor: modePaiementLivraison==='Orange Money'?'var(--pine)':'var(--line-strong)'}}>
+                  Orange Money
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -6168,13 +6162,13 @@ function PaiementsAValiderView({ site, updateSite, employeId }){
 
   const paiementsAValider = useMemo(() => {
     return remunerations
-      .filter(r => r.employeId === employeId && r.statutPaiement === 'paye' && !r.valideParRepasseur)
+      .filter(r => r.employeId === employeId && r.type !== 'livraison' && r.statutPaiement === 'paye' && !r.valideParRepasseur)
       .sort((a,b) => new Date(b.date) - new Date(a.date));
   }, [remunerations, employeId]);
 
   const paiementsConfirmes = useMemo(() => {
     return remunerations
-      .filter(r => r.employeId === employeId && r.valideParRepasseur)
+      .filter(r => r.employeId === employeId && r.type !== 'livraison' && r.valideParRepasseur)
       .sort((a,b) => new Date(b.dateValidationRepasseur||b.date) - new Date(a.dateValidationRepasseur||a.date))
       .slice(0, 10);
   }, [remunerations, employeId]);
@@ -6530,6 +6524,7 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
   const [selectedArticles, setSelectedArticles] = useState([]);
   const [zoneId, setZoneId] = useState('');
   const [commandeId, setCommandeId] = useState('');
+  const [modePaiementLivraison, setModePaiementLivraison] = useState('Espèces');
   const [filterMois, setFilterMois] = useState(todayISO().slice(0,7));
   const [bilanView, setBilanView] = useState('jour');
 
@@ -6558,6 +6553,8 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
     return { start: toISO(monday), end: toISO(sunday) };
   };
   const week = getWeekDates();
+  const [periodeStats, setPeriodeStats] = useState('jour');
+  const [anneeStats, setAnneeStats] = useState(Number(todayISO().slice(0,4)));
 
   // Filtrer uniquement les repassages DE CET EMPLOYÉ
   const repassageOnly = remunerations.filter(r => r.type === 'repassage' && r.employeId === employeId);
@@ -6686,6 +6683,9 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
       commandeId: type === 'repassage' ? commandeId : null,
       clientNom: commandeChoisie ? commandeChoisie.clientNom : null,
       ticketSuffix: commandeChoisie ? commandeChoisie.numero.slice(-4) : null,
+      statutPaiement: type === 'livraison' ? 'paye' : undefined,
+      modePaiementRepasseur: type === 'livraison' ? modePaiementLivraison : undefined,
+      datePaiement: type === 'livraison' ? new Date().toISOString() : undefined,
     };
     const empNom = (site.employes.find(e=>e.id===employeId)||{}).nom || 'Employé';
     const descriptionRepassage = commandeChoisie
@@ -6697,7 +6697,7 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
       description: type === 'repassage' ? descriptionRepassage : `Prestation livraison — ${empNom} (${rem.detail})`,
       montant,
       categorie: type === 'repassage' ? 'Paiement' : 'Livraison',
-      modePaiement: 'Espèces',
+      modePaiement: type === 'livraison' ? modePaiementLivraison : 'Espèces',
       autoPrestationId: rem.id,
       saisiPar: employeId || null,
     };
@@ -6709,14 +6709,45 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
 
   const montantPreview = calculerMontant();
 
+  const mesRepassages = useMemo(() => remunerations.filter(r => r.type === 'repassage' && r.employeId === employeId), [remunerations, employeId]);
+  const anneesStatsDisponibles = useMemo(() => {
+    const set = new Set(mesRepassages.map(r => Number(r.date.slice(0,4))));
+    set.add(Number(todayISO().slice(0,4)));
+    return Array.from(set).sort((a,b)=>b-a);
+  }, [mesRepassages]);
+  const repassagesPeriode = useMemo(() => {
+    if(periodeStats === 'jour') return mesRepassages.filter(r => (r.date||'').slice(0,10) === today);
+    if(periodeStats === 'semaine') return mesRepassages.filter(r => { const d=(r.date||'').slice(0,10); return d >= week.start && d <= week.end; });
+    if(periodeStats === 'mois') return mesRepassages.filter(r => r.date.slice(0,7) === filterMois);
+    return mesRepassages.filter(r => Number(r.date.slice(0,4)) === anneeStats);
+  }, [mesRepassages, periodeStats, today, week, filterMois, anneeStats]);
+  const totalRepasseStats = repassagesPeriode.reduce((s,r)=>s+Number(r.montant),0);
+  const totalPayeStats = repassagesPeriode.filter(r=>r.statutPaiement==='paye').reduce((s,r)=>s+Number(r.montant),0);
+  const totalImpayeStats = totalRepasseStats - totalPayeStats;
+  const periodeStatsLabel = periodeStats==='jour' ? "Aujourd'hui" : periodeStats==='semaine' ? 'Cette semaine' : periodeStats==='mois' ? 'Ce mois' : 'Cette année';
+
   return (
     <div>
       <PageHeader title={`Ma rémunération${monProfil ? ` — ${monProfil.nom}` : ''}`} subtitle={`Total ${formatMoisAnnee(filterMois)} : ${fmtGNF(totalMois)}`} />
 
+      <div style={{display:'flex', gap:8, marginBottom:14, flexWrap:'wrap', alignItems:'center'}}>
+        {['jour','semaine','mois','annee'].map(v => (
+          <button key={v} className="btn btn-sm" onClick={()=>setPeriodeStats(v)}
+            style={{background:periodeStats===v?'var(--pine)':'transparent', color:periodeStats===v?'var(--white)':'var(--ink)', borderColor:periodeStats===v?'var(--pine)':'var(--line-strong)'}}>
+            {v === 'jour' ? "Aujourd'hui" : v === 'semaine' ? 'Cette semaine' : v === 'mois' ? 'Ce mois' : 'Cette année'}
+          </button>
+        ))}
+        {periodeStats === 'annee' && (
+          <select value={anneeStats} onChange={e=>setAnneeStats(Number(e.target.value))} style={{width:'auto', minWidth:100}}>
+            {anneesStatsDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        )}
+      </div>
+
       <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20}}>
-        <StatCard label="Total ce mois" value={fmtGNF(totalMois)} icon="euro" />
-        <StatCard label="Repassage" value={fmtGNF(totalRepassage)} icon="shirt" />
-        <StatCard label="Livraisons" value={fmtGNF(totalLivraison)} icon="arrowRight" />
+        <StatCard label={`Total repassé — ${periodeStatsLabel}`} value={fmtGNF(totalRepasseStats)} icon="shirt" />
+        <StatCard label={`Total payé — ${periodeStatsLabel}`} value={fmtGNF(totalPayeStats)} icon="euro" />
+        <StatCard label={`Impayé par l'entreprise — ${periodeStatsLabel}`} value={fmtGNF(totalImpayeStats)} icon="euro" tone={totalImpayeStats>0?'danger':'default'} />
       </div>
 
       <div className="card" style={{padding:'1.5rem', marginBottom:20}}>
@@ -6807,6 +6838,19 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
                   ⚠️ Le gérant doit configurer les zones dans Paramètres.
                 </div>
               )}
+              <div style={{marginTop:12}}>
+                <label>Payé par</label>
+                <div style={{display:'flex', gap:8}}>
+                  <button type="button" className="btn btn-sm" onClick={()=>setModePaiementLivraison('Espèces')}
+                    style={{background: modePaiementLivraison==='Espèces'?'var(--pine)':'transparent', color: modePaiementLivraison==='Espèces'?'var(--white)':'var(--ink)', borderColor: modePaiementLivraison==='Espèces'?'var(--pine)':'var(--line-strong)'}}>
+                    Espèces
+                  </button>
+                  <button type="button" className="btn btn-sm" onClick={()=>setModePaiementLivraison('Orange Money')}
+                    style={{background: modePaiementLivraison==='Orange Money'?'var(--pine)':'transparent', color: modePaiementLivraison==='Orange Money'?'var(--white)':'var(--ink)', borderColor: modePaiementLivraison==='Orange Money'?'var(--pine)':'var(--line-strong)'}}>
+                    Orange Money
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 
@@ -7550,7 +7594,6 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
     { key:'depenses', label:'Dépenses', icon:'euro' },
     { key:'detailMensuel', label:'Détail mensuel', icon:'chart' },
     { key:'encaissements', label:'Mes encaissements', icon:'euro' },
-    { key:'remuneration', label:'Ma rémunération', icon:'chart' },
     { key:'suiviRepassage', label:'Suivi repassage', icon:'euro' },
   ];
   return (
@@ -7563,7 +7606,6 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
       {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} db={db} employeId={employeId} />}
       {page === 'detailMensuel' && <DetailMensuelSiteView site={site} updateSite={updateSite} employeId={employeId} />}
       {page === 'encaissements' && <MesEncaissementsView site={site} employeId={employeId} />}
-      {page === 'remuneration' && <RemunerationView site={site} updateSite={updateSite} db={db} siteId={siteId} employeId={employeId} />}
       {page === 'suiviRepassage' && <RepassageApercuView site={site} updateSite={updateSite} />}
     </Shell>
   );
