@@ -2437,6 +2437,7 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
     { key:'notifications', label:'Notifications', icon:'bell' },
     { key:'depenses', label:'Dépenses', icon:'euro' },
     { key:'detailMensuel', label:'Détail mensuel', icon:'chart' },
+    { key:'encaissements', label:'Encaissements', icon:'euro' },
     { key:'remuneration', label:'Rémunérations', icon:'chart' },
     { key:'corbeille', label:'Corbeille', icon:'trash', badge: (site.corbeille||[]).length || undefined },
     { key:'parametres', label:'Paramètres', icon:'edit' },
@@ -2463,6 +2464,7 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
       {page === 'notifications' && <NotificationsView site={site} />}
       {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} db={db} />}
       {page === 'detailMensuel' && <DetailMensuelGerantView site={site} updateSite={updateSite} />}
+      {page === 'encaissements' && <EncaissementsGerantView site={site} />}
       {page === 'remuneration' && <RemunerationGerantView site={site} />}
       {page === 'corbeille' && <CorbeilleView site={site} updateSite={updateSite} />}
       {page === 'parametres' && <ParametresView site={site} updateSite={updateSite} db={db} setDb={setDb} />}
@@ -6415,6 +6417,194 @@ function RepassageApercuView({ site, updateSite }){
 }
 
 
+/* ===================== ENCAISSEMENTS (espace gérant — tous les employés confondus) ===================== */
+
+function EncaissementsGerantView({ site }){
+  const [periode, setPeriode] = useState('jour');
+  const [moisChoisi, setMoisChoisi] = useState(todayISO().slice(0,7));
+  const [anneeChoisie, setAnneeChoisie] = useState(Number(todayISO().slice(0,4)));
+
+  const today = todayISO();
+  const getWeekDates = () => {
+    const d = new Date(today + 'T00:00:00');
+    const day = d.getDay() || 7;
+    const monday = new Date(d); monday.setDate(d.getDate() - day + 1);
+    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+    const toISO = (dt) => dt.toISOString().slice(0,10);
+    return { start: toISO(monday), end: toISO(sunday) };
+  };
+  const week = getWeekDates();
+
+  // Tous les paiements réellement encaissés, avec l'employé attribué
+  const tousPaiements = useMemo(() => {
+    const liste = [];
+    (site.commandes||[]).forEach(c => {
+      getPaiementsCommande(c).forEach(pmt => {
+        if(!pmt.date) return;
+        const employeAttribue = pmt.employeId != null ? pmt.employeId : (c.caissierEmpId || null);
+        liste.push({
+          id: pmt.id || `${c.id}_${pmt.date}`,
+          date: pmt.date,
+          jour: pmt.date.slice(0,10),
+          mois: pmt.date.slice(0,7),
+          annee: Number(pmt.date.slice(0,4)),
+          ticket: c.numero,
+          employeId: employeAttribue,
+          mode: pmt.mode || 'Espèces',
+          montant: Number(pmt.montant)
+        });
+      });
+    });
+    return liste;
+  }, [site]);
+
+  const anneesDisponibles = useMemo(() => {
+    const set = new Set(tousPaiements.map(p => p.annee));
+    const currentYear = Number(todayISO().slice(0,4));
+    for(let y = currentYear; y >= ANNEE_DEBUT_APP - 3; y--) set.add(y);
+    return Array.from(set).sort((a,b)=>b-a);
+  }, [tousPaiements]);
+
+  function estAvantSeuil(annee, mois){
+    return annee < 2026 || (annee === 2026 && mois < 9);
+  }
+
+  // Montant manuel Espèces/Orange Money pour UN employé sur UN mois donné (si mois avant seuil)
+  function montantManuelEmploye(employeId, anneeNum, moisNum){
+    if(!estAvantSeuil(anneeNum, moisNum)) return { especes: 0, orangeMoney: 0 };
+    const moisStr = String(moisNum);
+    const parEmploye = normaliserMoisManuel(((site.detailMensuelManuel||{})[anneeNum]||{})[moisStr]) || {};
+    const v = parEmploye[employeId] || {};
+    return { especes: Number(v.montantRecuEspeces)||0, orangeMoney: Number(v.montantRecuOrangeMoney)||0 };
+  }
+
+  // Pour un employé + une période (jour/semaine/mois), total réel + manuel combiné
+  function totauxEmployePeriode(employeId){
+    let filtres;
+    if(periode === 'jour') filtres = tousPaiements.filter(p => p.employeId === employeId && p.jour === today);
+    else if(periode === 'semaine') filtres = tousPaiements.filter(p => p.employeId === employeId && p.jour >= week.start && p.jour <= week.end);
+    else filtres = tousPaiements.filter(p => p.employeId === employeId && p.mois === moisChoisi);
+    let especes = filtres.filter(p=>p.mode==='Espèces').reduce((s,p)=>s+p.montant,0);
+    let orangeMoney = filtres.filter(p=>p.mode==='Orange Money').reduce((s,p)=>s+p.montant,0);
+    if(periode === 'mois'){
+      const [a,m] = moisChoisi.split('-').map(Number);
+      const manuel = montantManuelEmploye(employeId, a, m);
+      especes += manuel.especes; orangeMoney += manuel.orangeMoney;
+    }
+    return { especes, orangeMoney, total: especes + orangeMoney };
+  }
+
+  // Pour un employé + une année, détail des 12 mois (réel + manuel combiné)
+  function detailAnneeEmploye(employeId){
+    return Array.from({length:12}, (_,i) => {
+      const moisNum = i+1;
+      const moisStr = `${anneeChoisie}-${String(moisNum).padStart(2,'0')}`;
+      const reels = tousPaiements.filter(p => p.employeId === employeId && p.mois === moisStr);
+      let especes = reels.filter(p=>p.mode==='Espèces').reduce((s,p)=>s+p.montant,0);
+      let orangeMoney = reels.filter(p=>p.mode==='Orange Money').reduce((s,p)=>s+p.montant,0);
+      const manuel = montantManuelEmploye(employeId, anneeChoisie, moisNum);
+      especes += manuel.especes; orangeMoney += manuel.orangeMoney;
+      const label = new Date(anneeChoisie, i, 15).toLocaleDateString('fr-FR', {month:'long'});
+      return { mois: moisNum, label, especes, orangeMoney, total: especes + orangeMoney };
+    });
+  }
+
+  const employesListe = (site.employes || []).filter(e => e.role !== 'Repasseur');
+  const periodeLabel = periode==='jour' ? "Aujourd'hui" : periode==='semaine' ? 'Cette semaine' : periode==='mois' ? 'Ce mois' : 'Cette année';
+
+  const totalGeneralPeriode = periode === 'annee'
+    ? employesListe.reduce((s,e) => s + detailAnneeEmploye(e.id).reduce((s2,m)=>s2+m.total,0), 0)
+    : employesListe.reduce((s,e) => s + totauxEmployePeriode(e.id).total, 0);
+
+  return (
+    <div>
+      <PageHeader title="Encaissements" subtitle="Argent reçu par employé, par mode de paiement" />
+
+      <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
+        {['jour','semaine','mois','annee'].map(v => (
+          <button key={v} className="btn btn-sm" onClick={()=>setPeriode(v)}
+            style={{background:periode===v?'var(--pine)':'transparent', color:periode===v?'var(--white)':'var(--ink)', borderColor:periode===v?'var(--pine)':'var(--line-strong)', textTransform:'capitalize'}}>
+            {v === 'jour' ? "Aujourd'hui" : v === 'semaine' ? 'Cette semaine' : v === 'mois' ? 'Ce mois' : 'Cette année'}
+          </button>
+        ))}
+        {periode === 'mois' && (
+          <input type="month" value={moisChoisi} onChange={e=>setMoisChoisi(e.target.value)} style={{width:'auto'}} />
+        )}
+        {periode === 'annee' && (
+          <select value={anneeChoisie} onChange={e=>setAnneeChoisie(Number(e.target.value))} style={{width:'auto', minWidth:100}}>
+            {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        )}
+      </div>
+
+      <div style={{marginBottom:20}}>
+        <StatCard label={`Total tous employés — ${periodeLabel}`} value={fmtGNF(totalGeneralPeriode)} icon="chart" />
+      </div>
+
+      {employesListe.length === 0 ? (
+        <div className="card" style={{padding:'1.25rem', textAlign:'center', color:'var(--steam)', fontSize:13}}>
+          Aucun employé enregistré.
+        </div>
+      ) : periode !== 'annee' ? (
+        employesListe.map(emp => {
+          const t = totauxEmployePeriode(emp.id);
+          return (
+            <div key={emp.id} className="card" style={{padding:'1.1rem 1.25rem', marginBottom:12}}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8}}>
+                <h3 style={{margin:0, fontSize:15}}>{emp.nom}</h3>
+                <span className="mono" style={{fontWeight:700, color:'var(--pine)'}}>{fmtGNF(t.total)}</span>
+              </div>
+              <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:8}}>
+                <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                  <span style={{fontSize:12.5, color:'var(--steam)'}}>Espèces</span>
+                  <span className="mono" style={{fontSize:13, fontWeight:600}}>{fmtGNF(t.especes)}</span>
+                </div>
+                <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                  <span style={{fontSize:12.5, color:'var(--steam)'}}>Orange Money</span>
+                  <span className="mono" style={{fontSize:13, fontWeight:600}}>{fmtGNF(t.orangeMoney)}</span>
+                </div>
+              </div>
+            </div>
+          );
+        })
+      ) : (
+        employesListe.map(emp => {
+          const details = detailAnneeEmploye(emp.id);
+          const totalEmp = details.reduce((s,m)=>s+m.total,0);
+          return (
+            <div key={emp.id} className="card" style={{padding:'1.1rem 1.25rem', marginBottom:14, overflow:'hidden'}}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10}}>
+                <h3 style={{margin:0, fontSize:15}}>{emp.nom}</h3>
+                <span className="mono" style={{fontWeight:700, color:'var(--pine)'}}>{fmtGNF(totalEmp)}</span>
+              </div>
+              <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
+                <thead>
+                  <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                    <th style={th}>Mois</th>
+                    <th style={th}>Espèces</th>
+                    <th style={th}>Orange Money</th>
+                    <th style={th}>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {details.map(m => (
+                    <tr key={m.mois} style={{borderTop:'1px solid var(--line)'}}>
+                      <td style={{...td, textTransform:'capitalize'}}>{m.label}</td>
+                      <td style={td} className="mono">{fmtGNF(m.especes)}</td>
+                      <td style={td} className="mono">{fmtGNF(m.orangeMoney)}</td>
+                      <td style={{...td, fontWeight:600}} className="mono">{fmtGNF(m.total)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
 function MesEncaissementsView({ site, employeId }){
   const [periode, setPeriode] = useState('jour');
   const [moisChoisi, setMoisChoisi] = useState(todayISO().slice(0,7));
@@ -6458,9 +6648,33 @@ function MesEncaissementsView({ site, employeId }){
 
   const anneesDisponibles = useMemo(() => {
     const set = new Set(mesPaiements.map(p => p.annee));
-    set.add(Number(todayISO().slice(0,4)));
+    const currentYear = Number(todayISO().slice(0,4));
+    for(let y = currentYear; y >= ANNEE_DEBUT_APP - 3; y--) set.add(y);
     return Array.from(set).sort((a,b)=>b-a);
   }, [mesPaiements]);
+
+  // Montants Espèces/Orange Money saisis manuellement (mois avant le seuil de septembre 2026),
+  // à ajouter aux vrais paiements numériques pour ne rien sous-estimer sur les périodes anciennes
+  function montantManuel(mois){
+    const [anneeStr, moisStr] = mois.split('-');
+    const anneeNum = Number(anneeStr), moisNum = Number(moisStr);
+    const avantSeuil = anneeNum < 2026 || (anneeNum === 2026 && moisNum < 9);
+    if(!avantSeuil) return { especes: 0, orangeMoney: 0 };
+    const parEmploye = normaliserMoisManuel(((site.detailMensuelManuel||{})[anneeNum]||{})[String(moisNum)]) || {};
+    const v = parEmploye[employeId] || {};
+    return { especes: Number(v.montantRecuEspeces)||0, orangeMoney: Number(v.montantRecuOrangeMoney)||0 };
+  }
+  const moisDeLAnnee = (annee) => Array.from({length:12}, (_,i) => `${annee}-${String(i+1).padStart(2,'0')}`);
+  const totalManuelPeriode = useMemo(() => {
+    if(periode === 'mois') return montantManuel(moisChoisi);
+    if(periode === 'annee') {
+      return moisDeLAnnee(anneeChoisie).reduce((acc,m) => {
+        const v = montantManuel(m);
+        return { especes: acc.especes + v.especes, orangeMoney: acc.orangeMoney + v.orangeMoney };
+      }, { especes: 0, orangeMoney: 0 });
+    }
+    return { especes: 0, orangeMoney: 0 };
+  }, [periode, moisChoisi, anneeChoisie, site.detailMensuelManuel, employeId]);
 
   const paiementsPeriode = useMemo(() => {
     if(periode === 'jour') return mesPaiements.filter(p => p.jour === today);
@@ -6469,11 +6683,26 @@ function MesEncaissementsView({ site, employeId }){
     return mesPaiements.filter(p => p.annee === anneeChoisie);
   }, [mesPaiements, periode, today, week, moisChoisi, anneeChoisie]);
 
-  const totalEspeces = paiementsPeriode.filter(p=>p.mode==='Espèces').reduce((s,p)=>s+p.montant,0);
-  const totalOrangeMoney = paiementsPeriode.filter(p=>p.mode==='Orange Money').reduce((s,p)=>s+p.montant,0);
+  const totalEspeces = paiementsPeriode.filter(p=>p.mode==='Espèces').reduce((s,p)=>s+p.montant,0) + totalManuelPeriode.especes;
+  const totalOrangeMoney = paiementsPeriode.filter(p=>p.mode==='Orange Money').reduce((s,p)=>s+p.montant,0) + totalManuelPeriode.orangeMoney;
   const totalGeneral = totalEspeces + totalOrangeMoney;
 
   const periodeLabel = periode==='jour' ? "Aujourd'hui" : periode==='semaine' ? 'Cette semaine' : periode==='mois' ? 'Ce mois' : 'Cette année';
+
+  const detailAnneeMois = useMemo(() => {
+    if(periode !== 'annee') return [];
+    return Array.from({length:12}, (_,i) => {
+      const moisNum = i+1;
+      const moisStr = `${anneeChoisie}-${String(moisNum).padStart(2,'0')}`;
+      const reels = mesPaiements.filter(p => p.mois === moisStr);
+      let especes = reels.filter(p=>p.mode==='Espèces').reduce((s,p)=>s+p.montant,0);
+      let orangeMoney = reels.filter(p=>p.mode==='Orange Money').reduce((s,p)=>s+p.montant,0);
+      const manuel = montantManuel(moisStr);
+      especes += manuel.especes; orangeMoney += manuel.orangeMoney;
+      const label = new Date(anneeChoisie, i, 15).toLocaleDateString('fr-FR', {month:'long'});
+      return { mois: moisNum, label, especes, orangeMoney, total: especes + orangeMoney };
+    });
+  }, [periode, anneeChoisie, mesPaiements, site.detailMensuelManuel, employeId]);
 
   return (
     <div>
@@ -6496,11 +6725,39 @@ function MesEncaissementsView({ site, employeId }){
         )}
       </div>
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20}}>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:8}}>
         <StatCard label="Espèces" value={fmtGNF(totalEspeces)} icon="euro" />
         <StatCard label="Orange Money" value={fmtGNF(totalOrangeMoney)} icon="euro" />
         <StatCard label={`Total — ${periodeLabel}`} value={fmtGNF(totalGeneral)} icon="chart" />
       </div>
+      {(totalManuelPeriode.especes > 0 || totalManuelPeriode.orangeMoney > 0) && (
+        <p style={{fontSize:11.5, color:'var(--steam)', margin:'0 0 12px'}}>Inclut {fmtGNF(totalManuelPeriode.especes + totalManuelPeriode.orangeMoney)} saisis manuellement dans Détail mensuel pour cette période.</p>
+      )}
+
+      {periode === 'annee' && (
+        <div className="card" style={{overflow:'hidden', marginBottom:20}}>
+          <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
+            <thead>
+              <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                <th style={th}>Mois</th>
+                <th style={th}>Espèces</th>
+                <th style={th}>Orange Money</th>
+                <th style={th}>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {detailAnneeMois.map(m => (
+                <tr key={m.mois} style={{borderTop:'1px solid var(--line)'}}>
+                  <td style={{...td, textTransform:'capitalize'}}>{m.label}</td>
+                  <td style={td} className="mono">{fmtGNF(m.especes)}</td>
+                  <td style={td} className="mono">{fmtGNF(m.orangeMoney)}</td>
+                  <td style={{...td, fontWeight:600}} className="mono">{fmtGNF(m.total)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <h3 style={{fontSize:14.5, color:'var(--pine)', marginBottom:6}}>Détail des paiements reçus — {periodeLabel}</h3>
       {paiementsPeriode.length === 0 ? (
