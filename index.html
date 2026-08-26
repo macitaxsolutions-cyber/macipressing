@@ -2441,7 +2441,7 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
       {page === 'employes' && <EquipeView site={site} updateSite={updateSite} db={db} />}
       {page === 'notifications' && <NotificationsView site={site} />}
       {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} db={db} />}
-      {page === 'detailMensuel' && <DetailMensuelGerantView site={site} />}
+      {page === 'detailMensuel' && <DetailMensuelGerantView site={site} updateSite={updateSite} />}
       {page === 'remuneration' && <RemunerationGerantView site={site} />}
       {page === 'corbeille' && <CorbeilleView site={site} updateSite={updateSite} />}
       {page === 'parametres' && <ParametresView site={site} updateSite={updateSite} db={db} setDb={setDb} />}
@@ -4783,7 +4783,7 @@ function DepensesView({ site, updateSite, db, employeId }){
   const labelPeriode = typePeriode === 'jour' ? fmtDate(filterJour)
     : typePeriode === 'semaine' ? `semaine du ${fmtDate(semaineActuelle.start)} au ${fmtDate(semaineActuelle.end)}`
     : typePeriode === 'annee' ? filterAnnee
-    : new Date(filterMois+'-01').toLocaleDateString('fr-FR',{month:'long',year:'numeric'});
+    : formatMoisAnnee(filterMois);
 
   return (
     <div>
@@ -7030,7 +7030,7 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
             ))}
             {filtered.length > 0 && (
               <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
-                <td colSpan={3} style={{...td, fontWeight:700}}>Total {new Date(filterMois+'-01').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})}</td>
+                <td colSpan={3} style={{...td, fontWeight:700}}>Total {formatMoisAnnee(filterMois)}</td>
                 <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalMois)}</td>
               </tr>
             )}
@@ -7424,7 +7424,7 @@ function DetailMensuelSiteView({ site, updateSite, employeId }){
   );
 }
 
-function DetailMensuelGerantView({ site }){
+function DetailMensuelGerantView({ site, updateSite }){
   const currentYear = Number(todayISO().slice(0,4));
   const anneesDisponibles = useMemo(() => {
     const arr = [];
@@ -7433,11 +7433,22 @@ function DetailMensuelGerantView({ site }){
   }, [currentYear]);
   const [annee, setAnnee] = useState(currentYear);
   const [moisOuvert, setMoisOuvert] = useState(null);
+  const [empSaisieMois, setEmpSaisieMois] = useState(null); // { mois, employeId } en cours d'édition
 
   function getEmpNom(id){
     if(id === '_legacy') return 'Saisie antérieure (sans détail par caissier)';
     const e = site.employes.find(emp=>emp.id===id);
     return e ? e.nom : 'Employé supprimé';
+  }
+
+  function saveMoisPourEmploye(mois, employeId, valeurs){
+    const manuelActuel = site.detailMensuelManuel || {};
+    const anneeActuelle = manuelActuel[annee] || {};
+    const moisNormalise = normaliserMoisManuel(anneeActuelle[mois]) || {};
+    const nextMois = { ...moisNormalise, [employeId]: valeurs };
+    const nextAnnee = { ...anneeActuelle, [mois]: nextMois };
+    updateSite({ ...site, detailMensuelManuel: { ...manuelActuel, [annee]: nextAnnee } });
+    setEmpSaisieMois(null);
   }
 
   const donneesParMois = useMemo(() => calculerDonneesMensuellesSite(site, annee), [site, annee]);
@@ -7495,22 +7506,31 @@ function DetailMensuelGerantView({ site }){
                   <td style={{...td, color: m.depensesPropres>0?'var(--rust)':'var(--steam)'}} className="mono">{m.depensesPropres>0?fmtGNF(m.depensesPropres):'—'}</td>
                   <td style={{...td, fontWeight:700, color: m.net<0?'var(--danger)':'var(--ink)'}} className="mono">{fmtGNF(m.net)}</td>
                   <td style={{...td, textAlign:'right'}}>
-                    {Object.keys(m.parEmploye||{}).length > 0 && (
-                      <button className="btn btn-ghost btn-sm" onClick={()=>setMoisOuvert(moisOuvert===m.mois?null:m.mois)}>
-                        {moisOuvert===m.mois ? 'Fermer' : 'Détail par caissier'}
-                      </button>
-                    )}
+                    <div style={{display:'flex', gap:6, justifyContent:'flex-end'}}>
+                      {Object.keys(m.parEmploye||{}).length > 0 && (
+                        <button className="btn btn-ghost btn-sm" onClick={()=>setMoisOuvert(moisOuvert===m.mois?null:m.mois)}>
+                          {moisOuvert===m.mois ? 'Fermer' : 'Détail par caissier'}
+                        </button>
+                      )}
+                      <button className="btn btn-sm" onClick={()=>setEmpSaisieMois({ mois: m.mois, employeId: '' })}>+ Saisir</button>
+                    </div>
                   </td>
                 </tr>
                 {moisOuvert === m.mois && Object.keys(m.parEmploye||{}).length > 0 && (
                   <tr style={{background:'var(--paper-2)'}}>
                     <td colSpan={7} style={{padding:'10px 14px'}}>
-                      {Object.entries(m.parEmploye).map(([empId, v]) => (
-                        <div key={empId} style={{display:'flex', justifyContent:'space-between', padding:'4px 0', fontSize:13, borderBottom:'1px solid var(--line)'}}>
-                          <span>{getEmpNom(empId)}</span>
-                          <span className="mono">
+                      {Object.entries(m.parEmploye).filter(([empId]) => empId !== '_legacy').map(([empId, v]) => (
+                        <div key={empId} style={{padding:'6px 0', borderBottom:'1px solid var(--line)'}}>
+                          <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:2}}>
+                            <div style={{fontWeight:600, fontSize:13}}>{getEmpNom(empId)}</div>
+                            <button className="btn btn-ghost btn-sm" style={{padding:'2px 8px', fontSize:11.5}} onClick={()=>setEmpSaisieMois({ mois: m.mois, employeId: empId })}>Modifier</button>
+                          </div>
+                          <div className="mono" style={{fontSize:12.5, color:'var(--steam)'}}>
                             Recette : {fmtGNF(v.recetteBrute)} · Impayés : {fmtGNF(v.impayes||0)} · Dép. entreprise : {fmtGNF(v.depenses)} · Dép. propres : {fmtGNF(v.depensesPropres||0)}
-                          </span>
+                          </div>
+                          <div className="mono" style={{fontSize:12.5, color:'var(--pine)', marginTop:2}}>
+                            Reçu Espèces : {fmtGNF(v.montantRecuEspeces||0)} · Reçu Orange Money : {fmtGNF(v.montantRecuOrangeMoney||0)}
+                          </div>
                         </div>
                       ))}
                     </td>
@@ -7530,7 +7550,78 @@ function DetailMensuelGerantView({ site }){
           </tbody>
         </table>
       </div>
+
+      {empSaisieMois && (
+        <SaisieEmployeMoisModal
+          site={site}
+          mois={empSaisieMois.mois}
+          employeIdInitial={empSaisieMois.employeId}
+          valeursExistantes={(donneesParMois.find(m=>m.mois===empSaisieMois.mois)||{}).parEmploye || {}}
+          onSave={(employeId, valeurs)=>saveMoisPourEmploye(empSaisieMois.mois, employeId, valeurs)}
+          onClose={()=>setEmpSaisieMois(null)}
+        />
+      )}
     </div>
+  );
+}
+
+function SaisieEmployeMoisModal({ site, mois, employeIdInitial, valeursExistantes, onSave, onClose }){
+  const [employeId, setEmployeId] = useState(employeIdInitial);
+  const existant = employeId ? (valeursExistantes[employeId] || {}) : {};
+  const [recetteBrute, setRecetteBrute] = useState(String(existant.recetteBrute || ''));
+  const [depenses, setDepenses] = useState(String(existant.depenses || ''));
+  const [depensesPropres, setDepensesPropres] = useState(String(existant.depensesPropres || ''));
+  const [montantRecuEspeces, setMontantRecuEspeces] = useState(String(existant.montantRecuEspeces || ''));
+  const [montantRecuOrangeMoney, setMontantRecuOrangeMoney] = useState(String(existant.montantRecuOrangeMoney || ''));
+
+  function choisirEmploye(id){
+    setEmployeId(id);
+    const v = valeursExistantes[id] || {};
+    setRecetteBrute(String(v.recetteBrute || ''));
+    setDepenses(String(v.depenses || ''));
+    setDepensesPropres(String(v.depensesPropres || ''));
+    setMontantRecuEspeces(String(v.montantRecuEspeces || ''));
+    setMontantRecuOrangeMoney(String(v.montantRecuOrangeMoney || ''));
+  }
+
+  const impayesCalcule = Math.max(0, (Number(recetteBrute)||0) - ((Number(montantRecuEspeces)||0) + (Number(montantRecuOrangeMoney)||0)));
+
+  function submit(){
+    if(!employeId) return;
+    onSave(employeId, {
+      recetteBrute: Number(recetteBrute)||0,
+      impayes: impayesCalcule,
+      depenses: Number(depenses)||0,
+      depensesPropres: Number(depensesPropres)||0,
+      montantRecuEspeces: Number(montantRecuEspeces)||0,
+      montantRecuOrangeMoney: Number(montantRecuOrangeMoney)||0,
+    });
+  }
+
+  return (
+    <ModalShell title={`Saisie — ${formatMoisAnnee(new Date(2026,mois-1,1).toISOString().slice(0,7))}`} onClose={onClose} width={480}>
+      <div style={{display:'grid', gap:14}}>
+        <div>
+          <label>Employé</label>
+          <select value={employeId} onChange={e=>choisirEmploye(e.target.value)}>
+            <option value="">Choisir un employé…</option>
+            {site.employes.map(e => <option key={e.id} value={e.id}>{e.nom}</option>)}
+          </select>
+        </div>
+        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12}}>
+          <div><label>Recette brute</label><input type="number" value={recetteBrute} onChange={e=>setRecetteBrute(e.target.value)} /></div>
+          <div><label>Dépenses entreprise</label><input type="number" value={depenses} onChange={e=>setDepenses(e.target.value)} /></div>
+          <div><label>Dépenses propres</label><input type="number" value={depensesPropres} onChange={e=>setDepensesPropres(e.target.value)} /></div>
+          <div>
+            <label>Impayés (calculé)</label>
+            <div className="mono" style={{padding:'8px 10px', background:'var(--paper-2)', borderRadius:8, fontSize:13, fontWeight:600}}>{fmtGNF(impayesCalcule)}</div>
+          </div>
+          <div><label>Reçu Espèces</label><input type="number" value={montantRecuEspeces} onChange={e=>setMontantRecuEspeces(e.target.value)} /></div>
+          <div><label>Reçu Orange Money</label><input type="number" value={montantRecuOrangeMoney} onChange={e=>setMontantRecuOrangeMoney(e.target.value)} /></div>
+        </div>
+        <button className="btn btn-rust" style={{width:'100%'}} disabled={!employeId} onClick={submit}>Enregistrer</button>
+      </div>
+    </ModalShell>
   );
 }
 
