@@ -1333,8 +1333,9 @@ function nomsCorrespondent(nomEmploye, nomActeur){
 }
 
 function calculerDepensesPropresEmployesParActeur(db, annee, periodeRepartition, moisRepartition, cumulRepartition){
+  const parts = db.partsDistribution || PARTS_DISTRIBUTION;
   const resultat = {};
-  PARTS_DISTRIBUTION.forEach(p => { resultat[p.nom] = 0; });
+  parts.forEach(p => { resultat[p.nom] = 0; });
   db.sites.forEach(site => {
     const manuelAnnee = (site.detailMensuelManuel||{})[annee] || {};
     for(let m=1; m<=12; m++){
@@ -1350,7 +1351,7 @@ function calculerDepensesPropresEmployesParActeur(db, annee, periodeRepartition,
         if(!emp) return;
         const depensesPropres = Number(valeurs.depensesPropres)||0;
         if(depensesPropres <= 0) return;
-        PARTS_DISTRIBUTION.forEach(p => {
+        parts.forEach(p => {
           if(nomsCorrespondent(emp.nom, p.nom)) resultat[p.nom] += depensesPropres;
         });
       });
@@ -1536,6 +1537,14 @@ function DistributionView({ db, setDb, anneeInitiale }){
   }, [currentYear]);
 
   const [annee, setAnnee] = useState(anneeInitiale || currentYear);
+  const parts = db.partsDistribution || PARTS_DISTRIBUTION;
+  const [pctEdits, setPctEdits] = useState(() => Object.fromEntries(parts.map(p=>[p.nom, String(p.pct)])));
+  useEffect(() => { setPctEdits(Object.fromEntries(parts.map(p=>[p.nom, String(p.pct)]))); }, [db.partsDistribution]);
+  const pctModifie = parts.some(p => String(p.pct) !== (pctEdits[p.nom] ?? String(p.pct)));
+  function enregistrerPcts(){
+    const nouvellesParts = parts.map(p => ({ nom: p.nom, pct: Number(pctEdits[p.nom]) || 0 }));
+    setDb({ ...db, partsDistribution: nouvellesParts });
+  }
   const remboursementActif = db.remboursementActif !== false; // activé par défaut
   function toggleRemboursement(){
     setDb({ ...db, remboursementActif: !remboursementActif });
@@ -1682,7 +1691,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
   const recetteEncaissee = recetteBrute - impayesAnnee;
   const recetteNette = recetteEncaissee - depensesAnnee;
   const depensesActeursActuel = dataHisto.depensesActeurs || {}; // { [nom]: [{id, description, montant}] }
-  const totalDepensesActeurs = PARTS_DISTRIBUTION.reduce((s,p)=> s + ((depensesActeursActuel[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0)), 0);
+  const totalDepensesActeurs = parts.reduce((s,p)=> s + ((depensesActeursActuel[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0)), 0);
 
   // ---- Calculs spécifiques à la période choisie pour la répartition (mois / cumul depuis janvier / année entière) ----
   function filtrerDepensesParPeriode(entries){
@@ -1713,12 +1722,12 @@ function DistributionView({ db, setDb, anneeInitiale }){
     : { recetteBrute, depenses: depensesAnnee, impayes: impayesAnnee, recetteNette };
 
   const depensesActeursPeriode = {};
-  PARTS_DISTRIBUTION.forEach(p => { depensesActeursPeriode[p.nom] = filtrerDepensesParPeriode(depensesActeursActuel[p.nom]); });
+  parts.forEach(p => { depensesActeursPeriode[p.nom] = filtrerDepensesParPeriode(depensesActeursActuel[p.nom]); });
   const depensesPropresEmployes = useMemo(
     () => calculerDepensesPropresEmployesParActeur(db, annee, periodeRepartition, moisRepartition, cumulRepartition),
     [db, annee, periodeRepartition, moisRepartition, cumulRepartition]
   );
-  const totalDepensesActeursPeriode = PARTS_DISTRIBUTION.reduce((s,p)=> s + (depensesActeursPeriode[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0), 0);
+  const totalDepensesActeursPeriode = parts.reduce((s,p)=> s + (depensesActeursPeriode[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0), 0);
 
   // ---- Totaux encaissés par mode de paiement (Espèces / Orange Money), pour la période choisie ----
   const totauxParMode = useMemo(() => {
@@ -1780,7 +1789,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
   useEffect(() => { setHistoriquePage(1); }, [annee, periodeRepartition, moisRepartition, cumulRepartition]);
 
   // Remboursement d'investissement : 20% du net perçu des 4 acteurs concernés est redirigé vers la Conservation du Capital Fixe
-  const totalRedirigeVersCapitalFixe = remboursementActif ? PARTS_DISTRIBUTION.reduce((s,p) => {
+  const totalRedirigeVersCapitalFixe = remboursementActif ? parts.reduce((s,p) => {
     if(!ACTEURS_REMBOURSEMENT_INVESTISSEMENT.includes(p.nom)) return s;
     const montantBrutP = periodeDonnees.recetteNette * p.pct / 100;
     const depensePropreP = (depensesActeursPeriode[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
@@ -1790,7 +1799,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
 
   // ---- Données du tableau "Répartition entre les acteurs", pour export CSV/PDF ----
   const lignesRepartitionExport = useMemo(() => {
-    return PARTS_DISTRIBUTION.map(p => {
+    return parts.map(p => {
       const impayesPart = periodeDonnees.impayes * p.pct / 100;
       const montantBrut = periodeDonnees.recetteNette * p.pct / 100;
       const montantBrutAvantImpayes = periodeDonnees.recetteBrute * p.pct / 100;
@@ -1867,7 +1876,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
           Dépenses personnelles engagées par chaque acteur sur son propre compte cette année-là (avances, retraits, achats personnels…), avec leur description. Elles seront déduites de sa part pour refléter son montant net réel — sans affecter la recette nette globale de l'entreprise. Si un acteur est aussi caissier dans un pressing, ses « dépenses propres » saisies dans « Détail mensuel » s'ajoutent automatiquement ici.
         </p>
         <div style={{display:'grid', gap:18}}>
-          {PARTS_DISTRIBUTION.map(p => {
+          {parts.map(p => {
             const entries = depensesActeursActuel[p.nom] || [];
             const sousTotal = entries.reduce((s,e)=>s+(Number(e.montant)||0),0);
             return (
@@ -2074,6 +2083,13 @@ function DistributionView({ db, setDb, anneeInitiale }){
           onPDF={()=>exportTableToPDF({ filename:`repartition-acteurs-${annee}`, title:'Répartition entre les acteurs', subtitle:`Maci Pressing — ${periodeLabel}`, headers:REPARTITION_HEADERS, rows:lignesRepartitionExport })}
         />
       </div>
+
+      {pctModifie && (
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, padding:'10px 14px', background:'var(--warn-light)', borderRadius:8, marginBottom:10}}>
+          <span style={{fontSize:13, color:'var(--warn)'}}>⚠️ Parts modifiées, non enregistrées.</span>
+          <button className="btn btn-rust btn-sm" onClick={enregistrerPcts}>Enregistrer les parts</button>
+        </div>
+      )}
       <div className="card" style={{overflow:'hidden'}}>
         <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
           <thead>
@@ -2089,7 +2105,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
             </tr>
           </thead>
           <tbody>
-            {PARTS_DISTRIBUTION.map(p => {
+            {parts.map(p => {
               const impayesPart = periodeDonnees.impayes * p.pct / 100;
               const montantBrut = periodeDonnees.recetteNette * p.pct / 100;
               const montantBrutAvantImpayes = periodeDonnees.recetteBrute * p.pct / 100;
@@ -2103,7 +2119,11 @@ function DistributionView({ db, setDb, anneeInitiale }){
               return (
                 <tr key={p.nom} style={{borderTop:'1px solid var(--line)'}}>
                   <td style={td}>{p.nom}</td>
-                  <td style={td}><span className="tag tag-recu">{p.pct}%</span></td>
+                  <td style={td}>
+                    <input type="number" value={pctEdits[p.nom] ?? p.pct} min="0" max="100"
+                      onChange={e=>setPctEdits(prev=>({...prev, [p.nom]: e.target.value}))}
+                      style={{width:60, padding:'4px 6px', textAlign:'right', fontSize:13}} />%
+                  </td>
                   <td style={{...td, fontWeight:600}} className="mono">{fmtGNF(montantBrutAvantImpayes)}</td>
                   <td style={{...td, color: impayesPart>0 ? 'var(--danger)' : 'var(--steam)'}} className="mono">{impayesPart>0 ? fmtGNF(impayesPart) : '—'}</td>
                   <td style={{...td, fontWeight:700, color:'var(--danger)'}} className="mono">{fmtGNF(cumule)}</td>
@@ -2133,6 +2153,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
     </div>
   );
 }
+
 
 function GlobalDashboard({ db, onOpenSite }){
   const today = todayISO();
