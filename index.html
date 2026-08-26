@@ -7245,17 +7245,19 @@ function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave, monta
           {valeurs.manuel && <span className="tag" style={{fontSize:9, marginLeft:6, background:'var(--warn-light)', color:'var(--warn)'}}>Manuel</span>}
         </td>
         <td style={td} className="mono">{fmtGNF(valeurs.recetteBrute)}</td>
-        <td style={{...td, color: valeurs.impayes>0?'var(--danger)':'var(--steam)'}} className="mono">{valeurs.impayes>0?fmtGNF(valeurs.impayes):'—'}</td>
+        <td style={{...td, color: valeurs.impayesReel>0?'var(--danger)':'var(--steam)'}} className="mono">{valeurs.impayesReel>0?fmtGNF(valeurs.impayesReel):'—'}</td>
         <td style={{...td, color: valeurs.depenses>0?'var(--danger)':'var(--steam)'}} className="mono">{fmtGNF(valeurs.depenses)}</td>
         <td style={{...td, color: valeurs.depensesPropres>0?'var(--rust)':'var(--steam)'}} className="mono">{valeurs.depensesPropres>0?fmtGNF(valeurs.depensesPropres):'—'}</td>
-        <td style={{...td, fontWeight:700, color: valeurs.net<0?'var(--danger)':'var(--ink)'}} className="mono">{fmtGNF(valeurs.net)}</td>
+        <td style={{...td, color:'var(--pine)'}} className="mono">{fmtGNF(valeurs.montantRecuEspeces||0)}</td>
+        <td style={{...td, color:'var(--pine)'}} className="mono">{fmtGNF(valeurs.montantRecuOrangeMoney||0)}</td>
+        <td style={{...td, fontWeight:700, color: valeurs.netPercu<0?'var(--danger)':'var(--ink)'}} className="mono">{fmtGNF(valeurs.netPercu)}</td>
         <td style={{...td, textAlign:'right'}}>
           <button className="btn btn-ghost btn-sm" onClick={()=>setOuvert(!ouvert)}>{ouvert ? 'Fermer' : 'Mes données'}</button>
         </td>
       </tr>
       {ouvert && (
         <tr style={{background:'var(--paper-2)'}}>
-          <td colSpan={7} style={{padding:'10px 14px'}}>
+          <td colSpan={9} style={{padding:'10px 14px'}}>
             <div style={{fontSize:12, color:'var(--steam)', marginBottom:8}}>Vos chiffres pour ce mois ({monNom}) — n'affectent que votre propre saisie, cumulée avec celle des autres caissiers.</div>
             <div style={{display:'flex', gap:10, alignItems:'flex-end', flexWrap:'wrap'}}>
               {avantSeuil && (
@@ -7334,14 +7336,20 @@ function calculerDonneesMensuellesSite(site, annee){
     const avantSeuil = annee < 2026 || (annee === 2026 && a.mois < 9);
     const parEmploye = normaliserMoisManuel(manuel[a.mois]) || {};
     const depensesPropres = Object.values(parEmploye).reduce((s,v)=>s+(Number(v.depensesPropres)||0),0);
+    const montantRecuEspeces = Object.values(parEmploye).reduce((s,v)=>s+(Number(v.montantRecuEspeces)||0),0);
+    const montantRecuOrangeMoney = Object.values(parEmploye).reduce((s,v)=>s+(Number(v.montantRecuOrangeMoney)||0),0);
     if(avantSeuil){
       const rb = Object.values(parEmploye).reduce((s,v)=>s+(Number(v.recetteBrute)||0),0);
       const dep = Object.values(parEmploye).reduce((s,v)=>s+(Number(v.depenses)||0),0);
       const imp = Object.values(parEmploye).reduce((s,v)=>s+(Number(v.impayes)||0),0);
-      return { mois:a.mois, label:a.label, avantSeuil, recetteBrute: rb, impayes: imp, depenses: dep, depensesPropres, manuel: Object.keys(parEmploye).length>0, parEmploye, net: rb - imp - dep };
+      const impayesReel = Math.max(0, rb - (montantRecuEspeces + montantRecuOrangeMoney));
+      const netPercu = (montantRecuEspeces + montantRecuOrangeMoney) - dep;
+      return { mois:a.mois, label:a.label, avantSeuil, recetteBrute: rb, impayes: imp, depenses: dep, depensesPropres, manuel: Object.keys(parEmploye).length>0, parEmploye, net: rb - imp - dep, montantRecuEspeces, montantRecuOrangeMoney, impayesReel, netPercu };
     }
     const imp = a.recetteBrute - a.recetteEncaissee;
-    return { mois:a.mois, label:a.label, avantSeuil, recetteBrute: a.recetteBrute, impayes: imp, depenses: a.depenses, depensesPropres, manuel: false, parEmploye, net: a.recetteBrute - imp - a.depenses };
+    const impayesReel = Math.max(0, a.recetteBrute - (montantRecuEspeces + montantRecuOrangeMoney));
+    const netPercu = (montantRecuEspeces + montantRecuOrangeMoney) - a.depenses;
+    return { mois:a.mois, label:a.label, avantSeuil, recetteBrute: a.recetteBrute, impayes: imp, depenses: a.depenses, depensesPropres, manuel: false, parEmploye, net: a.recetteBrute - imp - a.depenses, montantRecuEspeces, montantRecuOrangeMoney, impayesReel, netPercu };
   });
 }
 
@@ -7391,6 +7399,8 @@ function DetailMensuelSiteView({ site, updateSite, employeId }){
   const totalDepenses = donneesParMois.reduce((s,m)=>s+m.depenses,0);
   const totalDepensesPropres = donneesParMois.reduce((s,m)=>s+m.depensesPropres,0);
   const totalNet = donneesParMois.reduce((s,m)=>s+m.net,0);
+  const totalNetPercu = donneesParMois.reduce((s,m)=>s+m.netPercu,0);
+  const totalImpayesReel = donneesParMois.reduce((s,m)=>s+m.impayesReel,0);
 
   return (
     <div>
@@ -7402,14 +7412,15 @@ function DetailMensuelSiteView({ site, updateSite, employeId }){
         } />
 
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
-        Les mois avant <strong>septembre 2026</strong> ont leur recette brute, impayés et dépenses entreprise modifiables. Les <strong>dépenses propres</strong> (personnelles) restent modifiables pour tous les mois. Cliquez « Mes données » pour entrer vos chiffres — votre saisie s'ajoute à celle des autres caissiers, elle ne la remplace jamais.
+        Les mois avant <strong>septembre 2026</strong> ont leur recette brute, impayés et dépenses entreprise modifiables. Les <strong>dépenses propres</strong> (personnelles) restent modifiables pour tous les mois. Cliquez « Mes données » pour entrer vos chiffres — votre saisie s'ajoute à celle des autres caissiers, elle ne la remplace jamais. « Net perçu » = Espèces + Orange Money réellement reçus, moins les dépenses entreprise.
       </p>
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:24}}>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:14, marginBottom:24}}>
         <StatCard label={`Recette brute ${annee}`} value={fmtGNF(totalBrute)} icon="euro" />
+        <StatCard label={`Impayés ${annee}`} value={fmtGNF(totalImpayesReel)} icon="alert" tone={totalImpayesReel>0?'danger':'default'} />
         <StatCard label={`Dépenses entreprise ${annee}`} value={fmtGNF(totalDepenses)} icon="trash" tone="danger" />
         <StatCard label={`Dépenses propres ${annee}`} value={fmtGNF(totalDepensesPropres)} icon="trash" tone="danger" />
-        <StatCard label={`Net ${annee}`} value={fmtGNF(totalNet)} icon="chart" tone={totalNet>=0?'default':'danger'} />
+        <StatCard label={`Net perçu ${annee}`} value={fmtGNF(totalNetPercu)} icon="chart" tone={totalNetPercu>=0?'default':'danger'} />
       </div>
 
       <div className="card" style={{overflow:'hidden'}}>
@@ -7421,7 +7432,9 @@ function DetailMensuelSiteView({ site, updateSite, employeId }){
               <th style={th}>Impayés</th>
               <th style={th}>Dépenses entreprise</th>
               <th style={th}>Dépenses propres</th>
-              <th style={th}>Net</th>
+              <th style={th}>Espèces</th>
+              <th style={th}>Orange Money</th>
+              <th style={th}>Net perçu</th>
               <th style={th}></th>
             </tr>
           </thead>
@@ -7432,10 +7445,12 @@ function DetailMensuelSiteView({ site, updateSite, employeId }){
             <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
               <td style={{...td, fontWeight:700}}>Total {annee}</td>
               <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalBrute)}</td>
-              <td style={{...td, fontWeight:700}} className="mono">{totalImpayes>0?fmtGNF(totalImpayes):'—'}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{totalImpayesReel>0?fmtGNF(totalImpayesReel):'—'}</td>
               <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalDepenses)}</td>
               <td style={{...td, fontWeight:700}} className="mono">{totalDepensesPropres>0?fmtGNF(totalDepensesPropres):'—'}</td>
-              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalNet)}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(donneesParMois.reduce((s,m)=>s+(m.montantRecuEspeces||0),0))}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(donneesParMois.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0))}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalNetPercu)}</td>
               <td></td>
             </tr>
           </tbody>
@@ -7479,6 +7494,8 @@ function DetailMensuelGerantView({ site, updateSite }){
   const totalDepenses = donneesParMois.reduce((s,m)=>s+m.depenses,0);
   const totalDepensesPropres = donneesParMois.reduce((s,m)=>s+m.depensesPropres,0);
   const totalNet = donneesParMois.reduce((s,m)=>s+m.net,0);
+  const totalNetPercu = donneesParMois.reduce((s,m)=>s+m.netPercu,0);
+  const totalImpayesReel = donneesParMois.reduce((s,m)=>s+m.impayesReel,0);
 
   return (
     <div>
@@ -7490,14 +7507,15 @@ function DetailMensuelGerantView({ site, updateSite }){
         } />
 
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
-        « Dépenses entreprise » = dépenses du pressing (fournitures, factures, salaires...). « Dépenses propres » = dépenses personnelles saisies par chaque caissier — les deux restent toujours distinctes.
+        « Dépenses entreprise » = dépenses du pressing (fournitures, factures, salaires...). « Dépenses propres » = dépenses personnelles saisies par chaque caissier — les deux restent toujours distinctes. « Net perçu » = Espèces + Orange Money réellement reçus, moins les dépenses entreprise. « Impayés » = Recette brute non encore encaissée en Espèces ou Orange Money.
       </p>
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:24}}>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:14, marginBottom:24}}>
         <StatCard label={`Recette brute ${annee}`} value={fmtGNF(totalBrute)} icon="euro" />
+        <StatCard label={`Impayés ${annee}`} value={fmtGNF(totalImpayesReel)} icon="alert" tone={totalImpayesReel>0?'danger':'default'} />
         <StatCard label={`Dépenses entreprise ${annee}`} value={fmtGNF(totalDepenses)} icon="trash" tone="danger" />
         <StatCard label={`Dépenses propres ${annee}`} value={fmtGNF(totalDepensesPropres)} icon="trash" tone="danger" />
-        <StatCard label={`Net ${annee}`} value={fmtGNF(totalNet)} icon="chart" tone={totalNet>=0?'default':'danger'} />
+        <StatCard label={`Net perçu ${annee}`} value={fmtGNF(totalNetPercu)} icon="chart" tone={totalNetPercu>=0?'default':'danger'} />
       </div>
 
       <div className="card" style={{overflow:'hidden'}}>
@@ -7509,7 +7527,9 @@ function DetailMensuelGerantView({ site, updateSite }){
               <th style={th}>Impayés</th>
               <th style={th}>Dépenses entreprise</th>
               <th style={th}>Dépenses propres</th>
-              <th style={th}>Net</th>
+              <th style={th}>Espèces</th>
+              <th style={th}>Orange Money</th>
+              <th style={th}>Net perçu</th>
               <th style={th}></th>
             </tr>
           </thead>
@@ -7522,10 +7542,12 @@ function DetailMensuelGerantView({ site, updateSite }){
                     {m.manuel && <span className="tag" style={{fontSize:9, marginLeft:6, background:'var(--warn-light)', color:'var(--warn)'}}>Manuel</span>}
                   </td>
                   <td style={td} className="mono">{fmtGNF(m.recetteBrute)}</td>
-                  <td style={{...td, color: m.impayes>0?'var(--danger)':'var(--steam)'}} className="mono">{m.impayes>0?fmtGNF(m.impayes):'—'}</td>
+                  <td style={{...td, color: m.impayesReel>0?'var(--danger)':'var(--steam)'}} className="mono">{m.impayesReel>0?fmtGNF(m.impayesReel):'—'}</td>
                   <td style={{...td, color: m.depenses>0?'var(--danger)':'var(--steam)'}} className="mono">{fmtGNF(m.depenses)}</td>
                   <td style={{...td, color: m.depensesPropres>0?'var(--rust)':'var(--steam)'}} className="mono">{m.depensesPropres>0?fmtGNF(m.depensesPropres):'—'}</td>
-                  <td style={{...td, fontWeight:700, color: m.net<0?'var(--danger)':'var(--ink)'}} className="mono">{fmtGNF(m.net)}</td>
+                  <td style={{...td, color:'var(--pine)'}} className="mono">{fmtGNF(m.montantRecuEspeces||0)}</td>
+                  <td style={{...td, color:'var(--pine)'}} className="mono">{fmtGNF(m.montantRecuOrangeMoney||0)}</td>
+                  <td style={{...td, fontWeight:700, color: m.netPercu<0?'var(--danger)':'var(--ink)'}} className="mono">{fmtGNF(m.netPercu)}</td>
                   <td style={{...td, textAlign:'right'}}>
                     <div style={{display:'flex', gap:6, justifyContent:'flex-end'}}>
                       {Object.keys(m.parEmploye||{}).length > 0 && (
@@ -7539,7 +7561,7 @@ function DetailMensuelGerantView({ site, updateSite }){
                 </tr>
                 {moisOuvert === m.mois && Object.keys(m.parEmploye||{}).length > 0 && (
                   <tr style={{background:'var(--paper-2)'}}>
-                    <td colSpan={7} style={{padding:'10px 14px'}}>
+                    <td colSpan={9} style={{padding:'10px 14px'}}>
                       {Object.entries(m.parEmploye).filter(([empId]) => empId !== '_legacy').map(([empId, v]) => (
                         <div key={empId} style={{padding:'6px 0', borderBottom:'1px solid var(--line)'}}>
                           <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:2}}>
@@ -7562,10 +7584,12 @@ function DetailMensuelGerantView({ site, updateSite }){
             <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
               <td style={{...td, fontWeight:700}}>Total {annee}</td>
               <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalBrute)}</td>
-              <td style={{...td, fontWeight:700}} className="mono">{totalImpayes>0?fmtGNF(totalImpayes):'—'}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{totalImpayesReel>0?fmtGNF(totalImpayesReel):'—'}</td>
               <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalDepenses)}</td>
               <td style={{...td, fontWeight:700}} className="mono">{totalDepensesPropres>0?fmtGNF(totalDepensesPropres):'—'}</td>
-              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalNet)}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(donneesParMois.reduce((s,m)=>s+(m.montantRecuEspeces||0),0))}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(donneesParMois.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0))}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalNetPercu)}</td>
               <td></td>
             </tr>
           </tbody>
