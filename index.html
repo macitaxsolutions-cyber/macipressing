@@ -2157,6 +2157,89 @@ function DistributionView({ db, setDb, anneeInitiale }){
 
 function GlobalDashboard({ db, onOpenSite }){
   const today = todayISO();
+  const [periodeGlobale, setPeriodeGlobale] = useState('jour');
+  const [moisGlobal, setMoisGlobal] = useState(today.slice(0,7));
+  const [anneeGlobale, setAnneeGlobale] = useState(Number(today.slice(0,4)));
+
+  const getWeekDates = () => {
+    const d = new Date(today + 'T00:00:00');
+    const day = d.getDay() || 7;
+    const monday = new Date(d); monday.setDate(d.getDate() - day + 1);
+    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+    const toISO = (dt) => dt.toISOString().slice(0,10);
+    return { start: toISO(monday), end: toISO(sunday) };
+  };
+  const week = getWeekDates();
+
+  function dansPeriode(dateStr){
+    const d = (dateStr||'').slice(0,10);
+    if(periodeGlobale === 'jour') return d === today;
+    if(periodeGlobale === 'semaine') return d >= week.start && d <= week.end;
+    if(periodeGlobale === 'mois') return d.slice(0,7) === moisGlobal;
+    if(periodeGlobale === 'annee') return d.slice(0,4) === String(anneeGlobale);
+    return true; // 'total' = à ce jour, tout confondu
+  }
+
+  function estAvantSeuilMois(anneeNum, moisNum){
+    return anneeNum < 2026 || (anneeNum === 2026 && moisNum < 9);
+  }
+  // Mois avant-seuil (saisie manuelle uniquement) compris dans la période choisie, pour ajouter les montants manuels
+  const moisManuelsDansPeriode = useMemo(() => {
+    const liste = [];
+    if(periodeGlobale === 'mois'){
+      const [a,m] = moisGlobal.split('-').map(Number);
+      if(estAvantSeuilMois(a,m)) liste.push({ annee:a, mois:m });
+    } else if(periodeGlobale === 'annee'){
+      for(let m=1; m<=12; m++) if(estAvantSeuilMois(anneeGlobale, m)) liste.push({ annee:anneeGlobale, mois:m });
+    } else if(periodeGlobale === 'total'){
+      for(let a=ANNEE_DEBUT_APP-3; a<=Number(today.slice(0,4)); a++){
+        for(let m=1; m<=12; m++) if(estAvantSeuilMois(a,m)) liste.push({ annee:a, mois:m });
+      }
+    }
+    return liste;
+  }, [periodeGlobale, moisGlobal, anneeGlobale, today]);
+
+  const globalEspecesOrangeDepenses = useMemo(() => {
+    let especes = 0, orangeMoney = 0, depenses = 0, impayes = 0, revenuFacture = 0;
+    db.sites.forEach(site => {
+      (site.commandes||[]).forEach(c => {
+        getPaiementsCommande(c).forEach(pmt => {
+          if(!pmt.date || !dansPeriode(pmt.date)) return;
+          if(pmt.mode === 'Orange Money') orangeMoney += Number(pmt.montant);
+          else especes += Number(pmt.montant);
+        });
+        if(c.dateCreation && dansPeriode(c.dateCreation)){
+          revenuFacture += calcCommandeTotal(c, site.services);
+        }
+        if(c.paiement === 'impaye' && c.dateCreation && dansPeriode(c.dateCreation)){
+          impayes += calcCommandeTotal(c, site.services) - (Number(c.acompte)||0);
+        }
+      });
+      (site.depenses||[]).forEach(d => {
+        if(d.date && dansPeriode(d.date)) depenses += Number(d.montant)||0;
+      });
+      moisManuelsDansPeriode.forEach(({annee, mois}) => {
+        const parEmploye = normaliserMoisManuel(((site.detailMensuelManuel||{})[annee]||{})[String(mois)]) || {};
+        Object.values(parEmploye).forEach(v => {
+          especes += Number(v.montantRecuEspeces)||0;
+          orangeMoney += Number(v.montantRecuOrangeMoney)||0;
+          depenses += Number(v.depenses)||0;
+          impayes += Number(v.impayes)||0;
+          revenuFacture += Number(v.recetteBrute)||0;
+        });
+      });
+    });
+    return { especes, orangeMoney, depenses, impayes, revenuFacture };
+  }, [db.sites, periodeGlobale, moisGlobal, anneeGlobale, moisManuelsDansPeriode]);
+
+  const anneesGlobalesDisponibles = useMemo(() => {
+    const arr = [];
+    const currentYear = Number(today.slice(0,4));
+    for(let y = currentYear; y >= ANNEE_DEBUT_APP - 3; y--) arr.push(y);
+    return arr;
+  }, [today]);
+
+  const periodeGlobaleLabel = periodeGlobale==='jour' ? "Aujourd'hui" : periodeGlobale==='semaine' ? 'Cette semaine' : periodeGlobale==='mois' ? 'Ce mois' : periodeGlobale==='annee' ? 'Cette année' : 'À ce jour (tout confondu)';
 
   const perSite = db.sites.map(site => {
     const cmds = site.commandes;
@@ -2184,10 +2267,31 @@ function GlobalDashboard({ db, onOpenSite }){
     <div>
       <PageHeader title="Vue globale" subtitle={`${db.sites.length} pressing(s) — ${fmtDate(today)}`} />
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:14, marginBottom:28}}>
-        <StatCard label="CA total aujourd'hui" value={fmtGNF(totals.caJour)} icon="euro" />
-        <StatCard label="CA total ce mois" value={fmtGNF(totals.caMois)} icon="chart" />
-        <StatCard label="Impayés cumulés" value={fmtGNF(totals.montantImpaye)} icon="alert" tone={totals.montantImpaye>0?'danger':'default'} />
+      <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
+        {[{k:'jour',l:"Aujourd'hui"},{k:'semaine',l:'Cette semaine'},{k:'mois',l:'Mois'},{k:'annee',l:'Année'},{k:'total',l:'À ce jour'}].map(opt => (
+          <button key={opt.k} className="btn btn-sm" onClick={()=>setPeriodeGlobale(opt.k)}
+            style={{background:periodeGlobale===opt.k?'var(--pine)':'transparent', color:periodeGlobale===opt.k?'var(--white)':'var(--ink)', borderColor:periodeGlobale===opt.k?'var(--pine)':'var(--line-strong)'}}>
+            {opt.l}
+          </button>
+        ))}
+        {periodeGlobale === 'mois' && (
+          <input type="month" value={moisGlobal} onChange={e=>setMoisGlobal(e.target.value)} style={{width:'auto'}} />
+        )}
+        {periodeGlobale === 'annee' && (
+          <select value={anneeGlobale} onChange={e=>setAnneeGlobale(Number(e.target.value))} style={{width:'auto', minWidth:100}}>
+            {anneesGlobalesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        )}
+      </div>
+
+      <div style={{display:'grid', gridTemplateColumns:'repeat(8, 1fr)', gap:12, marginBottom:28}}>
+        <StatCard label={`Revenu total (factures) — ${periodeGlobaleLabel}`} value={fmtGNF(globalEspecesOrangeDepenses.revenuFacture)} icon="euro" />
+        <StatCard label={`Impayés — ${periodeGlobaleLabel}`} value={fmtGNF(globalEspecesOrangeDepenses.impayes)} icon="alert" tone={globalEspecesOrangeDepenses.impayes>0?'danger':'default'} />
+        <StatCard label={`Espèces — ${periodeGlobaleLabel}`} value={fmtGNF(globalEspecesOrangeDepenses.especes)} icon="euro" />
+        <StatCard label={`Orange Money — ${periodeGlobaleLabel}`} value={fmtGNF(globalEspecesOrangeDepenses.orangeMoney)} icon="euro" />
+        <StatCard label={`Total Espèces + Orange Money — ${periodeGlobaleLabel}`} value={fmtGNF(globalEspecesOrangeDepenses.especes + globalEspecesOrangeDepenses.orangeMoney)} icon="euro" />
+        <StatCard label={`Dépenses — ${periodeGlobaleLabel}`} value={fmtGNF(globalEspecesOrangeDepenses.depenses)} icon="trash" tone="danger" />
+        <StatCard label={`Net perçu — ${periodeGlobaleLabel}`} value={fmtGNF(globalEspecesOrangeDepenses.especes + globalEspecesOrangeDepenses.orangeMoney - globalEspecesOrangeDepenses.depenses)} icon="chart" tone={(globalEspecesOrangeDepenses.especes + globalEspecesOrangeDepenses.orangeMoney - globalEspecesOrangeDepenses.depenses)<0?'danger':'default'} />
         <StatCard label="Clients (tous sites)" value={totals.clientsCount} icon="users" />
       </div>
 
