@@ -45,6 +45,13 @@
   const firebaseDB = firebase.database();
   const firebaseAuth = firebase.auth();
   const firebaseStorage = firebase.storage();
+
+  // Empêche la molette de souris de modifier accidentellement un champ numérique (montants)
+  document.addEventListener('wheel', function(e){
+    if(document.activeElement && document.activeElement.type === 'number'){
+      document.activeElement.blur();
+    }
+  }, { passive: true });
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -231,6 +238,16 @@
     }
     h1{ font-size:22px !important; }
     .card{ padding-left:0.9rem !important; padding-right:0.9rem !important; }
+  }
+
+  /* Retire les flèches de +/- sur tous les champs de montant (évite les changements accidentels au clic ou au scroll) */
+  input[type=number]::-webkit-outer-spin-button,
+  input[type=number]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type=number] {
+    -moz-appearance: textfield;
   }
 </style>
 </head>
