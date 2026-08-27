@@ -2284,16 +2284,24 @@ function GlobalDashboard({ db, onOpenSite }){
         )}
       </div>
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(8, 1fr)', gap:12, marginBottom:28}}>
-        <StatCard label={`Revenu total (factures) — ${periodeGlobaleLabel}`} value={fmtGNF(globalEspecesOrangeDepenses.revenuFacture)} icon="euro" />
-        <StatCard label={`Impayés — ${periodeGlobaleLabel}`} value={fmtGNF(globalEspecesOrangeDepenses.impayes)} icon="alert" tone={globalEspecesOrangeDepenses.impayes>0?'danger':'default'} />
-        <StatCard label={`Espèces — ${periodeGlobaleLabel}`} value={fmtGNF(globalEspecesOrangeDepenses.especes)} icon="euro" />
-        <StatCard label={`Orange Money — ${periodeGlobaleLabel}`} value={fmtGNF(globalEspecesOrangeDepenses.orangeMoney)} icon="euro" />
-        <StatCard label={`Total Espèces + Orange Money — ${periodeGlobaleLabel}`} value={fmtGNF(globalEspecesOrangeDepenses.especes + globalEspecesOrangeDepenses.orangeMoney)} icon="euro" />
-        <StatCard label={`Dépenses — ${periodeGlobaleLabel}`} value={fmtGNF(globalEspecesOrangeDepenses.depenses)} icon="trash" tone="danger" />
-        <StatCard label={`Net perçu — ${periodeGlobaleLabel}`} value={fmtGNF(globalEspecesOrangeDepenses.especes + globalEspecesOrangeDepenses.orangeMoney - globalEspecesOrangeDepenses.depenses)} icon="chart" tone={(globalEspecesOrangeDepenses.especes + globalEspecesOrangeDepenses.orangeMoney - globalEspecesOrangeDepenses.depenses)<0?'danger':'default'} />
-        <StatCard label="Clients (tous sites)" value={totals.clientsCount} icon="users" />
+      <div style={{display:'grid', gridTemplateColumns:'repeat(8, 1fr)', gap:8, marginBottom:28}}>
+        {[
+          { label: 'Revenu (factures)', value: globalEspecesOrangeDepenses.revenuFacture, danger: false },
+          { label: 'Impayés', value: globalEspecesOrangeDepenses.impayes, danger: globalEspecesOrangeDepenses.impayes>0 },
+          { label: 'Espèces', value: globalEspecesOrangeDepenses.especes, danger: false },
+          { label: 'Orange Money', value: globalEspecesOrangeDepenses.orangeMoney, danger: false },
+          { label: 'Total Esp. + OM', value: globalEspecesOrangeDepenses.especes + globalEspecesOrangeDepenses.orangeMoney, danger: false },
+          { label: 'Dépenses', value: globalEspecesOrangeDepenses.depenses, danger: true },
+          { label: 'Net perçu', value: globalEspecesOrangeDepenses.especes + globalEspecesOrangeDepenses.orangeMoney - globalEspecesOrangeDepenses.depenses, danger: (globalEspecesOrangeDepenses.especes + globalEspecesOrangeDepenses.orangeMoney - globalEspecesOrangeDepenses.depenses)<0 },
+          { label: 'Clients', value: totals.clientsCount, danger: false, notMoney: true },
+        ].map((c,i) => (
+          <div key={i} className="card" style={{padding:'0.7rem 0.8rem'}}>
+            <div style={{fontSize:10, color:'var(--steam)', textTransform:'uppercase', letterSpacing:'0.02em', fontWeight:600, lineHeight:1.3, marginBottom:4}}>{c.label}</div>
+            <div className="mono" style={{fontSize:14.5, fontWeight:700, color: c.danger ? 'var(--danger)' : 'var(--pine)'}}>{c.notMoney ? c.value : fmtGNF(c.value)}</div>
+          </div>
+        ))}
       </div>
+      <p style={{fontSize:11, color:'var(--steam)', margin:'-20px 0 24px'}}>Montants pour la période : {periodeGlobaleLabel}</p>
 
       <h2 style={{fontSize:16, color:'var(--pine)', marginBottom:14}}>Détail par site</h2>
       <div style={{display:'grid', gap:14}}>
