@@ -2295,7 +2295,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
               <td style={{...td, fontWeight:700}}>100%</td>
               <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(periodeDonnees.recetteBrute)}</td>
               <td style={{...td, fontWeight:700, color: periodeDonnees.impayes>0?'var(--danger)':'var(--steam)'}} className="mono">{periodeDonnees.impayes>0?fmtGNF(periodeDonnees.impayes):'—'}</td>
-              <td style={{...td, fontWeight:700, color:'var(--danger)'}} className="mono">{fmtGNF(periodeDonnees.impayes + (periodeDonnees.recetteNette - totalDepensesActeursPeriode))}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(periodeDonnees.recetteNette)}</td>
               <td style={{...td, fontWeight:700}} className="mono">{totalDepensesActeursPeriode>0 ? '− '+fmtGNF(totalDepensesActeursPeriode) : '—'}</td>
               <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(periodeDonnees.recetteNette - totalDepensesActeursPeriode)}</td>
               <td style={{...td, fontWeight:700, color:'var(--ok)'}} className="mono">{fmtGNF(periodeDonnees.recetteNette - totalDepensesActeursPeriode)}</td>
@@ -5256,8 +5256,45 @@ function DepensesView({ site, updateSite, db, employeId }){
           (filtreMode === 'tous' || l.mode === filtreMode) &&
           (filtreSaisiPar === 'tous' || l.saisiParNom === filtreSaisiPar)
         );
+
+        // Regroupe les Salaires (même jour + même mode) et les Paiements de repassage
+        // (même jour + même repasseur + même mode) en une seule ligne avec le montant total
+        function extraireNomRepasseur(description){
+          const parts = description.split(' — ');
+          return parts.length > 1 ? parts[parts.length-1].trim() : description;
+        }
+        const groupes = {};
+        const nonGroupees = [];
+        lignesFiltrees.forEach(l => {
+          if(l.categorie === 'Salaires'){
+            const key = `sal|${l.date.slice(0,10)}|${l.mode}`;
+            if(!groupes[key]) groupes[key] = { ...l, id: key, description: '', montant: 0, count: 0, isGrouped: true, isOrphan: true };
+            groupes[key].montant += l.montant;
+            groupes[key].count += 1;
+          } else if(l.categorie === 'Paiement'){
+            const nomRepasseur = extraireNomRepasseur(l.description);
+            const key = `pai|${l.date.slice(0,10)}|${nomRepasseur}|${l.mode}`;
+            if(!groupes[key]) groupes[key] = { ...l, id: key, description: '', nomRepasseur, montant: 0, count: 0, confirmesCount: 0, isGrouped: true, isOrphan: true };
+            groupes[key].montant += l.montant;
+            groupes[key].count += 1;
+            if(l.confirmation && l.confirmation.label.includes('Confirmé')) groupes[key].confirmesCount += 1;
+          } else {
+            nonGroupees.push(l);
+          }
+        });
+        Object.values(groupes).forEach(g => {
+          if(g.nomRepasseur){
+            g.description = `Paiements repassage — ${g.nomRepasseur} (${g.count} paiement${g.count>1?'s':''} du jour)`;
+            g.confirmation = { label: `${g.confirmesCount}/${g.count} confirmé(s)`, color: g.confirmesCount===g.count ? 'var(--pine)' : 'var(--warn)', bg: g.confirmesCount===g.count ? 'var(--pine-light)' : 'var(--warn-light)' };
+          } else {
+            g.description = `Salaires du jour (${g.count} versement${g.count>1?'s':''})`;
+            g.confirmation = null;
+          }
+        });
+        const lignesGroupees = [...nonGroupees, ...Object.values(groupes)];
+
         const collator = new Intl.Collator('fr');
-        const lignesTableau = [...lignesFiltrees].sort((a,b) => {
+        const lignesTableau = [...lignesGroupees].sort((a,b) => {
           let cmp = 0;
           if(triColonne === 'date') cmp = new Date(a.date) - new Date(b.date);
           else if(triColonne === 'montant') cmp = a.montant - b.montant;
@@ -5272,8 +5309,14 @@ function DepensesView({ site, updateSite, db, employeId }){
         const thTriable = (col, label) => (
           <th style={{...th, cursor:'pointer', userSelect:'none'}} onClick={()=>trierPar(col)}>{label}{flecheTri(col)}</th>
         );
-        const EXPORT_HEADERS = ['Date','Description','Catégorie','Mode','Saisi par','Confirmation','Montant'];
-        const exportRows = lignesTableau.map(l => [fmtDate(l.date), l.description, l.categorie, l.mode, l.saisiParNom, l.confirmation ? l.confirmation.label.replace('✓ ','') : '', Math.round(l.montant)]);
+        const EXPORT_HEADERS = ['Date','Description', ...CATEGORIES_DEPENSES_AFFICHAGE, 'Saisi par','Confirmation','Espèces','Orange Money','Montant'];
+        const exportRows = lignesTableau.map(l => [
+          fmtDate(l.date), l.description,
+          ...CATEGORIES_DEPENSES_AFFICHAGE.map(cat => cat === l.categorie ? Math.round(l.montant) : ''),
+          l.saisiParNom, l.confirmation ? l.confirmation.label.replace('✓ ','') : '',
+          l.mode === 'Orange Money' ? Math.round(l.montant) : '', l.mode !== 'Orange Money' ? Math.round(l.montant) : '',
+          Math.round(l.montant)
+        ]);
 
         return (
         <>
@@ -5301,39 +5344,46 @@ function DepensesView({ site, updateSite, db, employeId }){
             onPDF={()=>exportTableToPDF({ filename:`depenses-${labelPeriode}`, title:'Dépenses', subtitle:`Maci Pressing — ${labelPeriode}`, headers:EXPORT_HEADERS, rows:exportRows })}
           />
         </div>
-        <div className="card" style={{overflow:'hidden'}}>
-        <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+        <div className="card" style={{overflow:'auto'}}>
+        <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
           <thead>
             <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
               {thTriable('date', 'Date')}
               {thTriable('description', 'Description')}
-              {thTriable('categorie', 'Catégorie')}
-              {thTriable('mode', 'Mode')}
+              {CATEGORIES_DEPENSES_AFFICHAGE.map(cat => <th key={cat} style={{...th, whiteSpace:'nowrap'}}>{cat}</th>)}
               {thTriable('saisiParNom', 'Saisi par')}
               <th style={th}>Confirmation</th>
-              {thTriable('montant', 'Montant')}
+              <th style={th}>Espèces</th>
+              <th style={th}>Orange Money</th>
+              {thTriable('montant', 'Total')}
               <th style={th}></th>
             </tr>
           </thead>
           <tbody>
             {lignesTableau.length === 0 && (
-              <tr><td colSpan={7} style={{...td, textAlign:'center', color:'var(--steam)', padding:'2rem'}}>Aucune dépense enregistrée pour ce mois.</td></tr>
+              <tr><td colSpan={7+CATEGORIES_DEPENSES_AFFICHAGE.length} style={{...td, textAlign:'center', color:'var(--steam)', padding:'2rem'}}>Aucune dépense enregistrée pour ce mois.</td></tr>
             )}
             {lignesTableau.map(l => (
               <tr key={l.id} style={{borderTop:'1px solid var(--line)'}}>
-                <td style={td}>{fmtDate(l.date)}</td>
+                <td style={{...td, whiteSpace:'nowrap'}}>{fmtDate(l.date)}</td>
                 <td style={td}>
                   {l.description}
-                  {l.isOrphan && <span className="tag" style={{marginLeft:6, fontSize:9.5, background:'var(--warn-light)', color:'var(--warn)'}}>Historique</span>}
+                  {l.isOrphan && !l.isGrouped && <span className="tag" style={{marginLeft:6, fontSize:9.5, background:'var(--warn-light)', color:'var(--warn)'}}>Historique</span>}
+                  {l.isGrouped && <span className="tag" style={{marginLeft:6, fontSize:9.5, background:'var(--pine-light)', color:'var(--pine)'}}>Groupé</span>}
                 </td>
-                <td style={td}><span className="tag tag-recu">{l.categorie}</span></td>
-                <td style={td}>{l.mode}</td>
+                {CATEGORIES_DEPENSES_AFFICHAGE.map(cat => (
+                  <td key={cat} style={{...td, color: cat===l.categorie ? 'var(--danger)' : 'var(--line)', fontWeight: cat===l.categorie ? 600 : 400}} className="mono">
+                    {cat === l.categorie ? fmtGNF(l.montant) : '—'}
+                  </td>
+                ))}
                 <td style={{...td, color:'var(--steam)'}}>{l.saisiParNom}</td>
                 <td style={td}>
                   {l.confirmation && (
                     <span className="tag" style={{background:l.confirmation.bg, color:l.confirmation.color}}>{l.confirmation.label}</span>
                   )}
                 </td>
+                <td style={{...td, color: l.mode!=='Orange Money' ? 'var(--pine)' : 'var(--line)'}} className="mono">{l.mode!=='Orange Money' ? fmtGNF(l.montant) : '—'}</td>
+                <td style={{...td, color: l.mode==='Orange Money' ? 'var(--pine)' : 'var(--line)'}} className="mono">{l.mode==='Orange Money' ? fmtGNF(l.montant) : '—'}</td>
                 <td style={{...td, color:'var(--danger)', fontWeight:600}} className="mono">{fmtGNF(l.montant)}</td>
                 <td style={{...td, textAlign:'right'}}>
                   {!l.isOrphan && (
@@ -5351,7 +5401,13 @@ function DepensesView({ site, updateSite, db, employeId }){
             ))}
             {lignesTableau.length > 0 && (
               <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
-                <td colSpan={6} style={{...td, fontWeight:700}}>Total {(filtreCategorie!=='toutes'||filtreMode!=='tous'||filtreSaisiPar!=='tous') ? '(filtré)' : labelPeriode}</td>
+                <td colSpan={2} style={{...td, fontWeight:700}}>Total {(filtreCategorie!=='toutes'||filtreMode!=='tous'||filtreSaisiPar!=='tous') ? '(filtré)' : labelPeriode}</td>
+                {CATEGORIES_DEPENSES_AFFICHAGE.map(cat => (
+                  <td key={cat} style={{...td, fontWeight:700}} className="mono">{fmtGNF(lignesTableau.filter(l=>l.categorie===cat).reduce((s,l)=>s+l.montant,0))}</td>
+                ))}
+                <td colSpan={2}></td>
+                <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(lignesTableau.filter(l=>l.mode!=='Orange Money').reduce((s,l)=>s+l.montant,0))}</td>
+                <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(lignesTableau.filter(l=>l.mode==='Orange Money').reduce((s,l)=>s+l.montant,0))}</td>
                 <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(lignesTableau.reduce((s,l)=>s+l.montant,0))}</td>
                 <td></td>
               </tr>
