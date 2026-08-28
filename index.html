@@ -1503,48 +1503,6 @@ function ComparaisonAnneesView({ db, onOpenAnnee }){
   );
 }
 
-function MoisRow({ valeurs, onSave, onReset }){
-  const [recetteBrute, setRecetteBrute] = useState(String(valeurs.recetteBrute || ''));
-  const [depenses, setDepenses] = useState(String(valeurs.depenses || ''));
-  const [impayes, setImpayes] = useState(String(valeurs.impayes || ''));
-  const [flash, setFlash] = useState(false);
-
-  useEffect(() => {
-    setRecetteBrute(valeurs.recetteBrute ? String(valeurs.recetteBrute) : '');
-    setDepenses(valeurs.depenses ? String(valeurs.depenses) : '');
-    setImpayes(valeurs.impayes ? String(valeurs.impayes) : '');
-  }, [valeurs.mois, valeurs.recetteBrute, valeurs.depenses, valeurs.impayes]);
-
-  function save(){
-    onSave(valeurs.mois, { recetteBrute: Number(recetteBrute)||0, depenses: Number(depenses)||0, impayes: Number(impayes)||0 });
-    setFlash(true);
-    setTimeout(()=>setFlash(false), 1200);
-  }
-
-  const recetteNetteMois = (Number(recetteBrute)||0) - (Number(impayes)||0) - (Number(depenses)||0);
-
-  return (
-    <tr style={{borderTop:'1px solid var(--line)'}}>
-      <td style={{...td, textTransform:'capitalize', fontWeight:600, whiteSpace:'nowrap'}}>
-        {valeurs.label}
-        {valeurs.manuel && <span className="tag" style={{fontSize:9, marginLeft:6, background:'var(--warn-light)', color:'var(--warn)'}}>Manuel</span>}
-      </td>
-      <td style={td}><input type="number" value={recetteBrute} onChange={e=>setRecetteBrute(e.target.value)} placeholder="0" style={{padding:'6px 8px', fontSize:13}} /></td>
-      <td style={td}><input type="number" value={impayes} onChange={e=>setImpayes(e.target.value)} placeholder="0" style={{padding:'6px 8px', fontSize:13}} /></td>
-      <td style={td}><input type="number" value={depenses} onChange={e=>setDepenses(e.target.value)} placeholder="0" style={{padding:'6px 8px', fontSize:13}} /></td>
-      <td style={{...td, fontWeight:700, color: recetteNetteMois<0?'var(--danger)':'var(--ink)'}} className="mono">{fmtGNF(recetteNetteMois)}</td>
-      <td style={{...td, textAlign:'right', whiteSpace:'nowrap'}}>
-        <button className="btn btn-sm" onClick={save}>{flash ? <Icon name="check" size={13}/> : 'Enreg.'}</button>
-        {valeurs.manuel && (
-          <button className="btn btn-ghost btn-sm" style={{marginLeft:6, color:'var(--rust)'}} onClick={()=>onReset(valeurs.mois)} title="Effacer la correction manuelle et revenir au calcul automatique">
-            🔄
-          </button>
-        )}
-      </td>
-    </tr>
-  );
-}
-
 function DistributionView({ db, setDb, anneeInitiale }){
   const currentYear = Number(todayISO().slice(0,4));
   const anneesDisponibles = useMemo(() => {
@@ -1556,6 +1514,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
   const [annee, setAnnee] = useState(anneeInitiale || currentYear);
   const parts = db.partsDistribution || PARTS_DISTRIBUTION;
   const [pctEdits, setPctEdits] = useState(() => Object.fromEntries(parts.map(p=>[p.nom, String(p.pct)])));
+  const [moisOuvertConsolide, setMoisOuvertConsolide] = useState(null);
   useEffect(() => { setPctEdits(Object.fromEntries(parts.map(p=>[p.nom, String(p.pct)]))); }, [db.partsDistribution]);
   const pctModifie = parts.some(p => String(p.pct) !== (pctEdits[p.nom] ?? String(p.pct)));
   function enregistrerPcts(){
@@ -1579,24 +1538,32 @@ function DistributionView({ db, setDb, anneeInitiale }){
   const [editRecette, setEditRecette] = useState('');
   const [editDepenses, setEditDepenses] = useState('');
   const [editImpayes, setEditImpayes] = useState('');
+  const [editEspeces, setEditEspeces] = useState('');
+  const [editOrangeMoney, setEditOrangeMoney] = useState('');
   const [flash, setFlash] = useState(false);
 
   // Dépenses propres à chaque acteur (toutes années confondues) — liste détaillée avec description
   const [draftDesc, setDraftDesc] = useState({});
   const [draftMontant, setDraftMontant] = useState({});
   const [draftDate, setDraftDate] = useState({});
+  const [depensesPropresPeriode, setDepensesPropresPeriode] = useState('annee');
+  const [depensesPropresJour, setDepensesPropresJour] = useState(todayISO());
+  const [depensesPropresMois, setDepensesPropresMois] = useState(todayISO().slice(0,7));
+  const [acteurAjout, setActeurAjout] = useState('');
 
   useEffect(() => {
     const d = (db.historiqueAnnuel || {})[annee] || {};
     setEditRecette(d.recetteBrute ? String(d.recetteBrute) : '');
     setEditDepenses(d.depenses ? String(d.depenses) : '');
     setEditImpayes(d.impayes ? String(d.impayes) : '');
+    setEditEspeces(d.especes ? String(d.especes) : '');
+    setEditOrangeMoney(d.orangeMoney ? String(d.orangeMoney) : '');
   }, [annee]);
 
   function saveHistorique(){
     const next = {
       ...(db.historiqueAnnuel || {}),
-      [annee]: { ...(db.historiqueAnnuel?.[annee]||{}), recetteBrute: Number(editRecette)||0, depenses: Number(editDepenses)||0, impayes: Number(editImpayes)||0 },
+      [annee]: { ...(db.historiqueAnnuel?.[annee]||{}), recetteBrute: Number(editRecette)||0, depenses: Number(editDepenses)||0, impayes: Number(editImpayes)||0, especes: Number(editEspeces)||0, orangeMoney: Number(editOrangeMoney)||0 },
     };
     setDb({ ...db, historiqueAnnuel: next });
     setFlash(true);
@@ -1604,18 +1571,19 @@ function DistributionView({ db, setDb, anneeInitiale }){
   }
 
   function ajouterDepenseActeur(nomActeur){
-    const desc = (draftDesc[nomActeur]||'').trim();
-    const montant = Number(draftMontant[nomActeur])||0;
-    const date = draftDate[nomActeur] || todayISO();
-    if(!desc || montant<=0) return;
+    const desc = (draftDesc['_form']||'').trim();
+    const montant = Number(draftMontant['_form'])||0;
+    const date = draftDate['_form'] || todayISO();
+    if(!desc || montant<=0 || !nomActeur) return;
     const entry = { id: uid('depact_'), description: desc, montant, date };
     const anneeActuelle = (db.historiqueAnnuel||{})[annee] || {};
     const listeActuelle = (anneeActuelle.depensesActeurs||{})[nomActeur] || [];
     const nextDepensesActeurs = { ...(anneeActuelle.depensesActeurs||{}), [nomActeur]: [...listeActuelle, entry] };
     setDb({ ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [annee]: { ...anneeActuelle, depensesActeurs: nextDepensesActeurs } } });
-    setDraftDesc({...draftDesc, [nomActeur]: ''});
-    setDraftMontant({...draftMontant, [nomActeur]: ''});
-    setDraftDate({...draftDate, [nomActeur]: todayISO()});
+    setDraftDesc({...draftDesc, _form: ''});
+    setDraftMontant({...draftMontant, _form: ''});
+    setDraftDate({...draftDate, _form: todayISO()});
+    setActeurAjout('');
   }
 
   function supprimerDepenseActeur(nomActeur, entryId){
@@ -1625,86 +1593,54 @@ function DistributionView({ db, setDb, anneeInitiale }){
     setDb({ ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [annee]: { ...anneeActuelle, depensesActeurs: nextDepensesActeurs } } });
   }
 
-  const dataHisto = historique[annee] || { recetteBrute: 0, depenses: 0, impayes: 0 };
+  const dataHisto = historique[annee] || { recetteBrute: 0, depenses: 0, impayes: 0, especes: 0, orangeMoney: 0 };
 
   // Détail mensuel — données réelles de l'app, avec possibilité de saisie/correction manuelle mois par mois
   const donneesParMois = useMemo(() => {
     if(!estAnneeApp) return null;
-    const auto = Array.from({length:12}, (_,i) => ({
-      mois: i+1,
-      label: new Date(annee, i, 1).toLocaleDateString('fr-FR', {month:'long'}),
-      recetteBrute: 0,
-      depenses: 0,
-      impayes: 0,
-    }));
-    db.sites.forEach(site => {
-      const siteManuelAnnee = (site.detailMensuelManuel||{})[annee] || {};
-      for(let mIdx = 0; mIdx < 12; mIdx++){
-        const moisNum = mIdx + 1;
-        const parEmploye = normaliserMoisManuel(siteManuelAnnee[moisNum]);
-        if(parEmploye && Object.keys(parEmploye).length > 0){
-          // Ce pressing a des données saisies par ses caissiers pour ce mois — on les utilise en priorité
-          auto[mIdx].recetteBrute += Object.values(parEmploye).reduce((s,v)=>s+(Number(v.recetteBrute)||0),0);
-          auto[mIdx].depenses += Object.values(parEmploye).reduce((s,v)=>s+(Number(v.depenses)||0),0);
-          auto[mIdx].impayes += Object.values(parEmploye).reduce((s,v)=>s+(Number(v.impayes)||0),0);
-        } else {
-          // Sinon, calcul à partir des commandes/dépenses réelles de ce pressing pour ce mois
-          let rb = 0, encaisse = 0, dep = 0;
-          (site.commandes||[]).forEach(c => {
-            if(c.dateCreation && c.dateCreation.slice(0,4) === String(annee) && Number(c.dateCreation.slice(5,7)) === moisNum){
-              const totalCmd = calcCommandeTotal(c, site.services);
-              rb += totalCmd;
-              encaisse += c.paiement === 'paye' ? totalCmd : (Number(c.acompte)||0);
-            }
-          });
-          (site.depenses||[]).forEach(d => {
-            if(d.date && d.date.slice(0,4) === String(annee) && Number(d.date.slice(5,7)) === moisNum){
-              dep += Number(d.montant)||0;
-            }
-          });
-          auto[mIdx].recetteBrute += rb;
-          auto[mIdx].depenses += dep;
-          auto[mIdx].impayes += (rb - encaisse);
-        }
-      }
-    });
-    const moisManuel = (db.historiqueAnnuel?.[annee]?.mois) || {};
-    return auto.map(m => {
-      const override = moisManuel[m.mois];
-      if(override){
-        return {
-          mois: m.mois, label: m.label,
-          recetteBrute: Number(override.recetteBrute)||0,
-          depenses: Number(override.depenses)||0,
-          impayes: Number(override.impayes)||0,
-          recetteNette: (Number(override.recetteBrute)||0) - (Number(override.impayes)||0) - (Number(override.depenses)||0),
-          manuel: true,
-        };
-      }
-      return {
-        mois: m.mois, label: m.label,
-        recetteBrute: m.recetteBrute, depenses: m.depenses, impayes: m.impayes,
-        recetteNette: m.recetteBrute - m.impayes - m.depenses,
-        manuel: false,
-      };
-    });
+    return calculerDonneesMensuellesMultiSites(db.sites, annee);
   }, [db, annee, estAnneeApp]);
 
-  function saveMois(m, valeurs){
+  // Pour les années antérieures à la mise en place de l'app : détail mensuel saisi manuellement (12 mois)
+  const detailMensuelHistoManuel = ((db.historiqueAnnuel||{})[annee]||{}).detailMensuelParMois || {};
+  const donneesParMoisHistorique = useMemo(() => {
+    if(estAnneeApp) return null;
+    return Array.from({length:12}, (_,i) => {
+      const mois = i+1;
+      const v = detailMensuelHistoManuel[mois] || {};
+      const rb = Number(v.recetteBrute)||0;
+      const dep = Number(v.depenses)||0;
+      const depP = Number(v.depensesPropres)||0;
+      const esp = Number(v.montantRecuEspeces)||0;
+      const om = Number(v.montantRecuOrangeMoney)||0;
+      const impayesReel = Math.max(0, rb - (esp + om));
+      const netPercu = (esp + om) - dep;
+      return {
+        mois, label: new Date(annee, i, 1).toLocaleDateString('fr-FR', {month:'long'}),
+        avantSeuil: true, recetteBrute: rb, impayes: impayesReel, depenses: dep, depensesPropres: depP,
+        montantRecuEspeces: esp, montantRecuOrangeMoney: om, impayesReel, netPercu,
+        manuel: Object.keys(v).length > 0, parEmployeParSite: [],
+      };
+    });
+  }, [estAnneeApp, detailMensuelHistoManuel, annee]);
+
+  const donneesParMoisAffiche = estAnneeApp ? donneesParMois : donneesParMoisHistorique;
+
+  function saveMoisHistorique(mois, valeurs){
     const anneeActuelle = (db.historiqueAnnuel||{})[annee] || {};
-    const moisActuels = anneeActuelle.mois || {};
-    const nextMois = { ...moisActuels, [m]: valeurs };
-    setDb({ ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [annee]: { ...anneeActuelle, mois: nextMois } } });
+    const detailActuel = anneeActuelle.detailMensuelParMois || {};
+    const nextDetail = { ...detailActuel, [mois]: valeurs };
+    setDb({ ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [annee]: { ...anneeActuelle, detailMensuelParMois: nextDetail } } });
   }
-  function resetMois(m){
-    const anneeActuelle = (db.historiqueAnnuel||{})[annee] || {};
-    const moisActuels = { ...(anneeActuelle.mois || {}) };
-    delete moisActuels[m];
-    setDb({ ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [annee]: { ...anneeActuelle, mois: moisActuels } } });
-  }
-  const recetteBrute = estAnneeApp ? (donneesParMois ? donneesParMois.reduce((s,m)=>s+m.recetteBrute,0) : 0) : dataHisto.recetteBrute;
-  const depensesAnnee = estAnneeApp ? (donneesParMois ? donneesParMois.reduce((s,m)=>s+m.depenses,0) : 0) : dataHisto.depenses;
+  const [moisSaisieHisto, setMoisSaisieHisto] = useState(null);
+
+  const anneeADetailMensuel = !estAnneeApp && Object.keys(detailMensuelHistoManuel).length > 0;
+  const recetteBrute = estAnneeApp ? (donneesParMois ? donneesParMois.reduce((s,m)=>s+m.recetteBrute,0) : 0) : (anneeADetailMensuel ? donneesParMoisHistorique.reduce((s,m)=>s+m.recetteBrute,0) : dataHisto.recetteBrute);
+  const depensesAnnee = estAnneeApp ? (donneesParMois ? donneesParMois.reduce((s,m)=>s+m.depenses,0) : 0) : (anneeADetailMensuel ? donneesParMoisHistorique.reduce((s,m)=>s+m.depenses,0) : dataHisto.depenses);
   const impayesAnnee = estAnneeApp ? (donneesParMois ? donneesParMois.reduce((s,m)=>s+m.impayes,0) : 0) : (Number(dataHisto.impayes)||0);
+  const depensesPropresAnnee = estAnneeApp ? (donneesParMois ? donneesParMois.reduce((s,m)=>s+m.depensesPropres,0) : 0) : (anneeADetailMensuel ? donneesParMoisHistorique.reduce((s,m)=>s+m.depensesPropres,0) : 0);
+  const impayesReelAnnee = estAnneeApp ? (donneesParMois ? donneesParMois.reduce((s,m)=>s+(m.impayesReel||0),0) : 0) : (anneeADetailMensuel ? donneesParMoisHistorique.reduce((s,m)=>s+(m.impayesReel||0),0) : Math.max(0, (Number(dataHisto.recetteBrute)||0) - ((Number(dataHisto.especes)||0) + (Number(dataHisto.orangeMoney)||0))));
+  const netPercuAnnee = estAnneeApp ? (donneesParMois ? donneesParMois.reduce((s,m)=>s+(m.netPercu||0),0) : 0) : (anneeADetailMensuel ? donneesParMoisHistorique.reduce((s,m)=>s+(m.netPercu||0),0) : ((Number(dataHisto.especes)||0) + (Number(dataHisto.orangeMoney)||0) - (Number(dataHisto.depenses)||0)));
   const recetteEncaissee = recetteBrute - impayesAnnee;
   const recetteNette = recetteEncaissee - depensesAnnee;
   const depensesActeursActuel = dataHisto.depensesActeurs || {}; // { [nom]: [{id, description, montant}] }
@@ -1733,10 +1669,15 @@ function DistributionView({ db, setDb, anneeInitiale }){
           : donneesParMois.filter(m => m.mois === moisRepartition);
         const rb = subset.reduce((s,m)=>s+m.recetteBrute,0);
         const dep = subset.reduce((s,m)=>s+m.depenses,0);
-        const imp = subset.reduce((s,m)=>s+m.impayes,0);
-        return { recetteBrute: rb, depenses: dep, impayes: imp, recetteNette: rb - imp - dep };
+        const impR = subset.reduce((s,m)=>s+(m.impayesReel||0),0);
+        const netP = subset.reduce((s,m)=>s+(m.netPercu||0),0);
+        const especesP = subset.reduce((s,m)=>s+(m.montantRecuEspeces||0),0);
+        const orangeMoneyP = subset.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0);
+        return { recetteBrute: rb, depenses: dep, impayes: impR, recetteNette: netP, especes: especesP, orangeMoney: orangeMoneyP };
       })()
-    : { recetteBrute, depenses: depensesAnnee, impayes: impayesAnnee, recetteNette };
+    : { recetteBrute, depenses: depensesAnnee, impayes: impayesReelAnnee, recetteNette: netPercuAnnee,
+        especes: donneesParMois ? donneesParMois.reduce((s,m)=>s+(m.montantRecuEspeces||0),0) : (anneeADetailMensuel ? donneesParMoisHistorique.reduce((s,m)=>s+(m.montantRecuEspeces||0),0) : (Number(dataHisto.especes)||0)),
+        orangeMoney: donneesParMois ? donneesParMois.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0) : (anneeADetailMensuel ? donneesParMoisHistorique.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0) : (Number(dataHisto.orangeMoney)||0)) };
 
   const depensesActeursPeriode = {};
   parts.forEach(p => { depensesActeursPeriode[p.nom] = filtrerDepensesParPeriode(depensesActeursActuel[p.nom]); });
@@ -1877,6 +1818,14 @@ function DistributionView({ db, setDb, anneeInitiale }){
               <label>Factures non payées (GNF)</label>
               <input type="number" value={editImpayes} onChange={e=>setEditImpayes(e.target.value)} placeholder="0" />
             </div>
+            <div>
+              <label>Reçu en Espèces (GNF)</label>
+              <input type="number" value={editEspeces} onChange={e=>setEditEspeces(e.target.value)} placeholder="0" />
+            </div>
+            <div>
+              <label>Reçu en Orange Money (GNF)</label>
+              <input type="number" value={editOrangeMoney} onChange={e=>setEditOrangeMoney(e.target.value)} placeholder="0" />
+            </div>
           </div>
           <p style={{fontSize:11.5, color:'#7a5c00', margin:'10px 0 0', lineHeight:1.4}}>
             Le montant des factures non payées est déduit de la recette brute — il ne sera pas compté dans la recette nette à distribuer, puisqu'il n'a jamais été réellement encaissé.
@@ -1890,41 +1839,121 @@ function DistributionView({ db, setDb, anneeInitiale }){
       <div className="card" style={{padding:'1.5rem', marginBottom:20}}>
         <h3 style={{margin:'0 0 6px', fontSize:15}}>💰 Dépenses propres de chaque acteur — {annee}</h3>
         <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 16px', lineHeight:1.5}}>
-          Dépenses personnelles engagées par chaque acteur sur son propre compte cette année-là (avances, retraits, achats personnels…), avec leur description. Elles seront déduites de sa part pour refléter son montant net réel — sans affecter la recette nette globale de l'entreprise. Si un acteur est aussi caissier dans un pressing, ses « dépenses propres » saisies dans « Détail mensuel » s'ajoutent automatiquement ici.
+          Dépenses personnelles engagées par chaque acteur sur son propre compte (avances, retraits, achats personnels…). Elles seront déduites de sa part pour refléter son montant net réel — sans affecter la recette nette globale de l'entreprise. Si un acteur est aussi caissier dans un pressing, ses « dépenses propres » saisies dans « Détail mensuel » s'ajoutent automatiquement ici.
         </p>
-        <div style={{display:'grid', gap:18}}>
-          {parts.map(p => {
-            const entries = depensesActeursActuel[p.nom] || [];
-            const sousTotal = entries.reduce((s,e)=>s+(Number(e.montant)||0),0);
-            return (
-              <div key={p.nom} style={{borderTop:'1px solid var(--line)', paddingTop:14}}>
-                <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8}}>
-                  <strong style={{fontSize:13.5}}>{p.nom}</strong>
-                  <span className="mono" style={{fontSize:13, fontWeight:700, color: sousTotal>0 ? 'var(--danger)' : 'var(--steam)'}}>{sousTotal>0 ? '− '+fmtGNF(sousTotal) : '—'}</span>
-                </div>
-                {entries.length > 0 && (
-                  <div style={{marginBottom:8}}>
-                    {entries.map(e => (
-                      <div key={e.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'5px 0', borderBottom:'1px solid var(--line)', fontSize:13}}>
-                        <span>{e.description}{e.date ? <span className="mono" style={{color:'var(--steam)', fontSize:11, marginLeft:8}}>{fmtDate(e.date)}</span> : null}</span>
-                        <div style={{display:'flex', gap:8, alignItems:'center'}}>
-                          <span className="mono">{fmtGNF(e.montant)}</span>
-                          <button className="btn btn-ghost btn-sm" style={{padding:'3px 7px', color:'var(--danger)'}} onClick={()=>supprimerDepenseActeur(p.nom, e.id)}><Icon name="trash" size={12}/></button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+
+        {(() => {
+          const acteursSansCapitalFixe = parts.filter(p => p.nom !== 'Conservation du Capital Fixe');
+          const toutesEntrees = [];
+          acteursSansCapitalFixe.forEach(p => {
+            (depensesActeursActuel[p.nom]||[]).forEach(e => toutesEntrees.push({ ...e, nomActeur: p.nom }));
+          });
+          // Ajoute les « dépenses propres » saisies par chaque caissier dans Détail mensuel (par pressing)
+          db.sites.forEach(site => {
+            const manuelAnnee = (site.detailMensuelManuel||{})[annee] || {};
+            for(let m=1; m<=12; m++){
+              const parEmploye = normaliserMoisManuel(manuelAnnee[m]) || {};
+              Object.entries(parEmploye).forEach(([empId, v]) => {
+                const montantDp = Number(v.depensesPropres)||0;
+                if(montantDp <= 0 || empId === '_legacy') return;
+                const emp = site.employes.find(e => e.id === empId);
+                if(!emp) return;
+                const acteurCorrespondant = acteursSansCapitalFixe.find(p => nomsCorrespondent(emp.nom, p.nom));
+                if(!acteurCorrespondant) return;
+                const moisStr = String(m).padStart(2,'0');
+                toutesEntrees.push({
+                  id: `dm_${site.id}_${m}_${empId}`,
+                  date: `${annee}-${moisStr}-01`,
+                  description: `Dépenses propres — ${site.nom} (${new Date(annee, m-1, 1).toLocaleDateString('fr-FR',{month:'long'})})`,
+                  montant: montantDp,
+                  nomActeur: acteurCorrespondant.nom,
+                  depuisDetailMensuel: true,
+                });
+              });
+            }
+          });
+          const entreesFiltrees = toutesEntrees.filter(e => {
+            if(!e.date) return depensesPropresPeriode === 'annee';
+            if(depensesPropresPeriode === 'jour') return e.date === depensesPropresJour;
+            if(depensesPropresPeriode === 'mois') return e.date.slice(0,7) === depensesPropresMois;
+            return e.date.slice(0,4) === String(annee);
+          }).sort((a,b) => new Date(b.date||0) - new Date(a.date||0));
+          const totalFiltre = entreesFiltrees.reduce((s,e)=>s+(Number(e.montant)||0),0);
+
+          return (
+            <>
+              <div style={{display:'flex', gap:8, marginBottom:14, flexWrap:'wrap', alignItems:'center'}}>
+                {['jour','mois','annee'].map(v => (
+                  <button key={v} className="btn btn-sm" onClick={()=>setDepensesPropresPeriode(v)}
+                    style={{background:depensesPropresPeriode===v?'var(--pine)':'transparent', color:depensesPropresPeriode===v?'var(--white)':'var(--ink)', borderColor:depensesPropresPeriode===v?'var(--pine)':'var(--line-strong)', textTransform:'capitalize'}}>
+                    {v === 'jour' ? 'Jour' : v === 'mois' ? 'Mois' : 'Année'}
+                  </button>
+                ))}
+                {depensesPropresPeriode === 'jour' && (
+                  <input type="date" value={depensesPropresJour} onChange={e=>setDepensesPropresJour(e.target.value)} style={{width:'auto'}} />
                 )}
-                <div style={{display:'grid', gridTemplateColumns:'1.6fr 0.9fr 0.9fr auto', gap:8}}>
-                  <input type="text" placeholder="Description (ex: avance sur salaire)" value={draftDesc[p.nom]||''} onChange={e=>setDraftDesc({...draftDesc, [p.nom]: e.target.value})} />
-                  <input type="number" placeholder="Montant" value={draftMontant[p.nom]||''} onChange={e=>setDraftMontant({...draftMontant, [p.nom]: e.target.value})} />
-                  <input type="date" value={draftDate[p.nom]||todayISO()} onChange={e=>setDraftDate({...draftDate, [p.nom]: e.target.value})} />
-                  <button className="btn btn-sm" disabled={!(draftDesc[p.nom]||'').trim() || !draftMontant[p.nom]} onClick={()=>ajouterDepenseActeur(p.nom)}><Icon name="plus" size={13}/> Ajouter</button>
-                </div>
+                {depensesPropresPeriode === 'mois' && (
+                  <input type="month" value={depensesPropresMois} onChange={e=>setDepensesPropresMois(e.target.value)} style={{width:'auto'}} />
+                )}
               </div>
-            );
-          })}
-        </div>
+
+              <div className="card" style={{overflow:'hidden', marginBottom:16}}>
+                <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+                  <thead>
+                    <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                      <th style={th}>Date</th>
+                      <th style={th}>Nom</th>
+                      <th style={th}>Description</th>
+                      <th style={th}>Montant</th>
+                      <th style={th}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {entreesFiltrees.length === 0 ? (
+                      <tr><td colSpan={5} style={{...td, textAlign:'center', color:'var(--steam)', padding:'1.5rem'}}>Aucune dépense propre sur cette période.</td></tr>
+                    ) : entreesFiltrees.map(e => (
+                      <tr key={e.id} style={{borderTop:'1px solid var(--line)'}}>
+                        <td style={td}>{e.date ? fmtDate(e.date) : '—'}</td>
+                        <td style={{...td, fontWeight:600}}>{e.nomActeur}</td>
+                        <td style={td}>
+                          {e.description}
+                          {e.depuisDetailMensuel && <span className="tag" style={{marginLeft:6, fontSize:9.5, background:'var(--pine-light)', color:'var(--pine)'}}>Détail mensuel</span>}
+                        </td>
+                        <td style={{...td, color:'var(--danger)', fontWeight:600}} className="mono">{fmtGNF(e.montant)}</td>
+                        <td style={{...td, textAlign:'right'}}>
+                          {!e.depuisDetailMensuel && (
+                            <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>supprimerDepenseActeur(e.nomActeur, e.id)}><Icon name="trash" size={13}/></button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                    {entreesFiltrees.length > 0 && (
+                      <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
+                        <td colSpan={3} style={{...td, fontWeight:700}}>Total</td>
+                        <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalFiltre)}</td>
+                        <td></td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div style={{display:'grid', gridTemplateColumns:'1.1fr 1.4fr 0.9fr 0.9fr auto', gap:8}}>
+                <select value={acteurAjout} onChange={e=>setActeurAjout(e.target.value)}>
+                  <option value="">Acteur…</option>
+                  {acteursSansCapitalFixe.map(p => <option key={p.nom} value={p.nom}>{p.nom}</option>)}
+                </select>
+                <input type="text" placeholder="Description (ex: avance sur salaire)" value={draftDesc['_form']||''} onChange={e=>setDraftDesc({...draftDesc, _form: e.target.value})} />
+                <input type="number" placeholder="Montant" value={draftMontant['_form']||''} onChange={e=>setDraftMontant({...draftMontant, _form: e.target.value})} />
+                <input type="date" value={draftDate['_form']||todayISO()} onChange={e=>setDraftDate({...draftDate, _form: e.target.value})} />
+                <button className="btn btn-sm" disabled={!acteurAjout || !(draftDesc['_form']||'').trim() || !draftMontant['_form']}
+                  onClick={()=>{ ajouterDepenseActeur(acteurAjout); }}>
+                  <Icon name="plus" size={13}/> Ajouter
+                </button>
+              </div>
+            </>
+          );
+        })()}
       </div>
 
       <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:24}}>
@@ -1934,15 +1963,26 @@ function DistributionView({ db, setDb, anneeInitiale }){
         <StatCard label={`Recette nette ${annee}`} value={fmtGNF(recetteNette)} icon="chart" tone={recetteNette>=0?'default':'danger'} />
       </div>
 
-      {estAnneeApp && donneesParMois && (
+      {donneesParMoisAffiche && (
         <>
-          <h2 style={{fontSize:16, color:'var(--pine)', marginBottom:6}}>Détail mensuel consolidé (tous pressings) — {annee}</h2>
+          <h2 style={{fontSize:16, color:'var(--pine)', marginBottom:6}}>Détail mensuel — {annee} (synthèse de tous les pressings)</h2>
           <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
-            Les montants sont calculés automatiquement à partir des commandes et dépenses réelles de chaque mois. Pour un mois sans données dans l'application (ex : avant sa mise en place), corrigez les valeurs puis cliquez sur "Enreg." — vos saisies remplacent alors le calcul automatique pour ce mois.
+            « Dépenses entreprise » = dépenses des pressings (fournitures, factures, salaires...). « Dépenses propres » = dépenses personnelles saisies par chaque caissier. « Net perçu » = Espèces + Orange Money réellement reçus, moins les dépenses entreprise, tous pressings confondus. Lecture seule pour les mois calculés automatiquement (année {ANNEE_DEBUT_APP} et après) — corrigez-les dans le Détail mensuel du pressing concerné. Pour les années antérieures, utilisez le bouton « + Saisir » de chaque mois.
           </p>
           <p style={{fontSize:12.5, background:'var(--pine-light)', color:'var(--pine)', padding:'8px 12px', borderRadius:8, margin:'0 0 14px', lineHeight:1.5}}>
-            🔎 Vous cherchez le détail saisi par chaque caissier ? Ce n'est pas ici — allez dans <strong>« Mes pressings »</strong>, ouvrez le pressing concerné, puis cliquez sur son onglet <strong>« Détail mensuel »</strong>.
+            🔎 Vous cherchez le détail saisi par chaque caissier ? Cliquez « Détail par caissier » sur une ligne ci-dessous, ou allez dans <strong>« Mes pressings »</strong>, ouvrez le pressing concerné, puis son onglet <strong>« Détail mensuel »</strong>.
           </p>
+
+          <div style={{display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:12, marginBottom:24}}>
+            <StatCard label={`Recette brute ${annee}`} value={fmtGNF(recetteBrute)} icon="euro" />
+            <StatCard label={`Impayés ${annee}`} value={fmtGNF(impayesReelAnnee)} icon="alert" tone={impayesReelAnnee>0?'danger':'default'} />
+            <StatCard label={`Dépenses entreprise ${annee}`} value={fmtGNF(depensesAnnee)} icon="trash" tone="danger" />
+            <StatCard label={`Dépenses propres ${annee}`} value={fmtGNF(depensesPropresAnnee)} icon="trash" tone="danger" />
+            <StatCard label={`Espèces ${annee}`} value={fmtGNF(donneesParMoisAffiche.reduce((s,m)=>s+(m.montantRecuEspeces||0),0))} icon="euro" />
+            <StatCard label={`Orange Money ${annee}`} value={fmtGNF(donneesParMoisAffiche.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0))} icon="euro" />
+            <StatCard label={`Net perçu ${annee}`} value={fmtGNF(netPercuAnnee)} icon="chart" tone={netPercuAnnee>=0?'default':'danger'} />
+          </div>
+
           <div className="card" style={{overflow:'hidden', marginBottom:24}}>
             <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
               <thead>
@@ -1951,21 +1991,75 @@ function DistributionView({ db, setDb, anneeInitiale }){
                   <th style={th}>Recette brute</th>
                   <th style={th}>Impayés</th>
                   <th style={th}>Dépenses entreprise</th>
-                  <th style={th}>Recette nette</th>
+                  <th style={th}>Dépenses propres</th>
+                  <th style={th}>Espèces</th>
+                  <th style={th}>Orange Money</th>
+                  <th style={th}>Net perçu</th>
                   <th style={th}></th>
                 </tr>
               </thead>
               <tbody>
-                {donneesParMois.map(m => (
-                  <MoisRow key={m.mois} valeurs={m} onSave={saveMois} onReset={resetMois} />
+                {donneesParMoisAffiche.map(m => (
+                  <React.Fragment key={m.mois}>
+                    <tr style={{borderTop:'1px solid var(--line)'}}>
+                      <td style={{...td, textTransform:'capitalize', fontWeight:600}}>
+                        {m.label}
+                        {m.manuel && <span className="tag" style={{fontSize:9, marginLeft:6, background:'var(--warn-light)', color:'var(--warn)'}}>Manuel</span>}
+                      </td>
+                      <td style={td} className="mono">{fmtGNF(m.recetteBrute)}</td>
+                      <td style={{...td, color: m.impayesReel>0?'var(--danger)':'var(--steam)'}} className="mono">{m.impayesReel>0?fmtGNF(m.impayesReel):'—'}</td>
+                      <td style={{...td, color: m.depenses>0?'var(--danger)':'var(--steam)'}} className="mono">{fmtGNF(m.depenses)}</td>
+                      <td style={{...td, color: m.depensesPropres>0?'var(--rust)':'var(--steam)'}} className="mono">{m.depensesPropres>0?fmtGNF(m.depensesPropres):'—'}</td>
+                      <td style={{...td, color:'var(--pine)'}} className="mono">{fmtGNF(m.montantRecuEspeces||0)}</td>
+                      <td style={{...td, color:'var(--pine)'}} className="mono">{fmtGNF(m.montantRecuOrangeMoney||0)}</td>
+                      <td style={{...td, fontWeight:700, color: m.netPercu<0?'var(--danger)':'var(--ink)'}} className="mono">{fmtGNF(m.netPercu)}</td>
+                      <td style={{...td, textAlign:'right'}}>
+                        <div style={{display:'flex', gap:6, justifyContent:'flex-end'}}>
+                          {m.parEmployeParSite.length > 0 && (
+                            <button className="btn btn-ghost btn-sm" onClick={()=>setMoisOuvertConsolide(moisOuvertConsolide===m.mois?null:m.mois)}>
+                              {moisOuvertConsolide===m.mois ? 'Fermer' : 'Détail par caissier'}
+                            </button>
+                          )}
+                          {!estAnneeApp && (
+                            <button className="btn btn-sm" onClick={()=>setMoisSaisieHisto(m.mois)}>+ Saisir</button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                    {moisOuvertConsolide === m.mois && m.parEmployeParSite.length > 0 && (
+                      <tr style={{background:'var(--paper-2)'}}>
+                        <td colSpan={9} style={{padding:'10px 14px'}}>
+                          {m.parEmployeParSite.map(({siteNom, parEmploye}) => (
+                            <div key={siteNom} style={{marginBottom:10}}>
+                              <div style={{fontWeight:700, fontSize:13, color:'var(--pine)', marginBottom:4}}>{siteNom}</div>
+                              {Object.entries(parEmploye).filter(([empId]) => empId !== '_legacy').map(([empId, v]) => (
+                                <div key={empId} style={{padding:'6px 0', borderBottom:'1px solid var(--line)'}}>
+                                  <div style={{fontWeight:600, fontSize:13, marginBottom:2}}>{getEmpNomMultiSites(db.sites, empId)}</div>
+                                  <div className="mono" style={{fontSize:12.5, color:'var(--steam)'}}>
+                                    Recette : {fmtGNF(v.recetteBrute)} · Impayés : {fmtGNF(v.impayes||0)} · Dép. entreprise : {fmtGNF(v.depenses)} · Dép. propres : {fmtGNF(v.depensesPropres||0)}
+                                  </div>
+                                  <div className="mono" style={{fontSize:12.5, color:'var(--pine)', marginTop:2}}>
+                                    Reçu Espèces : {fmtGNF(v.montantRecuEspeces||0)} · Reçu Orange Money : {fmtGNF(v.montantRecuOrangeMoney||0)}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ))}
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 ))}
                 <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
                   <td style={{...td, fontWeight:700}}>Total {annee}</td>
                   <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(recetteBrute)}</td>
-                  <td style={{...td, fontWeight:700}} className="mono">{impayesAnnee>0?fmtGNF(impayesAnnee):'—'}</td>
+                  <td style={{...td, fontWeight:700}} className="mono">{impayesReelAnnee>0?fmtGNF(impayesReelAnnee):'—'}</td>
                   <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(depensesAnnee)}</td>
-                  <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(recetteNette)}</td>
-                  <td style={td}></td>
+                  <td style={{...td, fontWeight:700}} className="mono">{depensesPropresAnnee>0?fmtGNF(depensesPropresAnnee):'—'}</td>
+                  <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(donneesParMoisAffiche.reduce((s,m)=>s+(m.montantRecuEspeces||0),0))}</td>
+                  <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(donneesParMoisAffiche.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0))}</td>
+                  <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(netPercuAnnee)}</td>
+                  <td></td>
                 </tr>
               </tbody>
             </table>
@@ -1973,7 +2067,12 @@ function DistributionView({ db, setDb, anneeInitiale }){
         </>
       )}
 
-      <h2 style={{fontSize:16, color:'var(--pine)', marginBottom:6}}>Répartition entre les acteurs</h2>
+      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10, marginBottom:6}}>
+        <h2 style={{fontSize:16, color:'var(--pine)', margin:0}}>Répartition entre les acteurs</h2>
+        <select value={annee} onChange={e=>setAnnee(Number(e.target.value))} style={{width:'auto', minWidth:100}}>
+          {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
+        </select>
+      </div>
 
       {estAnneeApp && (
         <div style={{display:'flex', gap:10, flexWrap:'wrap', alignItems:'center', marginBottom:14}}>
@@ -2005,25 +2104,27 @@ function DistributionView({ db, setDb, anneeInitiale }){
         </div>
       )}
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:16}}>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(6,1fr)', gap:12, marginBottom:16}}>
         <StatCard label={`Recette brute — ${periodeLabel}`} value={fmtGNF(periodeDonnees.recetteBrute)} icon="euro" />
         <StatCard label={`Impayés — ${periodeLabel}`} value={fmtGNF(periodeDonnees.impayes)} icon="alert" tone={periodeDonnees.impayes>0?'danger':'default'} />
         <StatCard label={`Dépenses — ${periodeLabel}`} value={fmtGNF(periodeDonnees.depenses)} icon="trash" tone="danger" />
+        <StatCard label={`Espèces — ${periodeLabel}`} value={fmtGNF(periodeDonnees.especes)} icon="euro" />
+        <StatCard label={`Orange Money — ${periodeLabel}`} value={fmtGNF(periodeDonnees.orangeMoney)} icon="euro" />
         <StatCard label={`Net perçu — ${periodeLabel}`} value={fmtGNF(periodeDonnees.recetteNette)} icon="chart" tone={periodeDonnees.recetteNette>=0?'default':'danger'} />
       </div>
 
       <h2 style={{fontSize:16, color:'var(--pine)', marginBottom:6}}>Total encaissé par mode de paiement</h2>
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
-        Montants réellement reçus des clients (acomptes et encaissements) — {periodeLabel}, tous pressings confondus. Cliquez sur une carte pour voir le détail des paiements.
+        Montants réellement reçus des clients (acomptes, encaissements, et saisies manuelles pour les mois antérieurs) — {periodeLabel}, tous pressings confondus. Cliquez sur une carte pour voir le détail des transactions numériques individuelles (les saisies manuelles groupées par mois n'y apparaissent pas séparément).
       </p>
       <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:14, marginBottom:14}}>
         <div onClick={()=>{ setModeHistoriqueSelectionne(modeHistoriqueSelectionne==='Espèces' ? null : 'Espèces'); setHistoriquePage(1); }}
           style={{cursor:'pointer', borderRadius:12, outline: modeHistoriqueSelectionne==='Espèces' ? '2px solid var(--pine)' : 'none', outlineOffset:2}}>
-          <StatCard label="Espèces" value={fmtGNF(totauxParMode['Espèces']||0)} icon="euro" />
+          <StatCard label="Espèces" value={fmtGNF(periodeDonnees.especes)} icon="euro" />
         </div>
         <div onClick={()=>{ setModeHistoriqueSelectionne(modeHistoriqueSelectionne==='Orange Money' ? null : 'Orange Money'); setHistoriquePage(1); }}
           style={{cursor:'pointer', borderRadius:12, outline: modeHistoriqueSelectionne==='Orange Money' ? '2px solid var(--pine)' : 'none', outlineOffset:2}}>
-          <StatCard label="Orange Money" value={fmtGNF(totauxParMode['Orange Money']||0)} icon="euro" />
+          <StatCard label="Orange Money" value={fmtGNF(periodeDonnees.orangeMoney)} icon="euro" />
         </div>
       </div>
 
@@ -2167,7 +2268,50 @@ function DistributionView({ db, setDb, anneeInitiale }){
           </tbody>
         </table>
       </div>
+
+      {moisSaisieHisto && (
+        <SaisieMoisHistoriqueModal
+          mois={moisSaisieHisto}
+          annee={annee}
+          valeursExistantes={detailMensuelHistoManuel[moisSaisieHisto] || {}}
+          onSave={(valeurs)=>{ saveMoisHistorique(moisSaisieHisto, valeurs); setMoisSaisieHisto(null); }}
+          onClose={()=>setMoisSaisieHisto(null)}
+        />
+      )}
     </div>
+  );
+}
+
+function SaisieMoisHistoriqueModal({ mois, annee, valeursExistantes, onSave, onClose }){
+  const [recetteBrute, setRecetteBrute] = useState(String(valeursExistantes.recetteBrute || ''));
+  const [depenses, setDepenses] = useState(String(valeursExistantes.depenses || ''));
+  const [depensesPropres, setDepensesPropres] = useState(String(valeursExistantes.depensesPropres || ''));
+  const [montantRecuEspeces, setMontantRecuEspeces] = useState(String(valeursExistantes.montantRecuEspeces || ''));
+  const [montantRecuOrangeMoney, setMontantRecuOrangeMoney] = useState(String(valeursExistantes.montantRecuOrangeMoney || ''));
+
+  function submit(){
+    onSave({
+      recetteBrute: Number(recetteBrute)||0,
+      depenses: Number(depenses)||0,
+      depensesPropres: Number(depensesPropres)||0,
+      montantRecuEspeces: Number(montantRecuEspeces)||0,
+      montantRecuOrangeMoney: Number(montantRecuOrangeMoney)||0,
+    });
+  }
+
+  return (
+    <ModalShell title={`Saisie — ${new Date(annee, mois-1, 1).toLocaleDateString('fr-FR',{month:'long', year:'numeric'})}`} onClose={onClose} width={460}>
+      <div style={{display:'grid', gap:14}}>
+        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12}}>
+          <div><label>Recette brute</label><input type="number" value={recetteBrute} onChange={e=>setRecetteBrute(e.target.value)} /></div>
+          <div><label>Dépenses entreprise</label><input type="number" value={depenses} onChange={e=>setDepenses(e.target.value)} /></div>
+          <div><label>Dépenses propres</label><input type="number" value={depensesPropres} onChange={e=>setDepensesPropres(e.target.value)} /></div>
+          <div><label>Reçu Espèces</label><input type="number" value={montantRecuEspeces} onChange={e=>setMontantRecuEspeces(e.target.value)} /></div>
+          <div><label>Reçu Orange Money</label><input type="number" value={montantRecuOrangeMoney} onChange={e=>setMontantRecuOrangeMoney(e.target.value)} /></div>
+        </div>
+        <button className="btn btn-rust" style={{width:'100%'}} onClick={submit}>Enregistrer</button>
+      </div>
+    </ModalShell>
   );
 }
 
@@ -7702,6 +7846,8 @@ function calculerDonneesMensuellesSite(site, annee){
     recetteBrute: 0,
     recetteEncaissee: 0,
     depenses: 0,
+    especes: 0,
+    orangeMoney: 0,
   }));
   (site.commandes||[]).forEach(c => {
     if(c.dateCreation && c.dateCreation.slice(0,4) === String(annee)){
@@ -7710,6 +7856,12 @@ function calculerDonneesMensuellesSite(site, annee){
       auto[m].recetteBrute += totalCmd;
       auto[m].recetteEncaissee += c.paiement === 'paye' ? totalCmd : (Number(c.acompte)||0);
     }
+    getPaiementsCommande(c).forEach(pmt => {
+      if(!pmt.date || pmt.date.slice(0,4) !== String(annee)) return;
+      const m = Number(pmt.date.slice(5,7)) - 1;
+      if(pmt.mode === 'Orange Money') auto[m].orangeMoney += Number(pmt.montant)||0;
+      else auto[m].especes += Number(pmt.montant)||0;
+    });
   });
   (site.depenses||[]).forEach(d => {
     if(d.date && d.date.slice(0,4) === String(annee)){
@@ -7721,22 +7873,69 @@ function calculerDonneesMensuellesSite(site, annee){
   return auto.map(a => {
     const avantSeuil = annee < 2026 || (annee === 2026 && a.mois < 9);
     const parEmploye = normaliserMoisManuel(manuel[a.mois]) || {};
+    const aDesSaisiesManuelles = Object.keys(parEmploye).length > 0;
     const depensesPropres = Object.values(parEmploye).reduce((s,v)=>s+(Number(v.depensesPropres)||0),0);
-    const montantRecuEspeces = Object.values(parEmploye).reduce((s,v)=>s+(Number(v.montantRecuEspeces)||0),0);
-    const montantRecuOrangeMoney = Object.values(parEmploye).reduce((s,v)=>s+(Number(v.montantRecuOrangeMoney)||0),0);
-    if(avantSeuil){
+    const montantRecuEspeces = aDesSaisiesManuelles
+      ? Object.values(parEmploye).reduce((s,v)=>s+(Number(v.montantRecuEspeces)||0),0)
+      : a.especes;
+    const montantRecuOrangeMoney = aDesSaisiesManuelles
+      ? Object.values(parEmploye).reduce((s,v)=>s+(Number(v.montantRecuOrangeMoney)||0),0)
+      : a.orangeMoney;
+    if(aDesSaisiesManuelles){
       const rb = Object.values(parEmploye).reduce((s,v)=>s+(Number(v.recetteBrute)||0),0);
       const dep = Object.values(parEmploye).reduce((s,v)=>s+(Number(v.depenses)||0),0);
       const imp = Object.values(parEmploye).reduce((s,v)=>s+(Number(v.impayes)||0),0);
       const impayesReel = Math.max(0, rb - (montantRecuEspeces + montantRecuOrangeMoney));
       const netPercu = (montantRecuEspeces + montantRecuOrangeMoney) - dep;
-      return { mois:a.mois, label:a.label, avantSeuil, recetteBrute: rb, impayes: imp, depenses: dep, depensesPropres, manuel: Object.keys(parEmploye).length>0, parEmploye, net: rb - imp - dep, montantRecuEspeces, montantRecuOrangeMoney, impayesReel, netPercu };
+      return { mois:a.mois, label:a.label, avantSeuil, recetteBrute: rb, impayes: imp, depenses: dep, depensesPropres, manuel: true, parEmploye, net: rb - imp - dep, montantRecuEspeces, montantRecuOrangeMoney, impayesReel, netPercu };
     }
-    const imp = a.recetteBrute - a.recetteEncaissee;
     const impayesReel = Math.max(0, a.recetteBrute - (montantRecuEspeces + montantRecuOrangeMoney));
+    const imp = impayesReel;
     const netPercu = (montantRecuEspeces + montantRecuOrangeMoney) - a.depenses;
     return { mois:a.mois, label:a.label, avantSeuil, recetteBrute: a.recetteBrute, impayes: imp, depenses: a.depenses, depensesPropres, manuel: false, parEmploye, net: a.recetteBrute - imp - a.depenses, montantRecuEspeces, montantRecuOrangeMoney, impayesReel, netPercu };
   });
+}
+
+// Même logique que calculerDonneesMensuellesSite, mais agrégée sur plusieurs pressings (tous les sites combinés)
+function calculerDonneesMensuellesMultiSites(sites, annee){
+  const parSite = sites.map(site => ({ site, donnees: calculerDonneesMensuellesSite(site, annee) }));
+  return Array.from({length:12}, (_,i) => {
+    const merged = {
+      mois: i+1,
+      label: parSite[0] ? parSite[0].donnees[i].label : new Date(annee, i, 1).toLocaleDateString('fr-FR', {month:'long'}),
+      avantSeuil: parSite[0] ? parSite[0].donnees[i].avantSeuil : true,
+      recetteBrute: 0, impayes: 0, depenses: 0, depensesPropres: 0,
+      montantRecuEspeces: 0, montantRecuOrangeMoney: 0, impayesReel: 0, netPercu: 0, net: 0,
+      manuel: false, parEmployeParSite: [],
+    };
+    parSite.forEach(({site, donnees}) => {
+      const m = donnees[i];
+      merged.recetteBrute += m.recetteBrute;
+      merged.impayes += m.impayes;
+      merged.depenses += m.depenses;
+      merged.depensesPropres += m.depensesPropres;
+      merged.montantRecuEspeces += m.montantRecuEspeces||0;
+      merged.montantRecuOrangeMoney += m.montantRecuOrangeMoney||0;
+      merged.impayesReel += m.impayesReel||0;
+      merged.netPercu += m.netPercu||0;
+      merged.net += m.net||0;
+      merged.manuel = merged.manuel || m.manuel;
+      if(Object.keys(m.parEmploye||{}).length > 0){
+        merged.parEmployeParSite.push({ siteNom: site.nom, parEmploye: m.parEmploye });
+      }
+    });
+    return merged;
+  });
+}
+
+// Retrouve le nom d'un employé en cherchant dans tous les sites (utile pour le Détail mensuel consolidé)
+function getEmpNomMultiSites(sites, empId){
+  if(empId === '_legacy') return 'Saisie antérieure (sans détail par caissier)';
+  for(const site of sites){
+    const e = (site.employes||[]).find(emp=>emp.id===empId);
+    if(e) return e.nom;
+  }
+  return 'Employé supprimé';
 }
 
 function DetailMensuelSiteView({ site, updateSite, employeId }){
@@ -7801,11 +8000,13 @@ function DetailMensuelSiteView({ site, updateSite, employeId }){
         Les mois avant <strong>septembre 2026</strong> ont leur recette brute, impayés et dépenses entreprise modifiables. Les <strong>dépenses propres</strong> (personnelles) restent modifiables pour tous les mois. Cliquez « Mes données » pour entrer vos chiffres — votre saisie s'ajoute à celle des autres caissiers, elle ne la remplace jamais. « Net perçu » = Espèces + Orange Money réellement reçus, moins les dépenses entreprise.
       </p>
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:14, marginBottom:24}}>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:12, marginBottom:24}}>
         <StatCard label={`Recette brute ${annee}`} value={fmtGNF(totalBrute)} icon="euro" />
         <StatCard label={`Impayés ${annee}`} value={fmtGNF(totalImpayesReel)} icon="alert" tone={totalImpayesReel>0?'danger':'default'} />
         <StatCard label={`Dépenses entreprise ${annee}`} value={fmtGNF(totalDepenses)} icon="trash" tone="danger" />
         <StatCard label={`Dépenses propres ${annee}`} value={fmtGNF(totalDepensesPropres)} icon="trash" tone="danger" />
+        <StatCard label={`Espèces ${annee}`} value={fmtGNF(donneesParMois.reduce((s,m)=>s+(m.montantRecuEspeces||0),0))} icon="euro" />
+        <StatCard label={`Orange Money ${annee}`} value={fmtGNF(donneesParMois.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0))} icon="euro" />
         <StatCard label={`Net perçu ${annee}`} value={fmtGNF(totalNetPercu)} icon="chart" tone={totalNetPercu>=0?'default':'danger'} />
       </div>
 
@@ -7896,11 +8097,13 @@ function DetailMensuelGerantView({ site, updateSite }){
         « Dépenses entreprise » = dépenses du pressing (fournitures, factures, salaires...). « Dépenses propres » = dépenses personnelles saisies par chaque caissier — les deux restent toujours distinctes. « Net perçu » = Espèces + Orange Money réellement reçus, moins les dépenses entreprise. « Impayés » = Recette brute non encore encaissée en Espèces ou Orange Money.
       </p>
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:14, marginBottom:24}}>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:12, marginBottom:24}}>
         <StatCard label={`Recette brute ${annee}`} value={fmtGNF(totalBrute)} icon="euro" />
         <StatCard label={`Impayés ${annee}`} value={fmtGNF(totalImpayesReel)} icon="alert" tone={totalImpayesReel>0?'danger':'default'} />
         <StatCard label={`Dépenses entreprise ${annee}`} value={fmtGNF(totalDepenses)} icon="trash" tone="danger" />
         <StatCard label={`Dépenses propres ${annee}`} value={fmtGNF(totalDepensesPropres)} icon="trash" tone="danger" />
+        <StatCard label={`Espèces ${annee}`} value={fmtGNF(donneesParMois.reduce((s,m)=>s+(m.montantRecuEspeces||0),0))} icon="euro" />
+        <StatCard label={`Orange Money ${annee}`} value={fmtGNF(donneesParMois.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0))} icon="euro" />
         <StatCard label={`Net perçu ${annee}`} value={fmtGNF(totalNetPercu)} icon="chart" tone={totalNetPercu>=0?'default':'danger'} />
       </div>
 
