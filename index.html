@@ -1768,10 +1768,10 @@ function DistributionView({ db, setDb, anneeInitiale }){
       const montantAVerser = p.nom === 'Conservation du Capital Fixe'
         ? montantNet + totalRedirigeVersCapitalFixe
         : (estConcerne ? montantNet * 0.8 : montantNet);
-      return [p.nom, `${p.pct}%`, Math.round(montantBrutAvantImpayes), Math.round(impayesPart), Math.round(cumule), Math.round(depensePropre), Math.round(montantNet), Math.round(montantAVerser)];
+      return [p.nom, `${p.pct}%`, Math.round(montantBrutAvantImpayes), Math.round(impayesPart), Math.round(montantBrut), Math.round(depensePropre), Math.round(montantNet), Math.round(montantAVerser)];
     });
   }, [periodeDonnees, depensesActeursPeriode, depensesPropresEmployes, remboursementActif, totalRedirigeVersCapitalFixe]);
-  const REPARTITION_HEADERS = ['Bénéficiaire', 'Part', "Montant brut avant impayés", 'Impayés (part)', 'Cumulé', 'Dépenses propres', 'Net perçu', 'Montant à verser'];
+  const REPARTITION_HEADERS = ['Bénéficiaire', 'Part', "Montant brut avant impayés", 'Impayés (part)', 'Net perçu (avant dépenses propres)', 'Dépenses propres', 'Net perçu', 'Montant à verser'];
 
   return (
     <div>
@@ -1861,10 +1861,11 @@ function DistributionView({ db, setDb, anneeInitiale }){
                 const acteurCorrespondant = acteursSansCapitalFixe.find(p => nomsCorrespondent(emp.nom, p.nom));
                 if(!acteurCorrespondant) return;
                 const moisStr = String(m).padStart(2,'0');
+                const descriptionSaisie = (v.depensesPropresDescription||'').trim();
                 toutesEntrees.push({
                   id: `dm_${site.id}_${m}_${empId}`,
                   date: `${annee}-${moisStr}-01`,
-                  description: `Dépenses propres — ${site.nom} (${new Date(annee, m-1, 1).toLocaleDateString('fr-FR',{month:'long'})})`,
+                  description: descriptionSaisie || `Dépenses propres — ${site.nom}`,
                   montant: montantDp,
                   nomActeur: acteurCorrespondant.nom,
                   depuisDetailMensuel: true,
@@ -1879,6 +1880,31 @@ function DistributionView({ db, setDb, anneeInitiale }){
             return e.date.slice(0,4) === String(annee);
           }).sort((a,b) => new Date(b.date||0) - new Date(a.date||0));
           const totalFiltre = entreesFiltrees.reduce((s,e)=>s+(Number(e.montant)||0),0);
+
+          // Cumulé toutes années, tous pressings confondus, par acteur
+          const cumuleToutesAnneesParActeur = {};
+          acteursSansCapitalFixe.forEach(p => { cumuleToutesAnneesParActeur[p.nom] = 0; });
+          Object.values(db.historiqueAnnuel||{}).forEach(anneeData => {
+            Object.entries(anneeData.depensesActeurs||{}).forEach(([nomActeur, entries]) => {
+              if(cumuleToutesAnneesParActeur[nomActeur] === undefined) return;
+              cumuleToutesAnneesParActeur[nomActeur] += (entries||[]).reduce((s,e)=>s+(Number(e.montant)||0),0);
+            });
+          });
+          db.sites.forEach(site => {
+            Object.values(site.detailMensuelManuel||{}).forEach(anneeManuel => {
+              Object.values(anneeManuel).forEach(moisData => {
+                const parEmploye = normaliserMoisManuel(moisData) || {};
+                Object.entries(parEmploye).forEach(([empId, v]) => {
+                  if(empId === '_legacy') return;
+                  const emp = site.employes.find(e => e.id === empId);
+                  if(!emp) return;
+                  const acteurCorrespondant = acteursSansCapitalFixe.find(p => nomsCorrespondent(emp.nom, p.nom));
+                  if(!acteurCorrespondant) return;
+                  cumuleToutesAnneesParActeur[acteurCorrespondant.nom] += Number(v.depensesPropres)||0;
+                });
+              });
+            });
+          });
 
           return (
             <>
@@ -1901,7 +1927,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
                 <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
                   <thead>
                     <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
-                      <th style={th}>Date</th>
+                      <th style={th}>Mois</th>
                       <th style={th}>Nom</th>
                       <th style={th}>Description</th>
                       <th style={th}>Montant</th>
@@ -1913,7 +1939,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
                       <tr><td colSpan={5} style={{...td, textAlign:'center', color:'var(--steam)', padding:'1.5rem'}}>Aucune dépense propre sur cette période.</td></tr>
                     ) : entreesFiltrees.map(e => (
                       <tr key={e.id} style={{borderTop:'1px solid var(--line)'}}>
-                        <td style={td}>{e.date ? fmtDate(e.date) : '—'}</td>
+                        <td style={{...td, textTransform: e.depuisDetailMensuel ? 'capitalize' : 'none'}}>{e.date ? (e.depuisDetailMensuel ? formatMoisAnnee(e.date.slice(0,7)) : fmtDate(e.date)) : '—'}</td>
                         <td style={{...td, fontWeight:600}}>{e.nomActeur}</td>
                         <td style={td}>
                           {e.description}
@@ -1938,6 +1964,22 @@ function DistributionView({ db, setDb, anneeInitiale }){
                 </table>
               </div>
 
+              <h4 style={{fontSize:13, color:'var(--pine)', margin:'0 0 8px'}}>Cumulé toutes années (tous pressings confondus)</h4>
+              <div className="card" style={{overflow:'hidden', marginBottom:16}}>
+                <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
+                  <tbody>
+                    {acteursSansCapitalFixe.map(p => (
+                      <tr key={p.nom} style={{borderTop:'1px solid var(--line)'}}>
+                        <td style={{...td, fontWeight:600}}>{p.nom}</td>
+                        <td style={{...td, textAlign:'right', color:'var(--danger)', fontWeight:600}} className="mono">
+                          {cumuleToutesAnneesParActeur[p.nom]>0 ? '− '+fmtGNF(cumuleToutesAnneesParActeur[p.nom]) : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
               <div style={{display:'grid', gridTemplateColumns:'1.1fr 1.4fr 0.9fr 0.9fr auto', gap:8}}>
                 <select value={acteurAjout} onChange={e=>setActeurAjout(e.target.value)}>
                   <option value="">Acteur…</option>
@@ -1954,13 +1996,6 @@ function DistributionView({ db, setDb, anneeInitiale }){
             </>
           );
         })()}
-      </div>
-
-      <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:24}}>
-        <StatCard label={`Recette brute ${annee}`} value={fmtGNF(recetteBrute)} icon="euro" />
-        <StatCard label={`Factures impayées ${annee}`} value={fmtGNF(impayesAnnee)} icon="alert" tone={impayesAnnee>0?'danger':'default'} />
-        <StatCard label={`Dépenses entreprise ${annee}`} value={fmtGNF(depensesAnnee)} icon="trash" tone="danger" />
-        <StatCard label={`Recette nette ${annee}`} value={fmtGNF(recetteNette)} icon="chart" tone={recetteNette>=0?'default':'danger'} />
       </div>
 
       {donneesParMoisAffiche && (
@@ -2216,7 +2251,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
               <th style={th}>Part</th>
               <th style={th}>Montant brut avant impayés (Part de l'acteur)</th>
               <th style={th}>Impayés (part de l'acteur)</th>
-              <th style={th}>Cumulé (impayés + net perçu)</th>
+              <th style={th}>Net perçu (avant dépenses propres)</th>
               <th style={th}>Dépenses propres</th>
               <th style={th}>Net perçu</th>
               <th style={th}>Montant à verser</th>
@@ -2244,7 +2279,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
                   </td>
                   <td style={{...td, fontWeight:600}} className="mono">{fmtGNF(montantBrutAvantImpayes)}</td>
                   <td style={{...td, color: impayesPart>0 ? 'var(--danger)' : 'var(--steam)'}} className="mono">{impayesPart>0 ? fmtGNF(impayesPart) : '—'}</td>
-                  <td style={{...td, fontWeight:700, color:'var(--danger)'}} className="mono">{fmtGNF(cumule)}</td>
+                  <td style={{...td, fontWeight:700, color: montantBrut<0 ? 'var(--danger)' : 'var(--ink)'}} className="mono">{fmtGNF(montantBrut)}</td>
                   <td style={{...td, color: depensePropre>0 ? 'var(--danger)' : 'var(--steam)'}} className="mono">{depensePropre>0 ? '− '+fmtGNF(depensePropre) : '—'}</td>
                   <td style={{...td, fontWeight:700, color: montantNet<0 ? 'var(--danger)' : 'var(--ink)'}} className="mono">{fmtGNF(montantNet)}</td>
                   <td style={{...td, fontWeight:700, color:'var(--ok)'}} className="mono">
@@ -2286,6 +2321,7 @@ function SaisieMoisHistoriqueModal({ mois, annee, valeursExistantes, onSave, onC
   const [recetteBrute, setRecetteBrute] = useState(String(valeursExistantes.recetteBrute || ''));
   const [depenses, setDepenses] = useState(String(valeursExistantes.depenses || ''));
   const [depensesPropres, setDepensesPropres] = useState(String(valeursExistantes.depensesPropres || ''));
+  const [depensesPropresDescription, setDepensesPropresDescription] = useState(valeursExistantes.depensesPropresDescription || '');
   const [montantRecuEspeces, setMontantRecuEspeces] = useState(String(valeursExistantes.montantRecuEspeces || ''));
   const [montantRecuOrangeMoney, setMontantRecuOrangeMoney] = useState(String(valeursExistantes.montantRecuOrangeMoney || ''));
 
@@ -2294,6 +2330,7 @@ function SaisieMoisHistoriqueModal({ mois, annee, valeursExistantes, onSave, onC
       recetteBrute: Number(recetteBrute)||0,
       depenses: Number(depenses)||0,
       depensesPropres: Number(depensesPropres)||0,
+      depensesPropresDescription: depensesPropresDescription.trim(),
       montantRecuEspeces: Number(montantRecuEspeces)||0,
       montantRecuOrangeMoney: Number(montantRecuOrangeMoney)||0,
     });
@@ -2306,6 +2343,7 @@ function SaisieMoisHistoriqueModal({ mois, annee, valeursExistantes, onSave, onC
           <div><label>Recette brute</label><input type="number" value={recetteBrute} onChange={e=>setRecetteBrute(e.target.value)} /></div>
           <div><label>Dépenses entreprise</label><input type="number" value={depenses} onChange={e=>setDepenses(e.target.value)} /></div>
           <div><label>Dépenses propres</label><input type="number" value={depensesPropres} onChange={e=>setDepensesPropres(e.target.value)} /></div>
+          <div><label>Description (pour situer)</label><input type="text" placeholder="Ex: avance sur salaire" value={depensesPropresDescription} onChange={e=>setDepensesPropresDescription(e.target.value)} /></div>
           <div><label>Reçu Espèces</label><input type="number" value={montantRecuEspeces} onChange={e=>setMontantRecuEspeces(e.target.value)} /></div>
           <div><label>Reçu Orange Money</label><input type="number" value={montantRecuOrangeMoney} onChange={e=>setMontantRecuOrangeMoney(e.target.value)} /></div>
         </div>
@@ -2414,7 +2452,15 @@ function GlobalDashboard({ db, onOpenSite }){
     const lowStock = site.stock.filter(s => s.quantite <= s.seuil).length;
     const depensesMois = (site.depenses||[]).filter(d=>d.date.slice(0,7)===today.slice(0,7)).reduce((s,d)=>s+Number(d.montant),0);
     const beneficeMois = caMois - depensesMois;
-    return { site, caJour, caMois, montantImpaye, impayesCount: impayes.length, enCours, lowStock, clientsCount: site.clients.length, depensesMois, beneficeMois };
+    let especesMois = 0, orangeMoneyMois = 0;
+    cmds.forEach(c => {
+      getPaiementsCommande(c).forEach(pmt => {
+        if(!pmt.date || pmt.date.slice(0,7) !== today.slice(0,7)) return;
+        if(pmt.mode === 'Orange Money') orangeMoneyMois += Number(pmt.montant)||0;
+        else especesMois += Number(pmt.montant)||0;
+      });
+    });
+    return { site, caJour, caMois, montantImpaye, impayesCount: impayes.length, enCours, lowStock, clientsCount: site.clients.length, depensesMois, beneficeMois, especesMois, orangeMoneyMois };
   });
 
   const totals = perSite.reduce((acc, p) => ({
@@ -2484,10 +2530,13 @@ function GlobalDashboard({ db, onOpenSite }){
               <MiniMetric label="CA aujourd'hui" value={fmtGNF(p.caJour)} />
               <MiniMetric label="CA ce mois" value={fmtGNF(p.caMois)} />
               <MiniMetric label="Impayés" value={fmtGNF(p.montantImpaye)} danger={p.impayesCount>0} />
+              <MiniMetric label="Espèces (mois)" value={fmtGNF(p.especesMois)} />
+              <MiniMetric label="Orange Money (mois)" value={fmtGNF(p.orangeMoneyMois)} />
               <MiniMetric label="À traiter" value={p.enCours} />
               <MiniMetric label="Stock bas" value={p.lowStock} danger={p.lowStock>0} />
               <MiniMetric label="Dépenses mois" value={fmtGNF(p.depensesMois)} danger={p.depensesMois>0} />
               <MiniMetric label="Bénéfice net" value={fmtGNF(p.beneficeMois)} danger={p.beneficeMois<0} />
+              <MiniMetric label="Total clients" value={p.clientsCount} />
             </div>
           </div>
         ))}
@@ -2711,6 +2760,7 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
     { key:'depenses', label:'Dépenses', icon:'euro' },
     { key:'detailMensuel', label:'Détail mensuel', icon:'chart' },
     { key:'encaissements', label:'Encaissements', icon:'euro' },
+    { key:'performanceCaissiers', label:'Performance caissiers', icon:'chart' },
     { key:'remuneration', label:'Rémunérations', icon:'chart' },
     { key:'corbeille', label:'Corbeille', icon:'trash', badge: (site.corbeille||[]).length || undefined },
     { key:'parametres', label:'Paramètres', icon:'edit' },
@@ -2738,6 +2788,7 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
       {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} db={db} />}
       {page === 'detailMensuel' && <DetailMensuelGerantView site={site} updateSite={updateSite} />}
       {page === 'encaissements' && <EncaissementsGerantView site={site} />}
+      {page === 'performanceCaissiers' && <PerformanceCaissiersView site={site} />}
       {page === 'remuneration' && <RemunerationGerantView site={site} />}
       {page === 'corbeille' && <CorbeilleView site={site} updateSite={updateSite} />}
       {page === 'parametres' && <ParametresView site={site} updateSite={updateSite} db={db} setDb={setDb} />}
@@ -3097,10 +3148,15 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
               const cl = site.clients.find(cl2 => cl2.id === c.clientId);
               return cl ? cl.nom.toLowerCase() : '';
             }
+            case 'articles': return c.lignes.reduce((s,l)=>s+l.qte,0);
             case 'total': return calcCommandeTotal(c, site.services);
             case 'statut': return STATUTS.indexOf(c.statut);
             case 'paiement': return c.paiement === 'paye' ? 2 : (Number(c.acompte)>0 ? 1 : 0);
             case 'depot': return new Date(c.dateCreation).getTime();
+            case 'employe': {
+              const e = site.employes.find(emp => emp.id === c.caissierEmpId);
+              return e ? e.nom.toLowerCase() : '';
+            }
             default: return 0;
           }
         };
@@ -3239,10 +3295,11 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
             <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
               <th style={th}><SortableTh label="Ticket" field="ticket" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} /></th>
               <th style={th}><SortableTh label="Client" field="client" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} /></th>
-              <th style={th}>Articles</th>
+              <th style={th}><SortableTh label="Articles" field="articles" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} /></th>
               <th style={th}><SortableTh label="Total" field="total" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} /></th>
               <th style={th}><SortableTh label="Statut" field="statut" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} /></th>
               <th style={th}><SortableTh label="Paiement" field="paiement" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} /></th>
+              <th style={th}><SortableTh label="Employé" field="employe" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} /></th>
               <th style={th}><SortableTh label="Dépôt" field="depot" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} /></th>
               <th style={th}><SortableTh label="RDV récupération" field="rdv" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} /></th>
               <th style={th}></th>
@@ -3250,7 +3307,7 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
           </thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan={9} style={{...td, textAlign:'center', color:'var(--steam)', padding:'2rem'}}>Aucune commande ne correspond.</td></tr>
+              <tr><td colSpan={10} style={{...td, textAlign:'center', color:'var(--steam)', padding:'2rem'}}>Aucune commande ne correspond.</td></tr>
             )}
             {filtered.map(cmd => {
               const client = site.clients.find(c => c.id === cmd.clientId);
@@ -3274,6 +3331,7 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
                     <span className={`tag ${cmd.paiement==='paye'?'tag-paye':'tag-impaye'}`}>{cmd.paiement==='paye'?'Payé':Number(cmd.acompte)>0?'Partiel':'Impayé'}</span>
                     {cmd.modePaiement && <div style={{fontSize:11, color:'var(--steam)', marginTop:3}}>{cmd.modePaiement}</div>}
                   </td>
+                  <td style={{...td, color:'var(--steam)'}}>{cmd.caissierEmpId ? ((site.employes.find(e=>e.id===cmd.caissierEmpId)||{}).nom || 'Employé supprimé') : 'Gérant'}</td>
                   <td style={td}>{fmtDate(cmd.dateCreation.slice(0,10))}</td>
                   <td style={td}>
                     {cmd.dateRdvRecuperation ? (
@@ -6692,6 +6750,125 @@ function RepassageApercuView({ site, updateSite }){
 
 /* ===================== ENCAISSEMENTS (espace gérant — tous les employés confondus) ===================== */
 
+/* ===================== PERFORMANCE CAISSIERS (espace gérant) ===================== */
+
+function PerformanceCaissiersView({ site }){
+  const [periode, setPeriode] = useState('jour');
+  const [moisChoisi, setMoisChoisi] = useState(todayISO().slice(0,7));
+  const [anneeChoisie, setAnneeChoisie] = useState(Number(todayISO().slice(0,4)));
+
+  const today = todayISO();
+  const getWeekDates = () => {
+    const d = new Date(today + 'T00:00:00');
+    const day = d.getDay() || 7;
+    const monday = new Date(d); monday.setDate(d.getDate() - day + 1);
+    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+    const toISO = (dt) => dt.toISOString().slice(0,10);
+    return { start: toISO(monday), end: toISO(sunday) };
+  };
+  const week = getWeekDates();
+
+  const commandesPeriode = useMemo(() => {
+    return (site.commandes||[]).filter(c => {
+      const d = (c.dateCreation||'').slice(0,10);
+      if(periode === 'jour') return d === today;
+      if(periode === 'semaine') return d >= week.start && d <= week.end;
+      if(periode === 'mois') return d.slice(0,7) === moisChoisi;
+      return d.slice(0,4) === String(anneeChoisie);
+    });
+  }, [site.commandes, periode, today, week, moisChoisi, anneeChoisie]);
+
+  const anneesDisponibles = useMemo(() => {
+    const currentYear = Number(todayISO().slice(0,4));
+    const arr = [];
+    for(let y = currentYear; y >= ANNEE_DEBUT_APP - 10; y--) arr.push(y);
+    return arr;
+  }, []);
+
+  const parCaissier = useMemo(() => {
+    const acc = {};
+    const caissiers = (site.employes||[]).filter(e => e.role !== 'Repasseur');
+    caissiers.forEach(e => { acc[e.id] = { nom: e.nom, nbCommandes: 0, totalCA: 0, nbArticles: 0, nbClients: new Set() }; });
+    acc['_gerant'] = { nom: 'Gérant', nbCommandes: 0, totalCA: 0, nbArticles: 0, nbClients: new Set() };
+    commandesPeriode.forEach(c => {
+      const key = c.caissierEmpId && acc[c.caissierEmpId] ? c.caissierEmpId : '_gerant';
+      acc[key].nbCommandes += 1;
+      acc[key].totalCA += calcCommandeTotal(c, site.services);
+      acc[key].nbArticles += c.lignes.reduce((s,l)=>s+l.qte,0);
+      if(c.clientId) acc[key].nbClients.add(c.clientId);
+    });
+    return Object.entries(acc)
+      .map(([id, v]) => ({ id, ...v, nbClients: v.nbClients.size }))
+      .filter(v => v.nbCommandes > 0)
+      .sort((a,b) => b.totalCA - a.totalCA);
+  }, [commandesPeriode, site.employes, site.services]);
+
+  const totalCommandes = commandesPeriode.length;
+  const totalCA = commandesPeriode.reduce((s,c)=>s+calcCommandeTotal(c, site.services),0);
+  const periodeLabel = periode==='jour' ? "Aujourd'hui" : periode==='semaine' ? 'Cette semaine' : periode==='mois' ? 'Ce mois' : 'Cette année';
+
+  return (
+    <div>
+      <PageHeader title="Performance caissiers" subtitle="Commandes générées par chaque caissier" />
+
+      <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
+        {['jour','semaine','mois','annee'].map(v => (
+          <button key={v} className="btn btn-sm" onClick={()=>setPeriode(v)}
+            style={{background:periode===v?'var(--pine)':'transparent', color:periode===v?'var(--white)':'var(--ink)', borderColor:periode===v?'var(--pine)':'var(--line-strong)'}}>
+            {v === 'jour' ? "Aujourd'hui" : v === 'semaine' ? 'Cette semaine' : v === 'mois' ? 'Ce mois' : 'Cette année'}
+          </button>
+        ))}
+        {periode === 'mois' && (
+          <input type="month" value={moisChoisi} onChange={e=>setMoisChoisi(e.target.value)} style={{width:'auto'}} />
+        )}
+        {periode === 'annee' && (
+          <select value={anneeChoisie} onChange={e=>setAnneeChoisie(Number(e.target.value))} style={{width:'auto', minWidth:100}}>
+            {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        )}
+      </div>
+
+      <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:14, marginBottom:20}}>
+        <StatCard label={`Commandes générées — ${periodeLabel}`} value={totalCommandes} icon="ticket" />
+        <StatCard label={`Chiffre d'affaires généré — ${periodeLabel}`} value={fmtGNF(totalCA)} icon="euro" />
+      </div>
+
+      {parCaissier.length === 0 ? (
+        <div className="card" style={{padding:'1.25rem', textAlign:'center', color:'var(--steam)', fontSize:13}}>
+          Aucune commande créée sur cette période.
+        </div>
+      ) : (
+        <div className="card" style={{overflow:'hidden'}}>
+          <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+            <thead>
+              <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                <th style={th}>Caissier</th>
+                <th style={th}>Commandes créées</th>
+                <th style={th}>Articles traités</th>
+                <th style={th}>Clients servis</th>
+                <th style={th}>Chiffre d'affaires généré</th>
+                <th style={th}>Panier moyen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {parCaissier.map(c => (
+                <tr key={c.id} style={{borderTop:'1px solid var(--line)'}}>
+                  <td style={{...td, fontWeight:600}}>{c.nom}</td>
+                  <td style={td} className="mono">{c.nbCommandes}</td>
+                  <td style={td} className="mono">{c.nbArticles}</td>
+                  <td style={td} className="mono">{c.nbClients}</td>
+                  <td style={{...td, fontWeight:700, color:'var(--pine)'}} className="mono">{fmtGNF(c.totalCA)}</td>
+                  <td style={td} className="mono">{fmtGNF(c.nbCommandes>0 ? c.totalCA/c.nbCommandes : 0)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EncaissementsGerantView({ site }){
   const [periode, setPeriode] = useState('jour');
   const [moisChoisi, setMoisChoisi] = useState(todayISO().slice(0,7));
@@ -7733,20 +7910,22 @@ function RepasseurView({ site, updateSite, employeId }){
 /* ===================== DETAIL MENSUEL (espace caissier — vue par site) ===================== */
 
 function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave, montantRecu }){
-  const mesValeurs = (valeurs.parEmploye && valeurs.parEmploye[employeId]) || { recetteBrute: 0, depenses: 0, impayes: 0, depensesPropres: 0, montantRecuEspeces: 0, montantRecuOrangeMoney: 0 };
+  const mesValeurs = (valeurs.parEmploye && valeurs.parEmploye[employeId]) || { recetteBrute: 0, depenses: 0, impayes: 0, depensesPropres: 0, depensesPropresDescription: '', montantRecuEspeces: 0, montantRecuOrangeMoney: 0 };
   const [recetteBrute, setRecetteBrute] = useState(String(mesValeurs.recetteBrute || ''));
   const [depenses, setDepenses] = useState(String(mesValeurs.depenses || ''));
   const [depensesPropres, setDepensesPropres] = useState(String(mesValeurs.depensesPropres || ''));
+  const [depensesPropresDescription, setDepensesPropresDescription] = useState(mesValeurs.depensesPropresDescription || '');
   const [montantRecuEspeces, setMontantRecuEspeces] = useState(String(mesValeurs.montantRecuEspeces || ''));
   const [montantRecuOrangeMoney, setMontantRecuOrangeMoney] = useState(String(mesValeurs.montantRecuOrangeMoney || ''));
   const [ouvert, setOuvert] = useState(false);
   const [flash, setFlash] = useState(false);
 
   useEffect(() => {
-    const mv = (valeurs.parEmploye && valeurs.parEmploye[employeId]) || { recetteBrute: 0, depenses: 0, impayes: 0, depensesPropres: 0, montantRecuEspeces: 0, montantRecuOrangeMoney: 0 };
+    const mv = (valeurs.parEmploye && valeurs.parEmploye[employeId]) || { recetteBrute: 0, depenses: 0, impayes: 0, depensesPropres: 0, depensesPropresDescription: '', montantRecuEspeces: 0, montantRecuOrangeMoney: 0 };
     setRecetteBrute(mv.recetteBrute ? String(mv.recetteBrute) : '');
     setDepenses(mv.depenses ? String(mv.depenses) : '');
     setDepensesPropres(mv.depensesPropres ? String(mv.depensesPropres) : '');
+    setDepensesPropresDescription(mv.depensesPropresDescription || '');
     setMontantRecuEspeces(mv.montantRecuEspeces ? String(mv.montantRecuEspeces) : '');
     setMontantRecuOrangeMoney(mv.montantRecuOrangeMoney ? String(mv.montantRecuOrangeMoney) : '');
   }, [valeurs.mois, employeId]);
@@ -7760,6 +7939,7 @@ function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave, monta
       impayes: impayesCalcule,
       depenses: Number(depenses)||0,
       depensesPropres: Number(depensesPropres)||0,
+      depensesPropresDescription: depensesPropresDescription.trim(),
       montantRecuEspeces: Number(montantRecuEspeces)||0,
       montantRecuOrangeMoney: Number(montantRecuOrangeMoney)||0,
     });
@@ -7797,6 +7977,7 @@ function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave, monta
                 </>
               )}
               <div><label>Mes dépenses propres</label><input type="number" value={depensesPropres} onChange={e=>setDepensesPropres(e.target.value)} style={{width:140}}/></div>
+              <div><label>Description (pour situer)</label><input type="text" placeholder="Ex: avance sur salaire" value={depensesPropresDescription} onChange={e=>setDepensesPropresDescription(e.target.value)} style={{width:180}}/></div>
               {avantSeuil ? (
                 <>
                   <div><label>Montant net reçu (Espèces)</label><input type="number" value={montantRecuEspeces} onChange={e=>setMontantRecuEspeces(e.target.value)} style={{width:140}}/></div>
@@ -8205,6 +8386,7 @@ function SaisieEmployeMoisModal({ site, mois, employeIdInitial, valeursExistante
   const [recetteBrute, setRecetteBrute] = useState(String(existant.recetteBrute || ''));
   const [depenses, setDepenses] = useState(String(existant.depenses || ''));
   const [depensesPropres, setDepensesPropres] = useState(String(existant.depensesPropres || ''));
+  const [depensesPropresDescription, setDepensesPropresDescription] = useState(existant.depensesPropresDescription || '');
   const [montantRecuEspeces, setMontantRecuEspeces] = useState(String(existant.montantRecuEspeces || ''));
   const [montantRecuOrangeMoney, setMontantRecuOrangeMoney] = useState(String(existant.montantRecuOrangeMoney || ''));
 
@@ -8214,6 +8396,7 @@ function SaisieEmployeMoisModal({ site, mois, employeIdInitial, valeursExistante
     setRecetteBrute(String(v.recetteBrute || ''));
     setDepenses(String(v.depenses || ''));
     setDepensesPropres(String(v.depensesPropres || ''));
+    setDepensesPropresDescription(v.depensesPropresDescription || '');
     setMontantRecuEspeces(String(v.montantRecuEspeces || ''));
     setMontantRecuOrangeMoney(String(v.montantRecuOrangeMoney || ''));
   }
@@ -8227,6 +8410,7 @@ function SaisieEmployeMoisModal({ site, mois, employeIdInitial, valeursExistante
       impayes: impayesCalcule,
       depenses: Number(depenses)||0,
       depensesPropres: Number(depensesPropres)||0,
+      depensesPropresDescription: depensesPropresDescription.trim(),
       montantRecuEspeces: Number(montantRecuEspeces)||0,
       montantRecuOrangeMoney: Number(montantRecuOrangeMoney)||0,
     });
@@ -8246,6 +8430,7 @@ function SaisieEmployeMoisModal({ site, mois, employeIdInitial, valeursExistante
           <div><label>Recette brute</label><input type="number" value={recetteBrute} onChange={e=>setRecetteBrute(e.target.value)} /></div>
           <div><label>Dépenses entreprise</label><input type="number" value={depenses} onChange={e=>setDepenses(e.target.value)} /></div>
           <div><label>Dépenses propres</label><input type="number" value={depensesPropres} onChange={e=>setDepensesPropres(e.target.value)} /></div>
+          <div><label>Description (pour situer)</label><input type="text" placeholder="Ex: avance sur salaire" value={depensesPropresDescription} onChange={e=>setDepensesPropresDescription(e.target.value)} /></div>
           <div>
             <label>Impayés (calculé)</label>
             <div className="mono" style={{padding:'8px 10px', background:'var(--paper-2)', borderRadius:8, fontSize:13, fontWeight:600}}>{fmtGNF(impayesCalcule)}</div>
@@ -8319,6 +8504,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
     { key:'depenses', label:'Dépenses', icon:'euro' },
     { key:'detailMensuel', label:'Détail mensuel', icon:'chart' },
     { key:'encaissements', label:'Mes encaissements', icon:'euro' },
+    { key:'performanceCaissiers', label:'Performance caissiers', icon:'chart' },
     { key:'suiviRepassage', label:'Suivi repassage', icon:'euro' },
   ];
   return (
@@ -8331,6 +8517,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
       {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} db={db} employeId={employeId} />}
       {page === 'detailMensuel' && <DetailMensuelSiteView site={site} updateSite={updateSite} employeId={employeId} />}
       {page === 'encaissements' && <MesEncaissementsView site={site} employeId={employeId} />}
+      {page === 'performanceCaissiers' && <PerformanceCaissiersView site={site} />}
       {page === 'suiviRepassage' && <RepassageApercuView site={site} updateSite={updateSite} />}
     </Shell>
   );
