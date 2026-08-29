@@ -2802,6 +2802,7 @@ const CORBEILLE_TYPE_LABELS = {
   commande: '🎫 Commande',
   commandes_reset: '🗓️ Réinitialisation de commandes',
   depenses_reset: '🗓️ Réinitialisation de dépenses',
+  remunerations_reset: '🗓️ Réinitialisation de rémunérations',
   stock: '📦 Article de stock',
   service: '🧺 Service',
   employe: '👤 Employé',
@@ -2827,6 +2828,8 @@ function CorbeilleView({ site, updateSite }){
       nextSite.commandes = [...entry.data, ...nextSite.commandes];
     } else if(entry.type === 'depenses_reset' && Array.isArray(entry.data)){
       nextSite.depenses = [...entry.data, ...(nextSite.depenses||[])];
+    } else if(entry.type === 'remunerations_reset' && Array.isArray(entry.data)){
+      nextSite.remunerations = [...entry.data, ...(nextSite.remunerations||[])];
     } else if(entry.type === 'stock'){
       nextSite.stock = [...nextSite.stock, entry.data];
     } else if(entry.type === 'service'){
@@ -3220,7 +3223,7 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
             date: rem.date,
             description: `Prestation repassage — ${clientNomRem} (#${ticketSuffixRem}) — ${empNomRem}`,
             montant: montantRepasseur,
-            categorie: 'Paiement',
+            categorie: 'Paiement repasseur',
             modePaiement: 'Espèces',
             autoPrestationId: rem.id,
             saisiPar: employeId || null,
@@ -5023,7 +5026,7 @@ function NewEmployeModal({ site, updateSite, onClose }){
 /* ===================== DEPENSES ===================== */
 
 const CATEGORIES_DEPENSES = ['Salaires', 'Électricité', 'Loyer', 'Fournitures', 'Autres'];
-const CATEGORIES_DEPENSES_AFFICHAGE = ['Salaires', 'Électricité', 'Loyer', 'Paiement', 'Livraison', 'Fournitures', 'Autres'];
+const CATEGORIES_DEPENSES_AFFICHAGE = ['Salaires', 'Électricité', 'Loyer', 'Paiement repasseur', 'Livraison', 'Fournitures', 'Autres'];
 
 // Résout la catégorie réellement affichée pour une dépense — corrige l'étiquette des anciennes
 // dépenses de repassage encore enregistrées sous 'Livraison' ou 'Prestations' (avant la séparation
@@ -5032,7 +5035,7 @@ function categorieAffichee(d, remunerations){
   if(d.categorie === 'Prestations' || d.categorie === 'Livraison'){
     if(d.autoPrestationId){
       const rem = (remunerations||[]).find(r => r.id === d.autoPrestationId);
-      if(rem && rem.type === 'repassage') return 'Paiement';
+      if(rem && rem.type === 'repassage') return 'Paiement repasseur';
     }
     return 'Livraison';
   }
@@ -5051,6 +5054,7 @@ function DepensesView({ site, updateSite, db, employeId }){
   const [triColonne, setTriColonne] = useState('date');
   const [triSens, setTriSens] = useState('desc'); // 'asc' | 'desc'
   const [filtreCategorie, setFiltreCategorie] = useState('toutes');
+  const [moisOuvertDepenses, setMoisOuvertDepenses] = useState(null);
   const [filtreMode, setFiltreMode] = useState('tous');
   const [filtreSaisiPar, setFiltreSaisiPar] = useState('tous');
 
@@ -5076,18 +5080,52 @@ function DepensesView({ site, updateSite, db, employeId }){
   }
 
   const filtered = useMemo(() => {
-    return [...depenses].filter(d => estDansPeriode(d.date)).sort((a,b) => new Date(b.date) - new Date(a.date));
-  }, [depenses, typePeriode, filterJour, filterMois, filterAnnee]);
+    return [...depenses].filter(d => estDansPeriode(d.date) && (!employeId || d.saisiPar === employeId)).sort((a,b) => new Date(b.date) - new Date(a.date));
+  }, [depenses, typePeriode, filterJour, filterMois, filterAnnee, employeId]);
 
   // Repassages/livraisons enregistrés AVANT la création automatique de dépenses (données historiques),
   // à inclure quand même dans la charge réelle de l'entreprise pour ne rien sous-estimer
   const remunerationsOrphelines = useMemo(() => {
     const idsAvecDepense = new Set(depenses.filter(d=>d.autoPrestationId).map(d=>d.autoPrestationId));
-    return remunerations.filter(r => (r.type==='repassage' || r.type==='livraison') && !idsAvecDepense.has(r.id) && estDansPeriode(r.date));
-  }, [remunerations, depenses, typePeriode, filterJour, filterMois, filterAnnee]);
+    return remunerations.filter(r => (r.type==='repassage' || r.type==='livraison') && !idsAvecDepense.has(r.id) && estDansPeriode(r.date) && (!employeId || r.employeId === employeId));
+  }, [remunerations, depenses, typePeriode, filterJour, filterMois, filterAnnee, employeId]);
   const totalOrphelines = remunerationsOrphelines.reduce((s,r)=>s+Number(r.montant),0);
 
-  const totalMois = filtered.reduce((s,d) => s + Number(d.montant), 0) + totalOrphelines;
+  // Dépenses entreprise saisies manuellement par chaque employé dans Détail mensuel (mois avant septembre 2026),
+  // à inclure comme lignes individuelles ici pour ne pas les laisser invisibles dans Dépenses
+  const depensesEntrepriseHistoriques = useMemo(() => {
+    const liste = [];
+    const manuel = site.detailMensuelManuel || {};
+    Object.entries(manuel).forEach(([anneeStr, moisData]) => {
+      const anneeNum = Number(anneeStr);
+      Object.entries(moisData||{}).forEach(([moisStr, valeurMois]) => {
+        const moisNum = Number(moisStr);
+        const avantSeuil = anneeNum < 2026 || (anneeNum === 2026 && moisNum < 9);
+        if(!avantSeuil) return;
+        const parEmploye = normaliserMoisManuel(valeurMois) || {};
+        Object.entries(parEmploye).forEach(([empId, v]) => {
+          const montantDep = Number(v.depenses)||0;
+          if(montantDep <= 0 || empId === '_legacy') return;
+          if(employeId && empId !== employeId) return;
+          const emp = site.employes.find(e => e.id === empId);
+          const dernierJour = new Date(anneeNum, moisNum, 0).getDate();
+          const dateEntree = `${anneeNum}-${String(moisNum).padStart(2,'0')}-${String(dernierJour).padStart(2,'0')}`;
+          if(!estDansPeriode(dateEntree)) return;
+          liste.push({
+            id: `dm_ent_${anneeNum}_${moisNum}_${empId}`,
+            date: dateEntree,
+            description: `Dépenses entreprise — ${emp ? emp.nom : 'Employé supprimé'} (${new Date(anneeNum, moisNum-1, 1).toLocaleDateString('fr-FR',{month:'long', year:'numeric'})})`,
+            montant: montantDep,
+            saisiPar: empId,
+          });
+        });
+      });
+    });
+    return liste;
+  }, [site.detailMensuelManuel, site.employes, typePeriode, filterJour, filterMois, filterAnnee, employeId]);
+  const totalDepensesEntrepriseHistoriques = depensesEntrepriseHistoriques.reduce((s,d)=>s+d.montant,0);
+
+  const totalMois = filtered.reduce((s,d) => s + Number(d.montant), 0) + totalOrphelines + totalDepensesEntrepriseHistoriques;
 
   const parCategorie = useMemo(() => {
     const acc = {};
@@ -5095,11 +5133,12 @@ function DepensesView({ site, updateSite, db, employeId }){
       acc[categorieAffichee(d, remunerations)] = (acc[categorieAffichee(d, remunerations)]||0) + Number(d.montant);
     });
     remunerationsOrphelines.forEach(r => {
-      const cat = r.type === 'repassage' ? 'Paiement' : 'Livraison';
+      const cat = r.type === 'repassage' ? 'Paiement repasseur' : 'Livraison';
       acc[cat] = (acc[cat]||0) + Number(r.montant);
     });
+    if(totalDepensesEntrepriseHistoriques > 0) acc['Autres'] = (acc['Autres']||0) + totalDepensesEntrepriseHistoriques;
     return acc;
-  }, [filtered, remunerationsOrphelines, remunerations]);
+  }, [filtered, remunerationsOrphelines, remunerations, totalDepensesEntrepriseHistoriques]);
 
   const parMode = useMemo(() => {
     const acc = {};
@@ -5130,7 +5169,8 @@ function DepensesView({ site, updateSite, db, employeId }){
 
   const anneesDisponibles = useMemo(() => {
     const annees = new Set(depenses.map(d=>d.date.slice(0,4)));
-    annees.add(todayISO().slice(0,4));
+    const currentYear = Number(todayISO().slice(0,4));
+    for(let y = currentYear; y >= ANNEE_DEBUT_APP - 10; y--) annees.add(String(y));
     return [...annees].sort().reverse();
   }, [depenses]);
 
@@ -5148,6 +5188,10 @@ function DepensesView({ site, updateSite, db, employeId }){
             <button className="btn btn-rust" onClick={()=>setShowNew(true)}><Icon name="plus" size={15}/> Nouvelle dépense</button>
           </div>
         } />
+
+      {employeId && (
+        <p style={{fontSize:12.5, color:'var(--steam)', margin:'-8px 0 14px'}}>Vous ne voyez que les dépenses que vous avez vous-même saisies — pas celles des autres employés ni du gérant.</p>
+      )}
 
       {/* Filtre par période */}
       <div style={{display:'flex', gap:10, marginBottom:18, alignItems:'center', flexWrap:'wrap'}}>
@@ -5181,11 +5225,14 @@ function DepensesView({ site, updateSite, db, employeId }){
       </div>
 
       {/* Total dépenses (cumul de toutes les catégories) */}
-      {(filtered.length > 0 || totalOrphelines > 0) && (
+      {(filtered.length > 0 || totalOrphelines > 0 || totalDepensesEntrepriseHistoriques > 0) && (
         <div style={{marginBottom:14}}>
           <StatCard label={`Total dépenses — ${labelPeriode}`} value={fmtGNF(CATEGORIES_DEPENSES_AFFICHAGE.reduce((s,cat)=>s+(parCategorie[cat]||0),0))} icon="euro" tone="danger" />
           {totalOrphelines > 0 && (
             <p style={{fontSize:11.5, color:'var(--steam)', margin:'4px 0 0'}}>Inclut {fmtGNF(totalOrphelines)} de repassage/livraison historique (enregistré avant la création automatique de dépenses).</p>
+          )}
+          {totalDepensesEntrepriseHistoriques > 0 && (
+            <p style={{fontSize:11.5, color:'var(--steam)', margin:'4px 0 0'}}>Inclut {fmtGNF(totalDepensesEntrepriseHistoriques)} de dépenses entreprise saisies dans Détail mensuel (mois antérieurs à septembre 2026), classées sous « Autres ».</p>
           )}
         </div>
       )}
@@ -5243,11 +5290,18 @@ function DepensesView({ site, updateSite, db, employeId }){
               : `Prestation ${r.type === 'repassage' ? 'repassage' : 'livraison'} — ${empNom}`;
             return {
               id: r.id, date: r.date, description,
-              categorie: r.type === 'repassage' ? 'Paiement' : 'Livraison', mode: r.modePaiementRepasseur || 'Espèces',
+              categorie: r.type === 'repassage' ? 'Paiement repasseur' : 'Livraison', mode: r.modePaiementRepasseur || 'Espèces',
               saisiParNom: '—', montant: Number(r.montant), original: r, isOrphan: true,
               confirmation: statutConfirmation(r), remLieeId: r.id,
             };
           }),
+          ...depensesEntrepriseHistoriques.map(d => ({
+            id: d.id, date: d.date, description: d.description,
+            categorie: 'Autres', mode: 'Espèces',
+            saisiParNom: (site.employes.find(e=>e.id===d.saisiPar)||{}).nom || 'Employé supprimé',
+            montant: d.montant, original: d, isOrphan: true,
+            confirmation: null, remLieeId: null,
+          })),
         ];
         const categoriesDispo = [...new Set(lignesBrutes.map(l=>l.categorie))].sort();
         const saisiParDispo = [...new Set(lignesBrutes.map(l=>l.saisiParNom))].sort();
@@ -5271,7 +5325,7 @@ function DepensesView({ site, updateSite, db, employeId }){
             if(!groupes[key]) groupes[key] = { ...l, id: key, description: '', montant: 0, count: 0, isGrouped: true, isOrphan: true };
             groupes[key].montant += l.montant;
             groupes[key].count += 1;
-          } else if(l.categorie === 'Paiement'){
+          } else if(l.categorie === 'Paiement repasseur'){
             const nomRepasseur = extraireNomRepasseur(l.description);
             const key = `pai|${l.date.slice(0,10)}|${nomRepasseur}|${l.mode}`;
             if(!groupes[key]) groupes[key] = { ...l, id: key, description: '', nomRepasseur, montant: 0, count: 0, confirmesCount: 0, isGrouped: true, isOrphan: true };
@@ -5309,6 +5363,16 @@ function DepensesView({ site, updateSite, db, employeId }){
         const thTriable = (col, label) => (
           <th style={{...th, cursor:'pointer', userSelect:'none'}} onClick={()=>trierPar(col)}>{label}{flecheTri(col)}</th>
         );
+
+        // Regroupe les lignes par mois — un clic sur le mois révèle le détail de ses dépenses
+        const moisGroupesMap = {};
+        lignesTableau.forEach(l => {
+          const moisKey = (l.date||'').slice(0,7);
+          if(!moisGroupesMap[moisKey]) moisGroupesMap[moisKey] = { moisKey, lignes: [], total: 0 };
+          moisGroupesMap[moisKey].lignes.push(l);
+          moisGroupesMap[moisKey].total += l.montant;
+        });
+        const moisGroupes = Object.values(moisGroupesMap).sort((a,b) => b.moisKey.localeCompare(a.moisKey));
         const EXPORT_HEADERS = ['Date','Description', ...CATEGORIES_DEPENSES_AFFICHAGE, 'Saisi par','Confirmation','Espèces','Orange Money','Montant'];
         const exportRows = lignesTableau.map(l => [
           fmtDate(l.date), l.description,
@@ -5363,42 +5427,63 @@ function DepensesView({ site, updateSite, db, employeId }){
             {lignesTableau.length === 0 && (
               <tr><td colSpan={7+CATEGORIES_DEPENSES_AFFICHAGE.length} style={{...td, textAlign:'center', color:'var(--steam)', padding:'2rem'}}>Aucune dépense enregistrée pour ce mois.</td></tr>
             )}
-            {lignesTableau.map(l => (
-              <tr key={l.id} style={{borderTop:'1px solid var(--line)'}}>
-                <td style={{...td, whiteSpace:'nowrap'}}>{fmtDate(l.date)}</td>
-                <td style={td}>
-                  {l.description}
-                  {l.isOrphan && !l.isGrouped && <span className="tag" style={{marginLeft:6, fontSize:9.5, background:'var(--warn-light)', color:'var(--warn)'}}>Historique</span>}
-                  {l.isGrouped && <span className="tag" style={{marginLeft:6, fontSize:9.5, background:'var(--pine-light)', color:'var(--pine)'}}>Groupé</span>}
-                </td>
-                {CATEGORIES_DEPENSES_AFFICHAGE.map(cat => (
-                  <td key={cat} style={{...td, color: cat===l.categorie ? 'var(--danger)' : 'var(--line)', fontWeight: cat===l.categorie ? 600 : 400}} className="mono">
-                    {cat === l.categorie ? fmtGNF(l.montant) : '—'}
-                  </td>
-                ))}
-                <td style={{...td, color:'var(--steam)'}}>{l.saisiParNom}</td>
-                <td style={td}>
-                  {l.confirmation && (
-                    <span className="tag" style={{background:l.confirmation.bg, color:l.confirmation.color}}>{l.confirmation.label}</span>
-                  )}
-                </td>
-                <td style={{...td, color: l.mode!=='Orange Money' ? 'var(--pine)' : 'var(--line)'}} className="mono">{l.mode!=='Orange Money' ? fmtGNF(l.montant) : '—'}</td>
-                <td style={{...td, color: l.mode==='Orange Money' ? 'var(--pine)' : 'var(--line)'}} className="mono">{l.mode==='Orange Money' ? fmtGNF(l.montant) : '—'}</td>
-                <td style={{...td, color:'var(--danger)', fontWeight:600}} className="mono">{fmtGNF(l.montant)}</td>
-                <td style={{...td, textAlign:'right'}}>
-                  {!l.isOrphan && (
-                    <div style={{display:'flex', gap:6, justifyContent:'flex-end'}}>
-                      <button className="btn btn-ghost btn-sm" style={{color:'var(--pine)'}} onClick={()=>setEditDep({...l.original, categorie: categorieAffichee(l.original, remunerations)})}>
-                        <Icon name="edit" size={14}/>
-                      </button>
-                      <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>setConfirmDep(l.original)}>
-                        <Icon name="trash" size={14}/>
-                      </button>
-                    </div>
-                  )}
-                </td>
-              </tr>
-            ))}
+            {moisGroupes.map(g => {
+              const estOuvert = moisOuvertDepenses === g.moisKey;
+              return (
+                <React.Fragment key={g.moisKey}>
+                  <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)', cursor:'pointer'}} onClick={()=>setMoisOuvertDepenses(estOuvert ? null : g.moisKey)}>
+                    <td colSpan={2} style={{...td, fontWeight:700}}>
+                      <span style={{marginRight:6}}>{estOuvert ? '▾' : '▸'}</span>
+                      {formatMoisAnnee(g.moisKey)} <span style={{fontWeight:400, color:'var(--steam)', fontSize:12.5}}>({g.lignes.length} dépense{g.lignes.length>1?'s':''})</span>
+                    </td>
+                    {CATEGORIES_DEPENSES_AFFICHAGE.map(cat => (
+                      <td key={cat} style={{...td, fontWeight:700}} className="mono">{fmtGNF(g.lignes.filter(l=>l.categorie===cat).reduce((s,l)=>s+l.montant,0))}</td>
+                    ))}
+                    <td colSpan={2}></td>
+                    <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(g.lignes.filter(l=>l.mode!=='Orange Money').reduce((s,l)=>s+l.montant,0))}</td>
+                    <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(g.lignes.filter(l=>l.mode==='Orange Money').reduce((s,l)=>s+l.montant,0))}</td>
+                    <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(g.total)}</td>
+                    <td></td>
+                  </tr>
+                  {estOuvert && g.lignes.map(l => (
+                    <tr key={l.id} style={{borderTop:'1px solid var(--line)', background:'var(--paper)'}}>
+                      <td style={{...td, whiteSpace:'nowrap', paddingLeft:28}}>{fmtDate(l.date)}</td>
+                      <td style={td}>
+                        {l.description}
+                        {l.isOrphan && !l.isGrouped && <span className="tag" style={{marginLeft:6, fontSize:9.5, background:'var(--warn-light)', color:'var(--warn)'}}>Historique</span>}
+                        {l.isGrouped && <span className="tag" style={{marginLeft:6, fontSize:9.5, background:'var(--pine-light)', color:'var(--pine)'}}>Groupé</span>}
+                      </td>
+                      {CATEGORIES_DEPENSES_AFFICHAGE.map(cat => (
+                        <td key={cat} style={{...td, color: cat===l.categorie ? 'var(--danger)' : 'var(--line)', fontWeight: cat===l.categorie ? 600 : 400}} className="mono">
+                          {cat === l.categorie ? fmtGNF(l.montant) : '—'}
+                        </td>
+                      ))}
+                      <td style={{...td, color:'var(--steam)'}}>{l.saisiParNom}</td>
+                      <td style={td}>
+                        {l.confirmation && (
+                          <span className="tag" style={{background:l.confirmation.bg, color:l.confirmation.color}}>{l.confirmation.label}</span>
+                        )}
+                      </td>
+                      <td style={{...td, color: l.mode!=='Orange Money' ? 'var(--pine)' : 'var(--line)'}} className="mono">{l.mode!=='Orange Money' ? fmtGNF(l.montant) : '—'}</td>
+                      <td style={{...td, color: l.mode==='Orange Money' ? 'var(--pine)' : 'var(--line)'}} className="mono">{l.mode==='Orange Money' ? fmtGNF(l.montant) : '—'}</td>
+                      <td style={{...td, color:'var(--danger)', fontWeight:600}} className="mono">{fmtGNF(l.montant)}</td>
+                      <td style={{...td, textAlign:'right'}}>
+                        {!l.isOrphan && (
+                          <div style={{display:'flex', gap:6, justifyContent:'flex-end'}} onClick={e=>e.stopPropagation()}>
+                            <button className="btn btn-ghost btn-sm" style={{color:'var(--pine)'}} onClick={()=>setEditDep({...l.original, categorie: categorieAffichee(l.original, remunerations)})}>
+                              <Icon name="edit" size={14}/>
+                            </button>
+                            <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>setConfirmDep(l.original)}>
+                              <Icon name="trash" size={14}/>
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </React.Fragment>
+              );
+            })}
             {lignesTableau.length > 0 && (
               <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
                 <td colSpan={2} style={{...td, fontWeight:700}}>Total {(filtreCategorie!=='toutes'||filtreMode!=='tous'||filtreSaisiPar!=='tous') ? '(filtré)' : labelPeriode}</td>
@@ -5515,7 +5600,7 @@ function NewPrestationModal({ site, updateSite, onClose, caissierId }){
       date,
       description: `Prestation ${type === 'repassage' ? 'repassage' : 'livraison'} — ${empNom} (${rem.detail})`,
       montant,
-      categorie: type === 'repassage' ? 'Paiement' : 'Livraison',
+      categorie: type === 'repassage' ? 'Paiement repasseur' : 'Livraison',
       modePaiement: type === 'livraison' ? modePaiementLivraison : 'Espèces',
       autoPrestationId: rem.id,
       saisiPar: caissierId || null,
@@ -6139,6 +6224,36 @@ function ParametresView({ site, updateSite, db, setDb }){
     setShowPlageDep(false);
   }
 
+  const [resetScopeRem, setResetScopeRem] = useState(null); // 'jour' | 'mois' | 'plage' | 'tout'
+  const [showPlageRem, setShowPlageRem] = useState(false);
+  const [rangeDebutRem, setRangeDebutRem] = useState(todayISO());
+  const [rangeFinRem, setRangeFinRem] = useState(todayISO());
+
+  function countForScopeRem(scope){
+    const today = todayISO();
+    const remunerations = site.remunerations || [];
+    if(scope === 'jour') return remunerations.filter(r => (r.date||'').slice(0,10) === today).length;
+    if(scope === 'mois') return remunerations.filter(r => (r.date||'').slice(0,7) === today.slice(0,7)).length;
+    if(scope === 'plage') return remunerations.filter(r => (r.date||'').slice(0,10) >= rangeDebutRem && (r.date||'').slice(0,10) <= rangeFinRem).length;
+    return remunerations.length;
+  }
+
+  function resetRemunerations(){
+    if(!resetScopeRem) return;
+    const today = todayISO();
+    const remunerations = site.remunerations || [];
+    let removed, remaining;
+    if(resetScopeRem === 'jour'){ removed = remunerations.filter(r => (r.date||'').slice(0,10) === today); remaining = remunerations.filter(r => (r.date||'').slice(0,10) !== today); }
+    else if(resetScopeRem === 'mois'){ removed = remunerations.filter(r => (r.date||'').slice(0,7) === today.slice(0,7)); remaining = remunerations.filter(r => (r.date||'').slice(0,7) !== today.slice(0,7)); }
+    else if(resetScopeRem === 'plage'){ removed = remunerations.filter(r => (r.date||'').slice(0,10) >= rangeDebutRem && (r.date||'').slice(0,10) <= rangeFinRem); remaining = remunerations.filter(r => !((r.date||'').slice(0,10) >= rangeDebutRem && (r.date||'').slice(0,10) <= rangeFinRem)); }
+    else { removed = remunerations; remaining = []; }
+    const labelPeriode = resetScopeRem==='jour'?"aujourd'hui":resetScopeRem==='mois'?'ce mois-ci':resetScopeRem==='plage'?`du ${fmtDate(rangeDebutRem)} au ${fmtDate(rangeFinRem)}`:'toute la période';
+    const entry = { id: uid('trash_'), type:'remunerations_reset', label: `Réinitialisation rémunérations (${labelPeriode}) — ${removed.length} entrée(s)`, data: removed, dateSuppression: new Date().toISOString() };
+    updateSite({ ...site, remunerations: remaining, corbeille: [entry, ...(site.corbeille||[])] });
+    setResetScopeRem(null);
+    setShowPlageRem(false);
+  }
+
   // Changement mot de passe gérant
   const [ancienPass, setAncienPass] = useState('');
   const [nouveauPass, setNouveauPass] = useState('');
@@ -6376,6 +6491,54 @@ function ParametresView({ site, updateSite, db, setDb }){
           message={`Effacer ${countForScopeDep(resetScopeDep)} dépense(s) — ${resetScopeDep==='jour' ? "celles d'aujourd'hui" : resetScopeDep==='mois' ? 'celles de ce mois-ci' : resetScopeDep==='plage' ? `celles du ${fmtDate(rangeDebutDep)} au ${fmtDate(rangeFinDep)}` : 'TOUTES les dépenses, toutes périodes confondues'} — de « ${site.nom} » ? Les clients, employés, services, stock et commandes ne seront pas touchés. Cette action est irréversible.`}
           onConfirm={resetDepenses}
           onCancel={()=>setResetScopeDep(null)}
+        />
+      )}
+
+      {/* Réinitialiser les rémunérations (repassage/livraison) */}
+      <div className="card" style={{padding:'1.5rem', marginTop:18, borderColor:'var(--danger)'}}>
+        <h3 style={{margin:'0 0 6px', fontSize:15, display:'flex', alignItems:'center', gap:8, color:'var(--danger)'}}>
+          🗓️ Réinitialiser les rémunérations (repassage/livraison) de ce site
+        </h3>
+        <p style={{fontSize:13, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.6}}>
+          Concerne « Suivi repassage » et les paiements aux repasseurs/livreurs — séparé des commandes et dépenses.
+          <strong> Vos clients, employés, services, stock, commandes et dépenses restent toujours intacts.</strong>
+        </p>
+        <div style={{display:'flex', gap:10, flexWrap:'wrap'}}>
+          <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)'}} onClick={()=>setResetScopeRem('jour')}>
+            <Icon name="trash" size={14}/> Aujourd'hui ({countForScopeRem('jour')})
+          </button>
+          <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)'}} onClick={()=>setResetScopeRem('mois')}>
+            <Icon name="trash" size={14}/> Ce mois-ci ({countForScopeRem('mois')})
+          </button>
+          <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)'}} onClick={()=>setResetScopeRem('tout')}>
+            <Icon name="trash" size={14}/> Toute la période ({countForScopeRem('tout')})
+          </button>
+          <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)', background: showPlageRem ? 'var(--danger-light)' : 'transparent'}} onClick={()=>setShowPlageRem(!showPlageRem)}>
+            📅 Jours spécifiques
+          </button>
+        </div>
+        {showPlageRem && (
+          <div style={{marginTop:12, padding:'12px', background:'var(--danger-light)', borderRadius:8, display:'flex', gap:10, alignItems:'flex-end', flexWrap:'wrap'}}>
+            <div>
+              <label>Du</label>
+              <input type="date" value={rangeDebutRem} onChange={e=>setRangeDebutRem(e.target.value)} />
+            </div>
+            <div>
+              <label>Au</label>
+              <input type="date" value={rangeFinRem} onChange={e=>setRangeFinRem(e.target.value)} min={rangeDebutRem} />
+            </div>
+            <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)'}} onClick={()=>setResetScopeRem('plage')}>
+              <Icon name="trash" size={14}/> Réinitialiser cette période ({countForScopeRem('plage')})
+            </button>
+          </div>
+        )}
+      </div>
+
+      {resetScopeRem && (
+        <ConfirmDelete db={db}
+          message={`Effacer ${countForScopeRem(resetScopeRem)} entrée(s) de rémunération — ${resetScopeRem==='jour' ? "celles d'aujourd'hui" : resetScopeRem==='mois' ? 'celles de ce mois-ci' : resetScopeRem==='plage' ? `celles du ${fmtDate(rangeDebutRem)} au ${fmtDate(rangeFinRem)}` : 'TOUTES les rémunérations, toutes périodes confondues'} — de « ${site.nom} » ? Les dépenses déjà créées à partir de ces rémunérations ne seront PAS effacées automatiquement — supprimez-les séparément si besoin. Cette action est irréversible.`}
+          onConfirm={resetRemunerations}
+          onCancel={()=>setResetScopeRem(null)}
         />
       )}
 
@@ -7480,7 +7643,7 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
       date,
       description: type === 'repassage' ? descriptionRepassage : `Prestation livraison — ${empNom} (${rem.detail})`,
       montant,
-      categorie: type === 'repassage' ? 'Paiement' : 'Livraison',
+      categorie: type === 'repassage' ? 'Paiement repasseur' : 'Livraison',
       modePaiement: type === 'livraison' ? modePaiementLivraison : 'Espèces',
       autoPrestationId: rem.id,
       saisiPar: employeId || null,
@@ -7878,7 +8041,7 @@ function RepasseurView({ site, updateSite, employeId }){
           date: rem.date,
           description: `Prestation repassage — ${clientNomRem} (#${ticketSuffixRem}) — ${empNomRem}`,
           montant,
-          categorie: 'Paiement',
+          categorie: 'Paiement repasseur',
           modePaiement: 'Espèces',
           autoPrestationId: rem.id,
           saisiPar: employeId || null,
@@ -8133,6 +8296,62 @@ function calculerDonneesMensuellesSite(site, annee){
   });
 }
 
+// Comme calculerDonneesMensuellesSite, mais ne montre QUE la contribution d'UN employé précis
+// (sa propre saisie manuelle, ou ses propres commandes/paiements réels quand il n'a rien saisi)
+function calculerDonneesMensuellesEmploye(site, annee, employeId){
+  const auto = Array.from({length:12}, (_,i) => ({
+    mois: i+1,
+    label: new Date(annee, i, 1).toLocaleDateString('fr-FR', {month:'long'}),
+    recetteBrute: 0,
+    recetteEncaissee: 0,
+    depenses: 0,
+    especes: 0,
+    orangeMoney: 0,
+  }));
+  (site.commandes||[]).forEach(c => {
+    if(c.dateCreation && c.dateCreation.slice(0,4) === String(annee) && c.caissierEmpId === employeId){
+      const m = Number(c.dateCreation.slice(5,7)) - 1;
+      const totalCmd = calcCommandeTotal(c, site.services);
+      auto[m].recetteBrute += totalCmd;
+      auto[m].recetteEncaissee += c.paiement === 'paye' ? totalCmd : (Number(c.acompte)||0);
+    }
+    getPaiementsCommande(c).forEach(pmt => {
+      if(!pmt.date || pmt.date.slice(0,4) !== String(annee)) return;
+      const attribue = pmt.employeId != null ? pmt.employeId : (c.caissierEmpId || null);
+      if(attribue !== employeId) return;
+      const m = Number(pmt.date.slice(5,7)) - 1;
+      if(pmt.mode === 'Orange Money') auto[m].orangeMoney += Number(pmt.montant)||0;
+      else auto[m].especes += Number(pmt.montant)||0;
+    });
+  });
+  (site.depenses||[]).forEach(d => {
+    if(d.date && d.date.slice(0,4) === String(annee) && d.saisiPar === employeId){
+      const m = Number(d.date.slice(5,7)) - 1;
+      auto[m].depenses += Number(d.montant)||0;
+    }
+  });
+  const manuel = (site.detailMensuelManuel||{})[annee] || {};
+  return auto.map(a => {
+    const avantSeuil = annee < 2026 || (annee === 2026 && a.mois < 9);
+    const parEmploye = normaliserMoisManuel(manuel[a.mois]) || {};
+    const mesValeurs = parEmploye[employeId] || null;
+    const depensesPropres = Number(mesValeurs?.depensesPropres)||0;
+    const montantRecuEspeces = mesValeurs ? (Number(mesValeurs.montantRecuEspeces)||0) : a.especes;
+    const montantRecuOrangeMoney = mesValeurs ? (Number(mesValeurs.montantRecuOrangeMoney)||0) : a.orangeMoney;
+    if(mesValeurs){
+      const rb = Number(mesValeurs.recetteBrute)||0;
+      const dep = Number(mesValeurs.depenses)||0;
+      const imp = Number(mesValeurs.impayes)||0;
+      const impayesReel = Math.max(0, rb - (montantRecuEspeces + montantRecuOrangeMoney));
+      const netPercu = (montantRecuEspeces + montantRecuOrangeMoney) - dep;
+      return { mois:a.mois, label:a.label, avantSeuil, recetteBrute: rb, impayes: imp, depenses: dep, depensesPropres, manuel: true, parEmploye, net: rb - imp - dep, montantRecuEspeces, montantRecuOrangeMoney, impayesReel, netPercu };
+    }
+    const impayesReel = Math.max(0, a.recetteBrute - (montantRecuEspeces + montantRecuOrangeMoney));
+    const netPercu = (montantRecuEspeces + montantRecuOrangeMoney) - a.depenses;
+    return { mois:a.mois, label:a.label, avantSeuil, recetteBrute: a.recetteBrute, impayes: impayesReel, depenses: a.depenses, depensesPropres, manuel: false, parEmploye, net: a.recetteBrute - impayesReel - a.depenses, montantRecuEspeces, montantRecuOrangeMoney, impayesReel, netPercu };
+  });
+}
+
 // Même logique que calculerDonneesMensuellesSite, mais agrégée sur plusieurs pressings (tous les sites combinés)
 function calculerDonneesMensuellesMultiSites(sites, annee){
   const parSite = sites.map(site => ({ site, donnees: calculerDonneesMensuellesSite(site, annee) }));
@@ -8187,7 +8406,7 @@ function DetailMensuelSiteView({ site, updateSite, employeId }){
   const monProfil = site.employes.find(e=>e.id===employeId);
   const monNom = monProfil ? monProfil.nom : 'Moi';
 
-  const donneesParMois = useMemo(() => calculerDonneesMensuellesSite(site, annee), [site, annee]);
+  const donneesParMois = useMemo(() => calculerDonneesMensuellesEmploye(site, annee, employeId), [site, annee, employeId]);
 
   // Montant réellement encaissé par CET employé (caissier), par mois, séparé Espèces / Orange Money
   const montantRecuParMois = useMemo(() => {
