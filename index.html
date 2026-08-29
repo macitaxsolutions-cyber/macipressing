@@ -2008,15 +2008,24 @@ function DistributionView({ db, setDb, anneeInitiale }){
             🔎 Vous cherchez le détail saisi par chaque caissier ? Cliquez « Détail par caissier » sur une ligne ci-dessous, ou allez dans <strong>« Mes pressings »</strong>, ouvrez le pressing concerné, puis son onglet <strong>« Détail mensuel »</strong>.
           </p>
 
-          <div style={{display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:12, marginBottom:24}}>
-            <StatCard label={`Recette brute ${annee}`} value={fmtGNF(recetteBrute)} icon="euro" />
-            <StatCard label={`Impayés ${annee}`} value={fmtGNF(impayesReelAnnee)} icon="alert" tone={impayesReelAnnee>0?'danger':'default'} />
-            <StatCard label={`Dépenses entreprise ${annee}`} value={fmtGNF(depensesAnnee)} icon="trash" tone="danger" />
-            <StatCard label={`Dépenses propres ${annee}`} value={fmtGNF(depensesPropresAnnee)} icon="trash" tone="danger" />
-            <StatCard label={`Espèces ${annee}`} value={fmtGNF(donneesParMoisAffiche.reduce((s,m)=>s+(m.montantRecuEspeces||0),0))} icon="euro" />
-            <StatCard label={`Orange Money ${annee}`} value={fmtGNF(donneesParMoisAffiche.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0))} icon="euro" />
-            <StatCard label={`Net perçu ${annee}`} value={fmtGNF(netPercuAnnee)} icon="chart" tone={netPercuAnnee>=0?'default':'danger'} />
+          <div style={{display:'grid', gridTemplateColumns:'repeat(8, 1fr)', gap:8, marginBottom:24}}>
+            {[
+              { label: 'Recette brute', value: recetteBrute, danger: false },
+              { label: 'Impayés', value: impayesReelAnnee, danger: impayesReelAnnee>0 },
+              { label: 'Dép. entreprise', value: depensesAnnee, danger: true },
+              { label: 'Dép. propres', value: depensesPropresAnnee, danger: true },
+              { label: 'Espèces', value: donneesParMoisAffiche.reduce((s,m)=>s+(m.montantRecuEspeces||0),0), danger: false },
+              { label: 'Orange Money', value: donneesParMoisAffiche.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0), danger: false },
+              { label: 'Total perçu', value: donneesParMoisAffiche.reduce((s,m)=>s+(m.montantRecuEspeces||0)+(m.montantRecuOrangeMoney||0),0), danger: false },
+              { label: 'Net perçu', value: netPercuAnnee, danger: netPercuAnnee<0 },
+            ].map((c,i) => (
+              <div key={i} className="card" style={{padding:'0.7rem 0.8rem'}}>
+                <div style={{fontSize:10, color:'var(--steam)', textTransform:'uppercase', letterSpacing:'0.02em', fontWeight:600, lineHeight:1.3, marginBottom:4}}>{c.label}</div>
+                <div className="mono" style={{fontSize:14.5, fontWeight:700, color: c.danger ? 'var(--danger)' : 'var(--pine)'}}>{fmtGNF(c.value)}</div>
+              </div>
+            ))}
           </div>
+          <p style={{fontSize:11, color:'var(--steam)', margin:'-20px 0 24px'}}>{annee}</p>
 
           <div className="card" style={{overflow:'hidden', marginBottom:24}}>
             <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
@@ -8456,15 +8465,24 @@ function DetailMensuelSiteView({ site, updateSite, employeId }){
         Les mois avant <strong>septembre 2026</strong> ont leur recette brute, impayés et dépenses entreprise modifiables. Les <strong>dépenses propres</strong> (personnelles) restent modifiables pour tous les mois. Cliquez « Mes données » pour entrer vos chiffres — votre saisie s'ajoute à celle des autres caissiers, elle ne la remplace jamais. « Net perçu » = Espèces + Orange Money réellement reçus, moins les dépenses entreprise.
       </p>
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:12, marginBottom:24}}>
-        <StatCard label={`Recette brute ${annee}`} value={fmtGNF(totalBrute)} icon="euro" />
-        <StatCard label={`Impayés ${annee}`} value={fmtGNF(totalImpayesReel)} icon="alert" tone={totalImpayesReel>0?'danger':'default'} />
-        <StatCard label={`Dépenses entreprise ${annee}`} value={fmtGNF(totalDepenses)} icon="trash" tone="danger" />
-        <StatCard label={`Dépenses propres ${annee}`} value={fmtGNF(totalDepensesPropres)} icon="trash" tone="danger" />
-        <StatCard label={`Espèces ${annee}`} value={fmtGNF(donneesParMois.reduce((s,m)=>s+(m.montantRecuEspeces||0),0))} icon="euro" />
-        <StatCard label={`Orange Money ${annee}`} value={fmtGNF(donneesParMois.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0))} icon="euro" />
-        <StatCard label={`Net perçu ${annee}`} value={fmtGNF(totalNetPercu)} icon="chart" tone={totalNetPercu>=0?'default':'danger'} />
+      <div style={{display:'grid', gridTemplateColumns:'repeat(8, 1fr)', gap:8, marginBottom:24}}>
+        {[
+          { label: 'Recette brute', value: totalBrute, danger: false },
+          { label: 'Impayés', value: totalImpayesReel, danger: totalImpayesReel>0 },
+          { label: 'Dép. entreprise', value: totalDepenses, danger: true },
+          { label: 'Dép. propres', value: totalDepensesPropres, danger: true },
+          { label: 'Espèces', value: donneesParMois.reduce((s,m)=>s+(m.montantRecuEspeces||0),0), danger: false },
+          { label: 'Orange Money', value: donneesParMois.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0), danger: false },
+          { label: 'Total perçu', value: donneesParMois.reduce((s,m)=>s+(m.montantRecuEspeces||0)+(m.montantRecuOrangeMoney||0),0), danger: false },
+          { label: 'Net perçu', value: totalNetPercu, danger: totalNetPercu<0 },
+        ].map((c,i) => (
+          <div key={i} className="card" style={{padding:'0.7rem 0.8rem'}}>
+            <div style={{fontSize:10, color:'var(--steam)', textTransform:'uppercase', letterSpacing:'0.02em', fontWeight:600, lineHeight:1.3, marginBottom:4}}>{c.label}</div>
+            <div className="mono" style={{fontSize:14.5, fontWeight:700, color: c.danger ? 'var(--danger)' : 'var(--pine)'}}>{fmtGNF(c.value)}</div>
+          </div>
+        ))}
       </div>
+      <p style={{fontSize:11, color:'var(--steam)', margin:'-16px 0 24px'}}>{annee}</p>
 
       <div className="card" style={{overflow:'hidden'}}>
         <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
@@ -8553,15 +8571,24 @@ function DetailMensuelGerantView({ site, updateSite }){
         « Dépenses entreprise » = dépenses du pressing (fournitures, factures, salaires...). « Dépenses propres » = dépenses personnelles saisies par chaque caissier — les deux restent toujours distinctes. « Net perçu » = Espèces + Orange Money réellement reçus, moins les dépenses entreprise. « Impayés » = Recette brute non encore encaissée en Espèces ou Orange Money.
       </p>
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:12, marginBottom:24}}>
-        <StatCard label={`Recette brute ${annee}`} value={fmtGNF(totalBrute)} icon="euro" />
-        <StatCard label={`Impayés ${annee}`} value={fmtGNF(totalImpayesReel)} icon="alert" tone={totalImpayesReel>0?'danger':'default'} />
-        <StatCard label={`Dépenses entreprise ${annee}`} value={fmtGNF(totalDepenses)} icon="trash" tone="danger" />
-        <StatCard label={`Dépenses propres ${annee}`} value={fmtGNF(totalDepensesPropres)} icon="trash" tone="danger" />
-        <StatCard label={`Espèces ${annee}`} value={fmtGNF(donneesParMois.reduce((s,m)=>s+(m.montantRecuEspeces||0),0))} icon="euro" />
-        <StatCard label={`Orange Money ${annee}`} value={fmtGNF(donneesParMois.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0))} icon="euro" />
-        <StatCard label={`Net perçu ${annee}`} value={fmtGNF(totalNetPercu)} icon="chart" tone={totalNetPercu>=0?'default':'danger'} />
+      <div style={{display:'grid', gridTemplateColumns:'repeat(8, 1fr)', gap:8, marginBottom:24}}>
+        {[
+          { label: 'Recette brute', value: totalBrute, danger: false },
+          { label: 'Impayés', value: totalImpayesReel, danger: totalImpayesReel>0 },
+          { label: 'Dép. entreprise', value: totalDepenses, danger: true },
+          { label: 'Dép. propres', value: totalDepensesPropres, danger: true },
+          { label: 'Espèces', value: donneesParMois.reduce((s,m)=>s+(m.montantRecuEspeces||0),0), danger: false },
+          { label: 'Orange Money', value: donneesParMois.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0), danger: false },
+          { label: 'Total perçu', value: donneesParMois.reduce((s,m)=>s+(m.montantRecuEspeces||0)+(m.montantRecuOrangeMoney||0),0), danger: false },
+          { label: 'Net perçu', value: totalNetPercu, danger: totalNetPercu<0 },
+        ].map((c,i) => (
+          <div key={i} className="card" style={{padding:'0.7rem 0.8rem'}}>
+            <div style={{fontSize:10, color:'var(--steam)', textTransform:'uppercase', letterSpacing:'0.02em', fontWeight:600, lineHeight:1.3, marginBottom:4}}>{c.label}</div>
+            <div className="mono" style={{fontSize:14.5, fontWeight:700, color: c.danger ? 'var(--danger)' : 'var(--pine)'}}>{fmtGNF(c.value)}</div>
+          </div>
+        ))}
       </div>
+      <p style={{fontSize:11, color:'var(--steam)', margin:'-16px 0 24px'}}>{annee}</p>
 
       <div className="card" style={{overflow:'hidden'}}>
         <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
