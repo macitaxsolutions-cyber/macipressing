@@ -2789,7 +2789,7 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
       {page === 'dashboard' && <Dashboard site={site} updateSite={updateSite} siteTitle={site.nom} />}
       {page === 'agenda' && <AgendaView site={site} />}
       {page === 'commandes' && <CommandesView site={site} updateSite={updateSite} editable={true} db={db} />}
-      {page === 'clients' && <ClientsView site={site} updateSite={updateSite} db={db} />}
+      {page === 'clients' && <ClientsView site={site} updateSite={updateSite} db={db} isGerant={true} />}
       {page === 'marketing' && <MarketingView site={site} updateSite={updateSite} />}
       {page === 'stock' && <StockView site={site} updateSite={updateSite} db={db} />}
       {page === 'employes' && <EquipeView site={site} updateSite={updateSite} db={db} />}
@@ -4536,12 +4536,15 @@ function MarketingView({ site, updateSite }){
   );
 }
 
-function ClientsView({ site, updateSite, db }){
+function ClientsView({ site, updateSite, db, isGerant }){
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState(null);
   const [showNew, setShowNew] = useState(false);
   const [editClient, setEditClient] = useState(null);
   const [confirmClient, setConfirmClient] = useState(null);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [clientsSelectionnes, setClientsSelectionnes] = useState([]);
+  const [confirmSuppressionMultiple, setConfirmSuppressionMultiple] = useState(false);
 
   const filtered = useMemo(() => {
     if(!search.trim()) return site.clients;
@@ -4567,37 +4570,90 @@ function ClientsView({ site, updateSite, db }){
     updateSite({ ...site, clients: site.clients.filter(c => c.id!==id), corbeille: [entry, ...(site.corbeille||[])] });
   }
 
+  function toggleSelectionClient(id){
+    setClientsSelectionnes(prev => prev.includes(id) ? prev.filter(x=>x!==id) : [...prev, id]);
+  }
+
+  function selectionnerTout(){
+    setClientsSelectionnes(filtered.map(c=>c.id));
+  }
+
+  function deselectionnerTout(){
+    setClientsSelectionnes([]);
+  }
+
+  function removeClientsMultiple(){
+    const idsASupprimer = new Set(clientsSelectionnes);
+    const clientsSupprimes = site.clients.filter(c => idsASupprimer.has(c.id));
+    const entries = clientsSupprimes.map(client => ({
+      id: uid('trash_'), type:'client', label: `Client : ${client.nom}`, data: client, dateSuppression: new Date().toISOString()
+    }));
+    updateSite({ ...site, clients: site.clients.filter(c => !idsASupprimer.has(c.id)), corbeille: [...entries, ...(site.corbeille||[])] });
+    setClientsSelectionnes([]);
+    setSelectionMode(false);
+    setConfirmSuppressionMultiple(false);
+  }
+
   return (
     <div>
       <PageHeader title="Clients" subtitle={`${site.clients.length} fiche(s) client`}
-        right={<button className="btn btn-rust" onClick={()=>setShowNew(true)}><Icon name="plus" size={15}/> Nouveau client</button>} />
+        right={
+          <div style={{display:'flex', gap:8}}>
+            {isGerant && (
+              <button className="btn btn-sm" onClick={()=>{ setSelectionMode(!selectionMode); setClientsSelectionnes([]); }}>
+                {selectionMode ? 'Annuler' : 'Sélectionner plusieurs'}
+              </button>
+            )}
+            <button className="btn btn-rust" onClick={()=>setShowNew(true)}><Icon name="plus" size={15}/> Nouveau client</button>
+          </div>
+        } />
 
       <div style={{position:'relative', maxWidth:320, marginBottom:18}}>
         <input type="text" placeholder="Rechercher…" value={search} onChange={e=>setSearch(e.target.value)} style={{paddingLeft:34}}/>
         <Icon name="search" size={15} style={{position:'absolute', left:11, top:11, color:'var(--steam)'}}/>
       </div>
 
+      {selectionMode && (
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, padding:'10px 14px', background:'var(--warn-light)', borderRadius:8, marginBottom:14, flexWrap:'wrap'}}>
+          <div style={{display:'flex', gap:10, alignItems:'center'}}>
+            <span style={{fontSize:13, fontWeight:600}}>{clientsSelectionnes.length} client(s) sélectionné(s)</span>
+            <button className="btn btn-ghost btn-sm" onClick={selectionnerTout}>Tout sélectionner</button>
+            <button className="btn btn-ghost btn-sm" onClick={deselectionnerTout}>Tout désélectionner</button>
+          </div>
+          <button className="btn btn-rust btn-sm" disabled={clientsSelectionnes.length===0} onClick={()=>setConfirmSuppressionMultiple(true)}>
+            <Icon name="trash" size={13}/> Supprimer la sélection ({clientsSelectionnes.length})
+          </button>
+        </div>
+      )}
+
       <div style={{display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:14}}>
         {filtered.map(c => {
           const st = clientStats(c.id);
           return (
-            <div key={c.id} className="card" style={{padding:'1.1rem 1.25rem'}}>
+            <div key={c.id} className="card" style={{padding:'1.1rem 1.25rem', outline: clientsSelectionnes.includes(c.id) ? '2px solid var(--pine)' : 'none', outlineOffset:2}}>
               <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start'}}>
-                <div style={{cursor:'pointer', flex:1}} onClick={()=>setSelected(c)}>
-                  <div style={{fontWeight:600, fontSize:15}}>{c.nom}</div>
-                  <div style={{fontSize:12.5, color:'var(--steam)'}}>{c.tel || 'Pas de téléphone'}</div>
+                <div style={{cursor:'pointer', flex:1, display:'flex', gap:10, alignItems:'flex-start'}} onClick={()=>selectionMode ? toggleSelectionClient(c.id) : setSelected(c)}>
+                  {selectionMode && (
+                    <input type="checkbox" checked={clientsSelectionnes.includes(c.id)} onChange={()=>toggleSelectionClient(c.id)} onClick={e=>e.stopPropagation()} style={{marginTop:3}} />
+                  )}
+                  <div>
+                    <div style={{fontWeight:600, fontSize:15}}>{c.nom}</div>
+                    <div style={{fontSize:12.5, color:'var(--steam)'}}>{c.tel || 'Pas de téléphone'}</div>
+                  </div>
                 </div>
-                <div style={{display:'flex', gap:4}}>
-                  {st.impaye > 0 && <span className="tag tag-impaye">{fmtGNF(st.impaye)}</span>}
-                  <button className="btn btn-ghost btn-sm" style={{padding:'4px 7px'}} onClick={()=>setEditClient(c)} title="Modifier">
-                    <Icon name="edit" size={13}/>
-                  </button>
-                  <button className="btn btn-ghost btn-sm" style={{padding:'4px 7px', color:'var(--danger)'}} onClick={()=>setConfirmClient(c)} title="Supprimer">
-                    <Icon name="trash" size={13}/>
-                  </button>
-                </div>
+                {!selectionMode && (
+                  <div style={{display:'flex', gap:4}}>
+                    {st.impaye > 0 && <span className="tag tag-impaye">{fmtGNF(st.impaye)}</span>}
+                    <button className="btn btn-ghost btn-sm" style={{padding:'4px 7px'}} onClick={()=>setEditClient(c)} title="Modifier">
+                      <Icon name="edit" size={13}/>
+                    </button>
+                    <button className="btn btn-ghost btn-sm" style={{padding:'4px 7px', color:'var(--danger)'}} onClick={()=>setConfirmClient(c)} title="Supprimer">
+                      <Icon name="trash" size={13}/>
+                    </button>
+                  </div>
+                )}
               </div>
-              <div style={{display:'flex', gap:14, marginTop:12, fontSize:12.5, color:'var(--steam)', cursor:'pointer'}} onClick={()=>setSelected(c)}>
+              <div style={{display:'flex', gap:14, marginTop:12, fontSize:12.5, color:'var(--steam)', cursor:'pointer'}} onClick={()=>selectionMode ? toggleSelectionClient(c.id) : setSelected(c)}>
                 <span>{st.count} commande(s)</span>
                 <span className="mono">{fmtGNF(st.total)} cumulé</span>
               </div>
@@ -4606,6 +4662,14 @@ function ClientsView({ site, updateSite, db }){
         })}
         {filtered.length === 0 && <p style={{color:'var(--steam)'}}>Aucun client trouvé.</p>}
       </div>
+
+      {confirmSuppressionMultiple && (
+        <ConfirmDelete db={db}
+          message={`Supprimer définitivement ${clientsSelectionnes.length} client(s) sélectionné(s) ? Les commandes existantes resteront dans l'historique avec « Client inconnu » à la place du nom. Cette action est irréversible (récupérable 30 jours via la Corbeille).`}
+          onConfirm={removeClientsMultiple}
+          onCancel={()=>setConfirmSuppressionMultiple(false)}
+        />
+      )}
 
       {showNew && <NewClientModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
       {selected && <ClientDetailModal client={selected} site={site} onClose={()=>setSelected(null)} onEdit={(c)=>{ setSelected(null); setEditClient(c); }} />}
