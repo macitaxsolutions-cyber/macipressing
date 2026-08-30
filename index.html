@@ -2762,6 +2762,7 @@ const CORBEILLE_TYPE_LABELS = {
   commandes_reset: '🗓️ Réinitialisation de commandes',
   depenses_reset: '🗓️ Réinitialisation de dépenses',
   remunerations_reset: '🗓️ Réinitialisation de rémunérations',
+  paiementsHorsCommande_reset: '🗓️ Réinitialisation d\'encaissements sans commande',
   stock: '📦 Article de stock',
   service: '🧺 Service',
   employe: '👤 Employé',
@@ -2789,6 +2790,8 @@ function CorbeilleView({ site, updateSite }){
       nextSite.depenses = [...entry.data, ...(nextSite.depenses||[])];
     } else if(entry.type === 'remunerations_reset' && Array.isArray(entry.data)){
       nextSite.remunerations = [...entry.data, ...(nextSite.remunerations||[])];
+    } else if(entry.type === 'paiementsHorsCommande_reset' && Array.isArray(entry.data)){
+      nextSite.paiementsHorsCommande = [...entry.data, ...(nextSite.paiementsHorsCommande||[])];
     } else if(entry.type === 'stock'){
       nextSite.stock = [...nextSite.stock, entry.data];
     } else if(entry.type === 'service'){
@@ -6374,6 +6377,36 @@ function ParametresView({ site, updateSite, db, setDb }){
     setShowPlageRem(false);
   }
 
+  const [resetScopePhc, setResetScopePhc] = useState(null); // 'jour' | 'mois' | 'plage' | 'tout'
+  const [showPlagePhc, setShowPlagePhc] = useState(false);
+  const [rangeDebutPhc, setRangeDebutPhc] = useState(todayISO());
+  const [rangeFinPhc, setRangeFinPhc] = useState(todayISO());
+
+  function countForScopePhc(scope){
+    const today = todayISO();
+    const phc = site.paiementsHorsCommande || [];
+    if(scope === 'jour') return phc.filter(p => (p.date||'').slice(0,10) === today).length;
+    if(scope === 'mois') return phc.filter(p => (p.date||'').slice(0,7) === today.slice(0,7)).length;
+    if(scope === 'plage') return phc.filter(p => (p.date||'').slice(0,10) >= rangeDebutPhc && (p.date||'').slice(0,10) <= rangeFinPhc).length;
+    return phc.length;
+  }
+
+  function resetPaiementsHorsCommande(){
+    if(!resetScopePhc) return;
+    const today = todayISO();
+    const phc = site.paiementsHorsCommande || [];
+    let removed, remaining;
+    if(resetScopePhc === 'jour'){ removed = phc.filter(p => (p.date||'').slice(0,10) === today); remaining = phc.filter(p => (p.date||'').slice(0,10) !== today); }
+    else if(resetScopePhc === 'mois'){ removed = phc.filter(p => (p.date||'').slice(0,7) === today.slice(0,7)); remaining = phc.filter(p => (p.date||'').slice(0,7) !== today.slice(0,7)); }
+    else if(resetScopePhc === 'plage'){ removed = phc.filter(p => (p.date||'').slice(0,10) >= rangeDebutPhc && (p.date||'').slice(0,10) <= rangeFinPhc); remaining = phc.filter(p => !((p.date||'').slice(0,10) >= rangeDebutPhc && (p.date||'').slice(0,10) <= rangeFinPhc)); }
+    else { removed = phc; remaining = []; }
+    const labelPeriode = resetScopePhc==='jour'?"aujourd'hui":resetScopePhc==='mois'?'ce mois-ci':resetScopePhc==='plage'?`du ${fmtDate(rangeDebutPhc)} au ${fmtDate(rangeFinPhc)}`:'toute la période';
+    const entry = { id: uid('trash_'), type:'paiementsHorsCommande_reset', label: `Réinitialisation encaissements sans commande (${labelPeriode}) — ${removed.length} entrée(s)`, data: removed, dateSuppression: new Date().toISOString() };
+    updateSite({ ...site, paiementsHorsCommande: remaining, corbeille: [entry, ...(site.corbeille||[])] });
+    setResetScopePhc(null);
+    setShowPlagePhc(false);
+  }
+
   // Changement mot de passe gérant
   const [ancienPass, setAncienPass] = useState('');
   const [nouveauPass, setNouveauPass] = useState('');
@@ -6659,6 +6692,54 @@ function ParametresView({ site, updateSite, db, setDb }){
           message={`Effacer ${countForScopeRem(resetScopeRem)} entrée(s) de rémunération — ${resetScopeRem==='jour' ? "celles d'aujourd'hui" : resetScopeRem==='mois' ? 'celles de ce mois-ci' : resetScopeRem==='plage' ? `celles du ${fmtDate(rangeDebutRem)} au ${fmtDate(rangeFinRem)}` : 'TOUTES les rémunérations, toutes périodes confondues'} — de « ${site.nom} » ? Les dépenses déjà créées à partir de ces rémunérations ne seront PAS effacées automatiquement — supprimez-les séparément si besoin. Cette action est irréversible.`}
           onConfirm={resetRemunerations}
           onCancel={()=>setResetScopeRem(null)}
+        />
+      )}
+
+      {/* Réinitialiser les encaissements sans commande */}
+      <div className="card" style={{padding:'1.5rem', marginTop:18, borderColor:'var(--danger)'}}>
+        <h3 style={{margin:'0 0 6px', fontSize:15, display:'flex', alignItems:'center', gap:8, color:'var(--danger)'}}>
+          🗓️ Réinitialiser les encaissements sans commande de ce site
+        </h3>
+        <p style={{fontSize:13, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.6}}>
+          Concerne les paiements enregistrés via « Encaisser sans commande » (Commandes) — séparé des commandes, dépenses et rémunérations.
+          <strong> Vos clients, employés, services, stock, commandes et dépenses restent toujours intacts.</strong>
+        </p>
+        <div style={{display:'flex', gap:10, flexWrap:'wrap'}}>
+          <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)'}} onClick={()=>setResetScopePhc('jour')}>
+            <Icon name="trash" size={14}/> Aujourd'hui ({countForScopePhc('jour')})
+          </button>
+          <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)'}} onClick={()=>setResetScopePhc('mois')}>
+            <Icon name="trash" size={14}/> Ce mois-ci ({countForScopePhc('mois')})
+          </button>
+          <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)'}} onClick={()=>setResetScopePhc('tout')}>
+            <Icon name="trash" size={14}/> Toute la période ({countForScopePhc('tout')})
+          </button>
+          <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)', background: showPlagePhc ? 'var(--danger-light)' : 'transparent'}} onClick={()=>setShowPlagePhc(!showPlagePhc)}>
+            📅 Jours spécifiques
+          </button>
+        </div>
+        {showPlagePhc && (
+          <div style={{marginTop:12, padding:'12px', background:'var(--danger-light)', borderRadius:8, display:'flex', gap:10, alignItems:'flex-end', flexWrap:'wrap'}}>
+            <div>
+              <label>Du</label>
+              <input type="date" value={rangeDebutPhc} onChange={e=>setRangeDebutPhc(e.target.value)} />
+            </div>
+            <div>
+              <label>Au</label>
+              <input type="date" value={rangeFinPhc} onChange={e=>setRangeFinPhc(e.target.value)} min={rangeDebutPhc} />
+            </div>
+            <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)'}} onClick={()=>setResetScopePhc('plage')}>
+              <Icon name="trash" size={14}/> Réinitialiser cette période ({countForScopePhc('plage')})
+            </button>
+          </div>
+        )}
+      </div>
+
+      {resetScopePhc && (
+        <ConfirmDelete db={db}
+          message={`Effacer ${countForScopePhc(resetScopePhc)} encaissement(s) sans commande — ${resetScopePhc==='jour' ? "ceux d'aujourd'hui" : resetScopePhc==='mois' ? 'ceux de ce mois-ci' : resetScopePhc==='plage' ? `ceux du ${fmtDate(rangeDebutPhc)} au ${fmtDate(rangeFinPhc)}` : 'TOUS les encaissements sans commande, toutes périodes confondues'} — de « ${site.nom} » ? Cette action est irréversible.`}
+          onConfirm={resetPaiementsHorsCommande}
+          onCancel={()=>setResetScopePhc(null)}
         />
       )}
 
