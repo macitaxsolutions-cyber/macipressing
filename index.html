@@ -7281,6 +7281,23 @@ function EncaissementsGerantView({ site }){
     return { especes: Number(v.montantRecuEspeces)||0, orangeMoney: Number(v.montantRecuOrangeMoney)||0 };
   }
 
+  // Dépenses d'un employé (réelles + saisies manuellement dans Détail mensuel) pour un mois donné
+  function depensesManuellesEmploye(employeId, anneeNum, moisNum){
+    if(!estAvantSeuil(anneeNum, moisNum)) return 0;
+    const parEmploye = normaliserMoisManuel(((site.detailMensuelManuel||{})[anneeNum]||{})[String(moisNum)]) || {};
+    return Number((parEmploye[employeId]||{}).depenses)||0;
+  }
+  function depensesReellesEmployePeriode(employeId){
+    return (site.depenses||[]).filter(d => {
+      if(d.saisiPar !== employeId || !d.date) return false;
+      const dd = d.date.slice(0,10);
+      if(periode === 'jour') return dd === today;
+      if(periode === 'semaine') return dd >= week.start && dd <= week.end;
+      if(periode === 'mois') return dd.slice(0,7) === moisChoisi;
+      return dd.slice(0,4) === String(anneeChoisie);
+    }).reduce((s,d)=>s+Number(d.montant),0);
+  }
+
   // Pour un employé + une période (jour/semaine/mois), total réel + manuel combiné
   function totauxEmployePeriode(employeId){
     let filtres;
@@ -7289,12 +7306,14 @@ function EncaissementsGerantView({ site }){
     else filtres = tousPaiements.filter(p => p.employeId === employeId && p.mois === moisChoisi);
     let especes = filtres.filter(p=>p.mode==='Espèces').reduce((s,p)=>s+p.montant,0);
     let orangeMoney = filtres.filter(p=>p.mode==='Orange Money').reduce((s,p)=>s+p.montant,0);
+    let depenses = depensesReellesEmployePeriode(employeId);
     if(periode === 'mois'){
       const [a,m] = moisChoisi.split('-').map(Number);
       const manuel = montantManuelEmploye(employeId, a, m);
       especes += manuel.especes; orangeMoney += manuel.orangeMoney;
+      depenses += depensesManuellesEmploye(employeId, a, m);
     }
-    return { especes, orangeMoney, total: especes + orangeMoney };
+    return { especes, orangeMoney, depenses, total: especes + orangeMoney, netPercu: especes + orangeMoney - depenses };
   }
 
   // Pour un employé + une année, détail des 12 mois (réel + manuel combiné)
@@ -7307,8 +7326,10 @@ function EncaissementsGerantView({ site }){
       let orangeMoney = reels.filter(p=>p.mode==='Orange Money').reduce((s,p)=>s+p.montant,0);
       const manuel = montantManuelEmploye(employeId, anneeChoisie, moisNum);
       especes += manuel.especes; orangeMoney += manuel.orangeMoney;
+      let depenses = (site.depenses||[]).filter(d => d.saisiPar===employeId && d.date && d.date.slice(0,7)===moisStr).reduce((s,d)=>s+Number(d.montant),0);
+      depenses += depensesManuellesEmploye(employeId, anneeChoisie, moisNum);
       const label = new Date(anneeChoisie, i, 15).toLocaleDateString('fr-FR', {month:'long'});
-      return { mois: moisNum, label, especes, orangeMoney, total: especes + orangeMoney };
+      return { mois: moisNum, label, especes, orangeMoney, depenses, total: especes + orangeMoney, netPercu: especes + orangeMoney - depenses };
     });
   }
 
@@ -7357,7 +7378,7 @@ function EncaissementsGerantView({ site }){
                 <h3 style={{margin:0, fontSize:15}}>{emp.nom}</h3>
                 <span className="mono" style={{fontWeight:700, color:'var(--pine)'}}>{fmtGNF(t.total)}</span>
               </div>
-              <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:8}}>
+              <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8}}>
                 <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
                   <span style={{fontSize:12.5, color:'var(--steam)'}}>Espèces</span>
                   <span className="mono" style={{fontSize:13, fontWeight:600}}>{fmtGNF(t.especes)}</span>
@@ -7365,6 +7386,10 @@ function EncaissementsGerantView({ site }){
                 <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
                   <span style={{fontSize:12.5, color:'var(--steam)'}}>Orange Money</span>
                   <span className="mono" style={{fontSize:13, fontWeight:600}}>{fmtGNF(t.orangeMoney)}</span>
+                </div>
+                <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                  <span style={{fontSize:12.5, color:'var(--steam)'}}>Net perçu</span>
+                  <span className="mono" style={{fontSize:13, fontWeight:600, color: t.netPercu<0?'var(--danger)':'var(--ink)'}}>{fmtGNF(t.netPercu)}</span>
                 </div>
               </div>
             </div>
@@ -7387,6 +7412,7 @@ function EncaissementsGerantView({ site }){
                     <th style={th}>Espèces</th>
                     <th style={th}>Orange Money</th>
                     <th style={th}>Total</th>
+                    <th style={th}>Net perçu</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -7396,6 +7422,7 @@ function EncaissementsGerantView({ site }){
                       <td style={td} className="mono">{fmtGNF(m.especes)}</td>
                       <td style={td} className="mono">{fmtGNF(m.orangeMoney)}</td>
                       <td style={{...td, fontWeight:600}} className="mono">{fmtGNF(m.total)}</td>
+                      <td style={{...td, fontWeight:600, color: m.netPercu<0?'var(--danger)':'var(--ink)'}} className="mono">{fmtGNF(m.netPercu)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -7408,7 +7435,7 @@ function EncaissementsGerantView({ site }){
   );
 }
 
-function MesEncaissementsView({ site, employeId }){
+function MesEncaissementsView({ site, updateSite, db, employeId }){
   const [periode, setPeriode] = useState('jour');
   const [moisChoisi, setMoisChoisi] = useState(todayISO().slice(0,7));
   const [anneeChoisie, setAnneeChoisie] = useState(Number(todayISO().slice(0,4)));
@@ -7504,6 +7531,34 @@ function MesEncaissementsView({ site, employeId }){
   const totalOrangeMoney = paiementsPeriode.filter(p=>p.mode==='Orange Money').reduce((s,p)=>s+p.montant,0) + totalManuelPeriode.orangeMoney;
   const totalGeneral = totalEspeces + totalOrangeMoney;
 
+  // Mes dépenses (réelles + celles saisies manuellement dans Détail mensuel pour les mois avant septembre 2026)
+  function estDansPeriodeSimple(dateStr){
+    if(!dateStr) return false;
+    const d = dateStr.slice(0,10);
+    if(periode === 'jour') return d === today;
+    if(periode === 'semaine') return d >= week.start && d <= week.end;
+    if(periode === 'mois') return d.slice(0,7) === moisChoisi;
+    return d.slice(0,4) === String(anneeChoisie);
+  }
+  const mesDepensesReelles = useMemo(() => {
+    return (site.depenses||[]).filter(d => d.saisiPar === employeId && estDansPeriodeSimple(d.date)).reduce((s,d)=>s+Number(d.montant),0);
+  }, [site.depenses, employeId, periode, today, week, moisChoisi, anneeChoisie]);
+  function depensesManuelles(mois){
+    const [anneeStr, moisStr] = mois.split('-');
+    const anneeNum = Number(anneeStr), moisNum = Number(moisStr);
+    const avantSeuil = anneeNum < 2026 || (anneeNum === 2026 && moisNum < 9);
+    if(!avantSeuil) return 0;
+    const parEmploye = normaliserMoisManuel(((site.detailMensuelManuel||{})[anneeNum]||{})[String(moisNum)]) || {};
+    return Number((parEmploye[employeId]||{}).depenses)||0;
+  }
+  const mesDepensesManuellesPeriode = useMemo(() => {
+    if(periode === 'mois') return depensesManuelles(moisChoisi);
+    if(periode === 'annee') return moisDeLAnnee(anneeChoisie).reduce((s,m)=>s+depensesManuelles(m),0);
+    return 0;
+  }, [periode, moisChoisi, anneeChoisie, site.detailMensuelManuel, employeId]);
+  const mesDepensesPeriode = mesDepensesReelles + mesDepensesManuellesPeriode;
+  const netPercuPeriode = totalGeneral - mesDepensesPeriode;
+
   const periodeLabel = periode==='jour' ? "Aujourd'hui" : periode==='semaine' ? 'Cette semaine' : periode==='mois' ? 'Ce mois' : 'Cette année';
 
   const detailAnneeMois = useMemo(() => {
@@ -7523,7 +7578,7 @@ function MesEncaissementsView({ site, employeId }){
 
   return (
     <div>
-      <PageHeader title="Mes encaissements" subtitle="Argent que vous avez personnellement reçu, par mode de paiement" />
+      <PageHeader title="Mes encaissements Et Décaissements" subtitle="Argent que vous avez personnellement reçu et dépensé, par mode de paiement" />
 
       <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
         {['jour','semaine','mois','annee'].map(v => (
@@ -7542,11 +7597,13 @@ function MesEncaissementsView({ site, employeId }){
         )}
       </div>
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:8}}>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:8}}>
         <StatCard label="Espèces" value={fmtGNF(totalEspeces)} icon="euro" />
         <StatCard label="Orange Money" value={fmtGNF(totalOrangeMoney)} icon="euro" />
         <StatCard label={`Total — ${periodeLabel}`} value={fmtGNF(totalGeneral)} icon="chart" />
+        <StatCard label={`Net perçu — ${periodeLabel}`} value={fmtGNF(netPercuPeriode)} icon="chart" tone={netPercuPeriode>=0?'default':'danger'} />
       </div>
+      <p style={{fontSize:11.5, color:'var(--steam)', margin:'0 0 8px'}}>Net perçu = Total encaissé − vos dépenses personnelles saisies ({fmtGNF(mesDepensesPeriode)}) sur cette période.</p>
       {(totalManuelPeriode.especes > 0 || totalManuelPeriode.orangeMoney > 0) && (
         <p style={{fontSize:11.5, color:'var(--steam)', margin:'0 0 12px'}}>Inclut {fmtGNF(totalManuelPeriode.especes + totalManuelPeriode.orangeMoney)} saisis manuellement dans Détail mensuel pour cette période.</p>
       )}
@@ -7609,6 +7666,11 @@ function MesEncaissementsView({ site, employeId }){
           </table>
         </div>
       )}
+
+      <hr style={{border:'none', borderTop:'2px solid var(--line-strong)', margin:'28px 0'}} />
+      <div style={{marginTop:0}}>
+        <DepensesView site={site} updateSite={updateSite} db={db} employeId={employeId} />
+      </div>
     </div>
   );
 }
@@ -8954,7 +9016,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
     { key:'clients', label:'Clients', icon:'users' },
     { key:'marketing', label:'Promos & Relances', icon:'bell' },
     { key:'stock', label:'Stock', icon:'box' },
-    { key:'depenses', label:'Dépenses', icon:'euro', children: [{ key:'encaissements', label:'Mes encaissements', icon:'euro' }] },
+    { key:'encaissements', label:'Mes encaissements Et Décaissements', icon:'euro' },
     { key:'detailMensuel', label:'Détail mensuel', icon:'chart' },
     { key:'performanceCaissiers', label:'Performance caissiers', icon:'chart' },
     { key:'suiviRepassage', label:'Suivi repassage', icon:'euro' },
@@ -8968,7 +9030,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
       {page === 'stock' && <StockView site={site} updateSite={updateSite} db={db} />}
       {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} db={db} employeId={employeId} />}
       {page === 'detailMensuel' && <DetailMensuelSiteView site={site} updateSite={updateSite} employeId={employeId} />}
-      {page === 'encaissements' && <MesEncaissementsView site={site} employeId={employeId} />}
+      {page === 'encaissements' && <MesEncaissementsView site={site} updateSite={updateSite} db={db} employeId={employeId} />}
       {page === 'performanceCaissiers' && <PerformanceCaissiersView site={site} />}
       {page === 'suiviRepassage' && <RepassageApercuView site={site} updateSite={updateSite} />}
     </Shell>
