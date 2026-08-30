@@ -1595,52 +1595,21 @@ function DistributionView({ db, setDb, anneeInitiale }){
 
   const dataHisto = historique[annee] || { recetteBrute: 0, depenses: 0, impayes: 0, especes: 0, orangeMoney: 0 };
 
-  // Détail mensuel — données réelles de l'app, avec possibilité de saisie/correction manuelle mois par mois
+  // Détail mensuel — toujours calculé à partir des vraies données saisies par pressing (Détail mensuel),
+  // pour toute année (avant ou après le lancement de l'app)
   const donneesParMois = useMemo(() => {
-    if(!estAnneeApp) return null;
     return calculerDonneesMensuellesMultiSites(db.sites, annee);
-  }, [db, annee, estAnneeApp]);
+  }, [db, annee]);
 
-  // Pour les années antérieures à la mise en place de l'app : détail mensuel saisi manuellement (12 mois)
-  const detailMensuelHistoManuel = ((db.historiqueAnnuel||{})[annee]||{}).detailMensuelParMois || {};
-  const donneesParMoisHistorique = useMemo(() => {
-    if(estAnneeApp) return null;
-    return Array.from({length:12}, (_,i) => {
-      const mois = i+1;
-      const v = detailMensuelHistoManuel[mois] || {};
-      const rb = Number(v.recetteBrute)||0;
-      const dep = Number(v.depenses)||0;
-      const depP = Number(v.depensesPropres)||0;
-      const esp = Number(v.montantRecuEspeces)||0;
-      const om = Number(v.montantRecuOrangeMoney)||0;
-      const impayesReel = Math.max(0, rb - (esp + om));
-      const netPercu = (esp + om) - dep;
-      return {
-        mois, label: new Date(annee, i, 1).toLocaleDateString('fr-FR', {month:'long'}),
-        avantSeuil: true, recetteBrute: rb, impayes: impayesReel, depenses: dep, depensesPropres: depP,
-        montantRecuEspeces: esp, montantRecuOrangeMoney: om, impayesReel, netPercu,
-        manuel: Object.keys(v).length > 0, parEmployeParSite: [],
-      };
-    });
-  }, [estAnneeApp, detailMensuelHistoManuel, annee]);
+  const donneesParMoisAffiche = donneesParMois;
 
-  const donneesParMoisAffiche = estAnneeApp ? donneesParMois : donneesParMoisHistorique;
-
-  function saveMoisHistorique(mois, valeurs){
-    const anneeActuelle = (db.historiqueAnnuel||{})[annee] || {};
-    const detailActuel = anneeActuelle.detailMensuelParMois || {};
-    const nextDetail = { ...detailActuel, [mois]: valeurs };
-    setDb({ ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [annee]: { ...anneeActuelle, detailMensuelParMois: nextDetail } } });
-  }
-  const [moisSaisieHisto, setMoisSaisieHisto] = useState(null);
-
-  const anneeADetailMensuel = !estAnneeApp && Object.keys(detailMensuelHistoManuel).length > 0;
-  const recetteBrute = estAnneeApp ? (donneesParMois ? donneesParMois.reduce((s,m)=>s+m.recetteBrute,0) : 0) : (anneeADetailMensuel ? donneesParMoisHistorique.reduce((s,m)=>s+m.recetteBrute,0) : dataHisto.recetteBrute);
-  const depensesAnnee = estAnneeApp ? (donneesParMois ? donneesParMois.reduce((s,m)=>s+m.depenses,0) : 0) : (anneeADetailMensuel ? donneesParMoisHistorique.reduce((s,m)=>s+m.depenses,0) : dataHisto.depenses);
-  const impayesAnnee = estAnneeApp ? (donneesParMois ? donneesParMois.reduce((s,m)=>s+m.impayes,0) : 0) : (Number(dataHisto.impayes)||0);
-  const depensesPropresAnnee = estAnneeApp ? (donneesParMois ? donneesParMois.reduce((s,m)=>s+m.depensesPropres,0) : 0) : (anneeADetailMensuel ? donneesParMoisHistorique.reduce((s,m)=>s+m.depensesPropres,0) : 0);
-  const impayesReelAnnee = estAnneeApp ? (donneesParMois ? donneesParMois.reduce((s,m)=>s+(m.impayesReel||0),0) : 0) : (anneeADetailMensuel ? donneesParMoisHistorique.reduce((s,m)=>s+(m.impayesReel||0),0) : Math.max(0, (Number(dataHisto.recetteBrute)||0) - ((Number(dataHisto.especes)||0) + (Number(dataHisto.orangeMoney)||0))));
-  const netPercuAnnee = estAnneeApp ? (donneesParMois ? donneesParMois.reduce((s,m)=>s+(m.netPercu||0),0) : 0) : (anneeADetailMensuel ? donneesParMoisHistorique.reduce((s,m)=>s+(m.netPercu||0),0) : ((Number(dataHisto.especes)||0) + (Number(dataHisto.orangeMoney)||0) - (Number(dataHisto.depenses)||0)));
+  const aDesDonneesSite = donneesParMois.some(m => m.recetteBrute > 0 || m.depenses > 0 || (m.montantRecuEspeces||0) > 0 || (m.montantRecuOrangeMoney||0) > 0);
+  const recetteBrute = aDesDonneesSite || estAnneeApp ? donneesParMois.reduce((s,m)=>s+m.recetteBrute,0) : dataHisto.recetteBrute;
+  const depensesAnnee = aDesDonneesSite || estAnneeApp ? donneesParMois.reduce((s,m)=>s+m.depenses,0) : dataHisto.depenses;
+  const impayesAnnee = aDesDonneesSite || estAnneeApp ? donneesParMois.reduce((s,m)=>s+m.impayes,0) : (Number(dataHisto.impayes)||0);
+  const depensesPropresAnnee = donneesParMois.reduce((s,m)=>s+m.depensesPropres,0);
+  const impayesReelAnnee = aDesDonneesSite || estAnneeApp ? donneesParMois.reduce((s,m)=>s+(m.impayesReel||0),0) : Math.max(0, (Number(dataHisto.recetteBrute)||0) - ((Number(dataHisto.especes)||0) + (Number(dataHisto.orangeMoney)||0)));
+  const netPercuAnnee = aDesDonneesSite || estAnneeApp ? donneesParMois.reduce((s,m)=>s+(m.netPercu||0),0) : ((Number(dataHisto.especes)||0) + (Number(dataHisto.orangeMoney)||0) - (Number(dataHisto.depenses)||0));
   const recetteEncaissee = recetteBrute - impayesAnnee;
   const recetteNette = recetteEncaissee - depensesAnnee;
   const depensesActeursActuel = dataHisto.depensesActeurs || {}; // { [nom]: [{id, description, montant}] }
@@ -1662,7 +1631,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
     ? `Année ${annee}`
     : (cumulRepartition ? `Janvier à ${nomMoisRepartition} ${annee}` : `${nomMoisRepartition} ${annee}`);
 
-  const periodeDonnees = (periodeRepartition === 'mois' && estAnneeApp && donneesParMois)
+  const periodeDonnees = (periodeRepartition === 'mois')
     ? (() => {
         const subset = cumulRepartition
           ? donneesParMois.filter(m => m.mois <= moisRepartition)
@@ -1676,8 +1645,8 @@ function DistributionView({ db, setDb, anneeInitiale }){
         return { recetteBrute: rb, depenses: dep, impayes: impR, recetteNette: netP, especes: especesP, orangeMoney: orangeMoneyP };
       })()
     : { recetteBrute, depenses: depensesAnnee, impayes: impayesReelAnnee, recetteNette: netPercuAnnee,
-        especes: donneesParMois ? donneesParMois.reduce((s,m)=>s+(m.montantRecuEspeces||0),0) : (anneeADetailMensuel ? donneesParMoisHistorique.reduce((s,m)=>s+(m.montantRecuEspeces||0),0) : (Number(dataHisto.especes)||0)),
-        orangeMoney: donneesParMois ? donneesParMois.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0) : (anneeADetailMensuel ? donneesParMoisHistorique.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0) : (Number(dataHisto.orangeMoney)||0)) };
+        especes: aDesDonneesSite || estAnneeApp ? donneesParMois.reduce((s,m)=>s+(m.montantRecuEspeces||0),0) : (Number(dataHisto.especes)||0),
+        orangeMoney: aDesDonneesSite || estAnneeApp ? donneesParMois.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0) : (Number(dataHisto.orangeMoney)||0) };
 
   const depensesActeursPeriode = {};
   parts.forEach(p => { depensesActeursPeriode[p.nom] = filtrerDepensesParPeriode(depensesActeursActuel[p.nom]); });
@@ -1704,6 +1673,18 @@ function DistributionView({ db, setDb, anneeInitiale }){
           const mode = pmt.mode || 'Espèces';
           totaux[mode] = (totaux[mode]||0) + Number(pmt.montant);
         });
+      });
+      (site.paiementsHorsCommande||[]).forEach(p => {
+        if(!p.date) return;
+        const d = p.date.slice(0,10);
+        const y = Number(d.slice(0,4)), m = Number(d.slice(5,7));
+        if(y !== annee) return;
+        if(periodeRepartition === 'mois' && estAnneeApp){
+          if(cumulRepartition){ if(m > moisRepartition) return; }
+          else { if(m !== moisRepartition) return; }
+        }
+        const mode = p.mode || 'Espèces';
+        totaux[mode] = (totaux[mode]||0) + Number(p.montant);
       });
     });
     return totaux;
@@ -2058,16 +2039,11 @@ function DistributionView({ db, setDb, anneeInitiale }){
                       <td style={{...td, color:'var(--pine)'}} className="mono">{fmtGNF(m.montantRecuOrangeMoney||0)}</td>
                       <td style={{...td, fontWeight:700, color: m.netPercu<0?'var(--danger)':'var(--ink)'}} className="mono">{fmtGNF(m.netPercu)}</td>
                       <td style={{...td, textAlign:'right'}}>
-                        <div style={{display:'flex', gap:6, justifyContent:'flex-end'}}>
-                          {m.parEmployeParSite.length > 0 && (
-                            <button className="btn btn-ghost btn-sm" onClick={()=>setMoisOuvertConsolide(moisOuvertConsolide===m.mois?null:m.mois)}>
-                              {moisOuvertConsolide===m.mois ? 'Fermer' : 'Détail par caissier'}
-                            </button>
-                          )}
-                          {!estAnneeApp && (
-                            <button className="btn btn-sm" onClick={()=>setMoisSaisieHisto(m.mois)}>+ Saisir</button>
-                          )}
-                        </div>
+                        {m.parEmployeParSite.length > 0 && (
+                          <button className="btn btn-ghost btn-sm" onClick={()=>setMoisOuvertConsolide(moisOuvertConsolide===m.mois?null:m.mois)}>
+                            {moisOuvertConsolide===m.mois ? 'Fermer' : 'Détail par caissier'}
+                          </button>
+                        )}
                       </td>
                     </tr>
                     {moisOuvertConsolide === m.mois && m.parEmployeParSite.length > 0 && (
@@ -2118,43 +2094,32 @@ function DistributionView({ db, setDb, anneeInitiale }){
         </select>
       </div>
 
-      {estAnneeApp && (
-        <div style={{display:'flex', gap:10, flexWrap:'wrap', alignItems:'center', marginBottom:14}}>
-          <button className="btn btn-sm" onClick={()=>setPeriodeRepartition('mois')}
-            style={{background: periodeRepartition==='mois'?'var(--pine)':'transparent', color: periodeRepartition==='mois'?'var(--white)':'var(--ink)', borderColor: periodeRepartition==='mois'?'var(--pine)':'var(--line-strong)'}}>
-            Mensuelle
-          </button>
-          <button className="btn btn-sm" onClick={()=>setPeriodeRepartition('annee')}
-            style={{background: periodeRepartition==='annee'?'var(--pine)':'transparent', color: periodeRepartition==='annee'?'var(--white)':'var(--ink)', borderColor: periodeRepartition==='annee'?'var(--pine)':'var(--line-strong)'}}>
-            Annuelle
-          </button>
-          {periodeRepartition === 'mois' && (
-            <>
-              <select value={moisRepartition} onChange={e=>setMoisRepartition(Number(e.target.value))} style={{width:'auto', minWidth:140}}>
-                {Array.from({length:12},(_,i)=>i+1).map(m => (
-                  <option key={m} value={m}>{new Date(annee, m-1, 1).toLocaleDateString('fr-FR',{month:'long'})}</option>
-                ))}
-              </select>
-              <button className="btn btn-sm" onClick={()=>setCumulRepartition(true)}
-                style={{background: cumulRepartition?'var(--gold-light)':'transparent', color: cumulRepartition?'#7a5c00':'var(--ink)', borderColor: cumulRepartition?'var(--warn)':'var(--line-strong)'}}>
-                Cumul depuis janvier
-              </button>
-              <button className="btn btn-sm" onClick={()=>setCumulRepartition(false)}
-                style={{background: !cumulRepartition?'var(--gold-light)':'transparent', color: !cumulRepartition?'#7a5c00':'var(--ink)', borderColor: !cumulRepartition?'var(--warn)':'var(--line-strong)'}}>
-                Ce mois seulement
-              </button>
-            </>
-          )}
-        </div>
-      )}
-
-      <div style={{display:'grid', gridTemplateColumns:'repeat(6,1fr)', gap:12, marginBottom:16}}>
-        <StatCard label={`Recette brute — ${periodeLabel}`} value={fmtGNF(periodeDonnees.recetteBrute)} icon="euro" />
-        <StatCard label={`Impayés — ${periodeLabel}`} value={fmtGNF(periodeDonnees.impayes)} icon="alert" tone={periodeDonnees.impayes>0?'danger':'default'} />
-        <StatCard label={`Dépenses — ${periodeLabel}`} value={fmtGNF(periodeDonnees.depenses)} icon="trash" tone="danger" />
-        <StatCard label={`Espèces — ${periodeLabel}`} value={fmtGNF(periodeDonnees.especes)} icon="euro" />
-        <StatCard label={`Orange Money — ${periodeLabel}`} value={fmtGNF(periodeDonnees.orangeMoney)} icon="euro" />
-        <StatCard label={`Net perçu — ${periodeLabel}`} value={fmtGNF(periodeDonnees.recetteNette)} icon="chart" tone={periodeDonnees.recetteNette>=0?'default':'danger'} />
+      <div style={{display:'flex', gap:10, flexWrap:'wrap', alignItems:'center', marginBottom:14}}>
+        <button className="btn btn-sm" onClick={()=>setPeriodeRepartition('mois')}
+          style={{background: periodeRepartition==='mois'?'var(--pine)':'transparent', color: periodeRepartition==='mois'?'var(--white)':'var(--ink)', borderColor: periodeRepartition==='mois'?'var(--pine)':'var(--line-strong)'}}>
+          Mensuelle
+        </button>
+        <button className="btn btn-sm" onClick={()=>setPeriodeRepartition('annee')}
+          style={{background: periodeRepartition==='annee'?'var(--pine)':'transparent', color: periodeRepartition==='annee'?'var(--white)':'var(--ink)', borderColor: periodeRepartition==='annee'?'var(--pine)':'var(--line-strong)'}}>
+          Annuelle
+        </button>
+        {periodeRepartition === 'mois' && (
+          <>
+            <select value={moisRepartition} onChange={e=>setMoisRepartition(Number(e.target.value))} style={{width:'auto', minWidth:140}}>
+              {Array.from({length:12},(_,i)=>i+1).map(m => (
+                <option key={m} value={m}>{new Date(annee, m-1, 1).toLocaleDateString('fr-FR',{month:'long'})}</option>
+              ))}
+            </select>
+            <button className="btn btn-sm" onClick={()=>setCumulRepartition(true)}
+              style={{background: cumulRepartition?'var(--gold-light)':'transparent', color: cumulRepartition?'#7a5c00':'var(--ink)', borderColor: cumulRepartition?'var(--warn)':'var(--line-strong)'}}>
+              Cumul depuis janvier
+            </button>
+            <button className="btn btn-sm" onClick={()=>setCumulRepartition(false)}
+              style={{background: !cumulRepartition?'var(--gold-light)':'transparent', color: !cumulRepartition?'#7a5c00':'var(--ink)', borderColor: !cumulRepartition?'var(--warn)':'var(--line-strong)'}}>
+              Ce mois seulement
+            </button>
+          </>
+        )}
       </div>
 
       <h2 style={{fontSize:16, color:'var(--pine)', marginBottom:6}}>Total encaissé par mode de paiement</h2>
@@ -2235,6 +2200,15 @@ function DistributionView({ db, setDb, anneeInitiale }){
         );
       })()}
 
+      <div style={{display:'grid', gridTemplateColumns:'repeat(6,1fr)', gap:12, marginBottom:16}}>
+        <StatCard label={`Recette brute — ${periodeLabel}`} value={fmtGNF(periodeDonnees.recetteBrute)} icon="euro" />
+        <StatCard label={`Impayés — ${periodeLabel}`} value={fmtGNF(periodeDonnees.impayes)} icon="alert" tone={periodeDonnees.impayes>0?'danger':'default'} />
+        <StatCard label={`Dépenses — ${periodeLabel}`} value={fmtGNF(periodeDonnees.depenses)} icon="trash" tone="danger" />
+        <StatCard label={`Espèces — ${periodeLabel}`} value={fmtGNF(periodeDonnees.especes)} icon="euro" />
+        <StatCard label={`Orange Money — ${periodeLabel}`} value={fmtGNF(periodeDonnees.orangeMoney)} icon="euro" />
+        <StatCard label={`Net perçu — ${periodeLabel}`} value={fmtGNF(periodeDonnees.recetteNette)} icon="chart" tone={periodeDonnees.recetteNette>=0?'default':'danger'} />
+      </div>
+
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
         « Impayés (part de l'acteur) » indique combien reviendrait à chaque personne si les factures actuellement en attente étaient un jour réglées — à titre d'information seulement. « Montant brut avant impayés (Part de l'acteur) » montre la part projetée de chacun sur la recette brute totale, avant toute déduction. Le montant à distribuer réellement reste celui de la colonne <strong>« Net perçu »</strong>, qui exclut déjà l'argent pas encore encaissé et les dépenses, pour ne jamais distribuer ce que l'entreprise n'a pas.
       </p>
@@ -2301,7 +2275,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
             })}
             <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
               <td style={{...td, fontWeight:700}}>Total</td>
-              <td style={{...td, fontWeight:700}}>100%</td>
+              <td style={{...td, fontWeight:700, color: parts.reduce((s,p)=>s+p.pct,0)!==100 ? 'var(--danger)' : 'var(--ink)'}}>{parts.reduce((s,p)=>s+p.pct,0)}%</td>
               <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(periodeDonnees.recetteBrute)}</td>
               <td style={{...td, fontWeight:700, color: periodeDonnees.impayes>0?'var(--danger)':'var(--steam)'}} className="mono">{periodeDonnees.impayes>0?fmtGNF(periodeDonnees.impayes):'—'}</td>
               <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(periodeDonnees.recetteNette)}</td>
@@ -2312,56 +2286,9 @@ function DistributionView({ db, setDb, anneeInitiale }){
           </tbody>
         </table>
       </div>
-
-      {moisSaisieHisto && (
-        <SaisieMoisHistoriqueModal
-          mois={moisSaisieHisto}
-          annee={annee}
-          valeursExistantes={detailMensuelHistoManuel[moisSaisieHisto] || {}}
-          onSave={(valeurs)=>{ saveMoisHistorique(moisSaisieHisto, valeurs); setMoisSaisieHisto(null); }}
-          onClose={()=>setMoisSaisieHisto(null)}
-        />
-      )}
     </div>
   );
 }
-
-function SaisieMoisHistoriqueModal({ mois, annee, valeursExistantes, onSave, onClose }){
-  const [recetteBrute, setRecetteBrute] = useState(String(valeursExistantes.recetteBrute || ''));
-  const [depenses, setDepenses] = useState(String(valeursExistantes.depenses || ''));
-  const [depensesPropres, setDepensesPropres] = useState(String(valeursExistantes.depensesPropres || ''));
-  const [depensesPropresDescription, setDepensesPropresDescription] = useState(valeursExistantes.depensesPropresDescription || '');
-  const [montantRecuEspeces, setMontantRecuEspeces] = useState(String(valeursExistantes.montantRecuEspeces || ''));
-  const [montantRecuOrangeMoney, setMontantRecuOrangeMoney] = useState(String(valeursExistantes.montantRecuOrangeMoney || ''));
-
-  function submit(){
-    onSave({
-      recetteBrute: Number(recetteBrute)||0,
-      depenses: Number(depenses)||0,
-      depensesPropres: Number(depensesPropres)||0,
-      depensesPropresDescription: depensesPropresDescription.trim(),
-      montantRecuEspeces: Number(montantRecuEspeces)||0,
-      montantRecuOrangeMoney: Number(montantRecuOrangeMoney)||0,
-    });
-  }
-
-  return (
-    <ModalShell title={`Saisie — ${new Date(annee, mois-1, 1).toLocaleDateString('fr-FR',{month:'long', year:'numeric'})}`} onClose={onClose} width={460}>
-      <div style={{display:'grid', gap:14}}>
-        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12}}>
-          <div><label>Recette brute</label><input type="number" value={recetteBrute} onChange={e=>setRecetteBrute(e.target.value)} /></div>
-          <div><label>Dépenses entreprise</label><input type="number" value={depenses} onChange={e=>setDepenses(e.target.value)} /></div>
-          <div><label>Dépenses propres</label><input type="number" value={depensesPropres} onChange={e=>setDepensesPropres(e.target.value)} /></div>
-          <div><label>Description (pour situer)</label><input type="text" placeholder="Ex: avance sur salaire" value={depensesPropresDescription} onChange={e=>setDepensesPropresDescription(e.target.value)} /></div>
-          <div><label>Reçu Espèces</label><input type="number" value={montantRecuEspeces} onChange={e=>setMontantRecuEspeces(e.target.value)} /></div>
-          <div><label>Reçu Orange Money</label><input type="number" value={montantRecuOrangeMoney} onChange={e=>setMontantRecuOrangeMoney(e.target.value)} /></div>
-        </div>
-        <button className="btn btn-rust" style={{width:'100%'}} onClick={submit}>Enregistrer</button>
-      </div>
-    </ModalShell>
-  );
-}
-
 
 function GlobalDashboard({ db, onOpenSite }){
   const today = todayISO();
@@ -2426,6 +2353,11 @@ function GlobalDashboard({ db, onOpenSite }){
       (site.depenses||[]).forEach(d => {
         if(d.date && dansPeriode(d.date)) depenses += Number(d.montant)||0;
       });
+      (site.paiementsHorsCommande||[]).forEach(p => {
+        if(!p.date || !dansPeriode(p.date)) return;
+        if(p.mode === 'Orange Money') orangeMoney += Number(p.montant)||0;
+        else especes += Number(p.montant)||0;
+      });
       moisManuelsDansPeriode.forEach(({annee, mois}) => {
         const parEmploye = normaliserMoisManuel(((site.detailMensuelManuel||{})[annee]||{})[String(mois)]) || {};
         Object.values(parEmploye).forEach(v => {
@@ -2468,6 +2400,11 @@ function GlobalDashboard({ db, onOpenSite }){
         if(pmt.mode === 'Orange Money') orangeMoneyMois += Number(pmt.montant)||0;
         else especesMois += Number(pmt.montant)||0;
       });
+    });
+    (site.paiementsHorsCommande||[]).forEach(p => {
+      if(!p.date || p.date.slice(0,7) !== today.slice(0,7)) return;
+      if(p.mode === 'Orange Money') orangeMoneyMois += Number(p.montant)||0;
+      else especesMois += Number(p.montant)||0;
     });
     return { site, caJour, caMois, montantImpaye, impayesCount: impayes.length, enCours, lowStock, clientsCount: site.clients.length, depensesMois, beneficeMois, especesMois, orangeMoneyMois };
   });
@@ -3091,6 +3028,100 @@ function SortableTh({ label, field, sortBy, sortDir, onSort }){
   );
 }
 
+function EncaisserSansCommandeModal({ site, updateSite, employeId, onClose }){
+  const [clientSearch, setClientSearch] = useState('');
+  const [clientId, setClientId] = useState('');
+  const [nouveauNomClient, setNouveauNomClient] = useState('');
+  const [montant, setMontant] = useState('');
+  const [mode, setMode] = useState('Espèces');
+  const [note, setNote] = useState('');
+  const [date, setDate] = useState(todayISO());
+
+  const clientsFiltres = useMemo(() => {
+    if(!clientSearch.trim()) return [];
+    const q = clientSearch.toLowerCase();
+    return site.clients.filter(c => c.nom.toLowerCase().includes(q) || (c.tel||'').includes(q)).slice(0,8);
+  }, [site.clients, clientSearch]);
+
+  const clientChoisi = site.clients.find(c=>c.id===clientId);
+
+  function submit(){
+    const montantNum = Number(montant)||0;
+    if(montantNum <= 0) return;
+    const nomClientFinal = clientChoisi ? clientChoisi.nom : (nouveauNomClient.trim() || 'Client non précisé');
+    const entry = {
+      id: uid('phc_'),
+      date,
+      clientId: clientId || null,
+      clientNom: nomClientFinal,
+      montant: montantNum,
+      mode,
+      note: note.trim(),
+      employeId: employeId || null,
+    };
+    updateSite({ ...site, paiementsHorsCommande: [entry, ...(site.paiementsHorsCommande||[])] });
+    onClose();
+  }
+
+  return (
+    <ModalShell title="Encaisser sans commande" onClose={onClose} width={480}>
+      <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
+        Pour un client qui vient récupérer une commande prise avant le lancement de l'app (papier) et régler son solde — ça compte comme argent reçu, sans créer de nouvelle commande ni fausser le nombre de commandes.
+      </p>
+      <div style={{display:'grid', gap:14}}>
+        <div>
+          <label>Client (optionnel)</label>
+          {clientChoisi ? (
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 12px', background:'var(--paper-2)', borderRadius:8}}>
+              <span>{clientChoisi.nom}</span>
+              <button className="btn btn-ghost btn-sm" onClick={()=>{ setClientId(''); setClientSearch(''); }}>✕</button>
+            </div>
+          ) : (
+            <>
+              <input type="text" placeholder="Rechercher un client existant…" value={clientSearch} onChange={e=>setClientSearch(e.target.value)} />
+              {clientsFiltres.length > 0 && (
+                <div style={{border:'1px solid var(--line-strong)', borderRadius:8, marginTop:4, maxHeight:160, overflowY:'auto'}}>
+                  {clientsFiltres.map(c => (
+                    <div key={c.id} style={{padding:'8px 12px', cursor:'pointer', borderBottom:'1px solid var(--line)'}}
+                      onClick={()=>{ setClientId(c.id); setClientSearch(''); }}>
+                      {c.nom} {c.tel ? `— ${c.tel}` : ''}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <input type="text" placeholder="Ou taper un nom si le client n'est pas dans la liste" value={nouveauNomClient} onChange={e=>setNouveauNomClient(e.target.value)} style={{marginTop:8}} />
+            </>
+          )}
+        </div>
+        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12}}>
+          <div><label>Montant reçu (GNF)</label><input type="number" value={montant} onChange={e=>setMontant(e.target.value)} placeholder="0" /></div>
+          <div><label>Date</label><input type="date" value={date} onChange={e=>setDate(e.target.value)} max={todayISO()} /></div>
+        </div>
+        <div>
+          <label>Mode de paiement</label>
+          <div style={{display:'flex', gap:8}}>
+            <button type="button" className="btn btn-sm" onClick={()=>setMode('Espèces')}
+              style={{background: mode==='Espèces'?'var(--pine)':'transparent', color: mode==='Espèces'?'var(--white)':'var(--ink)', borderColor: mode==='Espèces'?'var(--pine)':'var(--line-strong)'}}>
+              Espèces
+            </button>
+            <button type="button" className="btn btn-sm" onClick={()=>setMode('Orange Money')}
+              style={{background: mode==='Orange Money'?'var(--pine)':'transparent', color: mode==='Orange Money'?'var(--white)':'var(--ink)', borderColor: mode==='Orange Money'?'var(--pine)':'var(--line-strong)'}}>
+              Orange Money
+            </button>
+          </div>
+        </div>
+        <div>
+          <label>Note (optionnel)</label>
+          <input type="text" placeholder="Ex: solde commande papier avant lancement" value={note} onChange={e=>setNote(e.target.value)} />
+        </div>
+        <button className="btn btn-rust" style={{width:'100%'}} disabled={!montant || Number(montant)<=0} onClick={submit}>
+          Enregistrer l'encaissement
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
 function CommandesView({ site, updateSite, editable, employeId, db }){
   const [filter, setFilter] = useState('Toutes');
   const [search, setSearch] = useState('');
@@ -3099,6 +3130,7 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
   const [editCmd, setEditCmd] = useState(null);
   const [confirmDeleteCmd, setConfirmDeleteCmd] = useState(null);
   const [encaisserCmd, setEncaisserCmd] = useState(null);
+  const [showEncaisserSansCommande, setShowEncaisserSansCommande] = useState(false);
   const [showNewClient, setShowNewClient] = useState(false);
   const [sortBy, setSortBy] = useState(null); // 'ticket'|'client'|'total'|'statut'|'paiement'|'depot'|'rdv'
   const [sortDir, setSortDir] = useState('asc');
@@ -3282,6 +3314,7 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
         right={editable ? (
           <div style={{display:'flex', gap:10}}>
             <button className="btn" onClick={()=>setShowNewClient(true)}><Icon name="plus" size={15}/> Nouveau client</button>
+            <button className="btn" onClick={()=>setShowEncaisserSansCommande(true)}><Icon name="euro" size={15}/> Encaisser sans commande</button>
             <button className="btn btn-rust" onClick={()=>setShowNew(true)}><Icon name="plus" size={15}/> Nouvelle commande</button>
           </div>
         ) : null}
@@ -3400,6 +3433,7 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
         onConfirm={()=>{ deleteCommande(confirmDeleteCmd.id); setConfirmDeleteCmd(null); }}
         onCancel={()=>setConfirmDeleteCmd(null)} />}
       {showNewClient && <NewClientModal site={site} updateSite={updateSite} onClose={()=>setShowNewClient(false)} />}
+      {showEncaisserSansCommande && <EncaisserSansCommandeModal site={site} updateSite={updateSite} employeId={employeId} onClose={()=>setShowEncaisserSansCommande(false)} />}
       {encaisserCmd && <EncaisserModal cmd={encaisserCmd} site={site} onClose={()=>setEncaisserCmd(null)} onSave={(montant, mode)=>enregistrerPaiement(encaisserCmd, montant, mode)} />}
     </div>
   );
@@ -7197,6 +7231,20 @@ function EncaissementsGerantView({ site }){
         });
       });
     });
+    (site.paiementsHorsCommande||[]).forEach(p => {
+      if(!p.date) return;
+      liste.push({
+        id: p.id,
+        date: p.date,
+        jour: p.date.slice(0,10),
+        mois: p.date.slice(0,7),
+        annee: Number(p.date.slice(0,4)),
+        ticket: '—',
+        employeId: p.employeId || null,
+        mode: p.mode || 'Espèces',
+        montant: Number(p.montant)
+      });
+    });
     return liste;
   }, [site]);
 
@@ -7383,6 +7431,20 @@ function MesEncaissementsView({ site, employeId }){
           mode: pmt.mode || 'Espèces',
           montant: Number(pmt.montant)
         });
+      });
+    });
+    (site.paiementsHorsCommande||[]).forEach(p => {
+      if(!p.date || p.employeId !== employeId) return;
+      liste.push({
+        id: p.id,
+        date: p.date,
+        jour: p.date.slice(0,10),
+        mois: p.date.slice(0,7),
+        annee: Number(p.date.slice(0,4)),
+        ticket: '—',
+        client: p.clientNom || 'Client non précisé',
+        mode: p.mode || 'Espèces',
+        montant: Number(p.montant)
       });
     });
     return liste.sort((a,b) => new Date(b.date) - new Date(a.date));
@@ -8342,6 +8404,12 @@ function calculerDonneesMensuellesSite(site, annee){
       auto[m].depenses += Number(d.montant)||0;
     }
   });
+  (site.paiementsHorsCommande||[]).forEach(p => {
+    if(!p.date || p.date.slice(0,4) !== String(annee)) return;
+    const m = Number(p.date.slice(5,7)) - 1;
+    if(p.mode === 'Orange Money') auto[m].orangeMoney += Number(p.montant)||0;
+    else auto[m].especes += Number(p.montant)||0;
+  });
   const manuel = (site.detailMensuelManuel||{})[annee] || {};
   return auto.map(a => {
     const avantSeuil = annee < 2026 || (annee === 2026 && a.mois < 9);
@@ -8402,6 +8470,12 @@ function calculerDonneesMensuellesEmploye(site, annee, employeId){
       const m = Number(d.date.slice(5,7)) - 1;
       auto[m].depenses += Number(d.montant)||0;
     }
+  });
+  (site.paiementsHorsCommande||[]).forEach(p => {
+    if(!p.date || p.date.slice(0,4) !== String(annee) || p.employeId !== employeId) return;
+    const m = Number(p.date.slice(5,7)) - 1;
+    if(p.mode === 'Orange Money') auto[m].orangeMoney += Number(p.montant)||0;
+    else auto[m].especes += Number(p.montant)||0;
   });
   const manuel = (site.detailMensuelManuel||{})[annee] || {};
   return auto.map(a => {
