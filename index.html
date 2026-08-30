@@ -1208,17 +1208,31 @@ function Shell({ title, role, navItems, active, onNav, onLogout, children }){
         </div>
         <nav className="app-sidebar-nav" style={{display:'flex', flexDirection:'column', gap:4, flex:1}}>
           {navItems.map(item => (
-            <button key={item.key} onClick={()=>onNav(item.key)}
-              style={{
-                display:'flex', alignItems:'center', gap:10, padding:'10px 12px', borderRadius:8,
-                background: active===item.key ? 'rgba(255,255,255,0.14)' : 'transparent',
-                border:'none', color:'var(--white)', fontSize:14, fontWeight:active===item.key?600:400,
-                textAlign:'left', cursor:'pointer'
-              }}>
-              <Icon name={item.icon} size={17} />
-              <span className="app-sidebar-label">{item.label}</span>
-              {item.badge ? <span style={{marginLeft:'auto', background:'var(--rust)', borderRadius:100, fontSize:10.5, padding:'1px 7px', fontWeight:700}}>{item.badge}</span> : null}
-            </button>
+            <React.Fragment key={item.key}>
+              <button onClick={()=>onNav(item.key)}
+                style={{
+                  display:'flex', alignItems:'center', gap:10, padding:'10px 12px', borderRadius:8,
+                  background: active===item.key ? 'rgba(255,255,255,0.14)' : 'transparent',
+                  border:'none', color:'var(--white)', fontSize:14, fontWeight:active===item.key?600:400,
+                  textAlign:'left', cursor:'pointer'
+                }}>
+                <Icon name={item.icon} size={17} />
+                <span className="app-sidebar-label">{item.label}</span>
+                {item.badge ? <span style={{marginLeft:'auto', background:'var(--rust)', borderRadius:100, fontSize:10.5, padding:'1px 7px', fontWeight:700}}>{item.badge}</span> : null}
+              </button>
+              {item.children && item.children.map(child => (
+                <button key={child.key} onClick={()=>onNav(child.key)}
+                  style={{
+                    display:'flex', alignItems:'center', gap:9, padding:'8px 12px 8px 30px', borderRadius:8,
+                    background: active===child.key ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.04)',
+                    border:'none', color:'var(--white)', fontSize:13, fontWeight:active===child.key?600:400,
+                    textAlign:'left', cursor:'pointer', opacity:0.9
+                  }}>
+                  <Icon name={child.icon} size={14} />
+                  <span className="app-sidebar-label">{child.label}</span>
+                </button>
+              ))}
+            </React.Fragment>
           ))}
         </nav>
         <button className="app-logout-btn" onClick={onLogout} style={{
@@ -2703,9 +2717,8 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
     { key:'stock', label:'Stock', icon:'box' },
     { key:'employes', label:'Équipe', icon:'users' },
     { key:'notifications', label:'Notifications', icon:'bell' },
-    { key:'depenses', label:'Dépenses', icon:'euro' },
+    { key:'depenses', label:'Dépenses', icon:'euro', children: [{ key:'encaissements', label:'Encaissements', icon:'euro' }] },
     { key:'detailMensuel', label:'Détail mensuel', icon:'chart' },
-    { key:'encaissements', label:'Encaissements', icon:'euro' },
     { key:'performanceCaissiers', label:'Performance caissiers', icon:'chart' },
     { key:'remuneration', label:'Rémunérations', icon:'chart' },
     { key:'corbeille', label:'Corbeille', icon:'trash', badge: (site.corbeille||[]).length || undefined },
@@ -8941,9 +8954,8 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
     { key:'clients', label:'Clients', icon:'users' },
     { key:'marketing', label:'Promos & Relances', icon:'bell' },
     { key:'stock', label:'Stock', icon:'box' },
-    { key:'depenses', label:'Dépenses', icon:'euro' },
+    { key:'depenses', label:'Dépenses', icon:'euro', children: [{ key:'encaissements', label:'Mes encaissements', icon:'euro' }] },
     { key:'detailMensuel', label:'Détail mensuel', icon:'chart' },
-    { key:'encaissements', label:'Mes encaissements', icon:'euro' },
     { key:'performanceCaissiers', label:'Performance caissiers', icon:'chart' },
     { key:'suiviRepassage', label:'Suivi repassage', icon:'euro' },
   ];
