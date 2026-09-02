@@ -792,6 +792,7 @@ function App(){
   const [currentEmployeId, setCurrentEmployeId] = useState(null);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [pendingSync, setPendingSync] = useState(false);
+  const [conflitDonneesAnciennes, setConflitDonneesAnciennes] = useState(false);
   const saveTimer = useRef(null);
   const isConnectedRef = useRef(false); // vraie connexion Firebase (fiable), lue par persist()
 
@@ -818,13 +819,31 @@ function App(){
 
         if(connecte){
           // On est (re)connecté : s'il reste des changements saisis hors ligne
-          // non envoyés, on les pousse D'ABORD, avant de (re)démarrer l'écoute —
-          // pour ne jamais perdre de commandes créées hors ligne.
+          // non envoyés, on les pousse — mais SEULEMENT après avoir vérifié qu'ils
+          // ne sont pas une vieille copie périmée. Un appareil resté hors ligne
+          // longtemps (des jours/semaines) ne doit JAMAIS pouvoir écraser des
+          // données plus récentes créées entre-temps par d'autres appareils.
           const localDataEnAttente = localStorage.getItem('maci-offline-db');
+          const compterCommandes = (dbData) => (dbData?.sites||[]).reduce((s,site)=>s+(site.commandes||[]).length,0);
           const envoyerChangementsEnAttente = async () => {
             if(localDataEnAttente){
               try {
                 const parsed = JSON.parse(localDataEnAttente);
+                const actuel = await storageGet(DB_KEY);
+                const actuelParsed = actuel ? (typeof actuel === 'string' ? JSON.parse(actuel) : actuel) : null;
+                const nbLocal = compterCommandes(parsed);
+                const nbActuel = actuelParsed ? compterCommandes(actuelParsed) : 0;
+                if(actuelParsed && nbLocal < nbActuel){
+                  // La copie locale a MOINS de commandes que ce qui est déjà en ligne —
+                  // c'est presque certainement une vieille copie périmée (appareil resté
+                  // hors ligne longtemps). On refuse de l'envoyer pour ne rien écraser,
+                  // et on la garde de côté pour vérification manuelle au lieu de la perdre.
+                  localStorage.setItem('maci-offline-db-conflit', localDataEnAttente);
+                  localStorage.removeItem('maci-offline-db');
+                  setPendingSync(false);
+                  setConflitDonneesAnciennes(true);
+                  return;
+                }
                 await storageSet(DB_KEY, JSON.stringify(parsed));
                 localStorage.removeItem('maci-offline-db');
                 setPendingSync(false);
@@ -909,13 +928,14 @@ function App(){
   if(!role){
     return (
       <>
+        {conflitDonneesAnciennes && <ConflitBanner />}
         {!isOnline && <OfflineBanner pending={pendingSync} />}
         <RoleSelect db={db} setDb={persist} onSelect={(r, siteId, clientId, employeId) => { setRole(r); setCurrentSiteId(siteId||null); setCurrentClientId(clientId||null); setCurrentEmployeId(employeId||null); }} />
       </>
     );
   }
 
-  const offlineBanner = !isOnline ? <OfflineBanner pending={pendingSync} /> : null;
+  const offlineBanner = <>{conflitDonneesAnciennes && <ConflitBanner />}{!isOnline && <OfflineBanner pending={pendingSync} />}</>;
 
   if(role === 'gerant') return <>{offlineBanner}<GerantApp db={db} setDb={persist} onLogout={()=>{setRole(null); setCurrentSiteId(null);}} /></>;
   if(role === 'employe') return <>{offlineBanner}<EmployeApp db={db} setDb={persist} siteId={currentSiteId} employeId={currentEmployeId} onLogout={()=>{setRole(null); setCurrentSiteId(null); setCurrentEmployeId(null);}} /></>;
@@ -937,6 +957,19 @@ function OfflineBanner({ pending }){
     }}>
       <span>📵 Mode hors ligne — {pending ? 'données en attente de synchronisation' : 'données sauvegardées localement'}</span>
       <span style={{fontSize:11, opacity:0.85}}>Les données seront synchronisées quand internet reviendra</span>
+    </div>
+  );
+}
+
+function ConflitBanner(){
+  return (
+    <div style={{
+      position:'fixed', top:0, left:0, right:0, zIndex:9999,
+      background:'#b91c1c', color:'white', padding:'10px 16px',
+      display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:8,
+      fontSize:13, fontWeight:600
+    }}>
+      <span>🚨 Cet appareil avait des données plus anciennes que celles déjà en ligne — elles n'ont PAS été envoyées, pour ne rien écraser. Contactez le support avant de continuer sur cet appareil.</span>
     </div>
   );
 }
