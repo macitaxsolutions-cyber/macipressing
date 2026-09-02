@@ -825,7 +825,7 @@ function App(){
             if(localDataEnAttente){
               try {
                 const parsed = JSON.parse(localDataEnAttente);
-                await saveToDB(DB_KEY, parsed);
+                await storageSet(DB_KEY, JSON.stringify(parsed));
                 localStorage.removeItem('maci-offline-db');
                 setPendingSync(false);
               } catch(e){ console.error('Erreur de synchronisation', e); }
@@ -877,19 +877,25 @@ function App(){
   }, []);
 
   const persist = useCallback((next) => {
-    setDb(next);
-    if(saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      if(isConnectedRef.current){
-        // En ligne : sauvegarder sur Firebase normalement
-        storageSet(DB_KEY, JSON.stringify(next));
-        localStorage.removeItem('maci-offline-db');
-      } else {
-        // Hors ligne : sauvegarder localement
-        localStorage.setItem('maci-offline-db', JSON.stringify(next));
-        setPendingSync(true);
-      }
-    }, 400);
+    setDb(prevDb => {
+      // Accepte soit une valeur directe, soit une fonction (prevDb => nextDb) —
+      // la fonction garantit toujours de partir de l'état le plus à jour,
+      // même si l'appelant avait une référence "db" un peu ancienne.
+      const resolved = typeof next === 'function' ? next(prevDb) : next;
+      if(saveTimer.current) clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => {
+        if(isConnectedRef.current){
+          // En ligne : sauvegarder sur Firebase normalement
+          storageSet(DB_KEY, JSON.stringify(resolved));
+          localStorage.removeItem('maci-offline-db');
+        } else {
+          // Hors ligne : sauvegarder localement
+          localStorage.setItem('maci-offline-db', JSON.stringify(resolved));
+          setPendingSync(true);
+        }
+      }, 400);
+      return resolved;
+    });
   }, []);
 
   if(loading || !db){
@@ -977,7 +983,7 @@ function RoleSelect({ db, setDb, onSelect }){
       categorie: 'Salaires',
       autoCaissierId: emp.id,
     };
-    setDb({ ...db, sites: db.sites.map(s => s.id === siteId ? { ...s, depenses: [dep, ...depenses] } : s) });
+    setDb(prevDb => ({ ...prevDb, sites: prevDb.sites.map(s => s.id === siteId ? { ...s, depenses: [dep, ...(s.depenses||[])] } : s) }));
   }
 
   function handleLogin(){
