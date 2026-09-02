@@ -1,6 +1,3 @@
-
-
-
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -821,14 +818,20 @@ function App(){
   useEffect(() => {
     setLoading(true);
 
-    // Si hors ligne au démarrage : charger les données locales
+    // Y a-t-il des changements saisis hors ligne qui n'ont pas encore été envoyés
+    // à Firebase ? On le vérifie AU DÉMARRAGE, peu importe qu'on soit en ligne ou
+    // non maintenant — sinon un rafraîchissement de la page juste après le retour
+    // d'internet peut faire disparaître ces changements avant qu'ils soient envoyés.
+    const localDataEnAttente = localStorage.getItem('maci-offline-db');
+
+    // Si hors ligne au démarrage : afficher les données locales en attendant
     if(!navigator.onLine){
-      const localData = localStorage.getItem('maci-offline-db') || localStorage.getItem('maci-pressing-local');
+      const localData = localDataEnAttente || localStorage.getItem('maci-pressing-local');
       if(localData){
         try {
           setDb(purgeCorbeille(JSON.parse(localData)));
           setLoading(false);
-          setPendingSync(true);
+          setPendingSync(!!localDataEnAttente);
           return;
         } catch(e){ console.error('local parse error', e); }
       }
@@ -843,25 +846,40 @@ function App(){
         return;
       }
 
-      // En ligne et authentifié : écoute en temps réel Firebase
-      unsubscribeDB = subscribeToDB(DB_KEY, (data) => {
-        try{
-          const parsed = typeof data === 'string' ? JSON.parse(data) : data;
-          const purged = purgeCorbeille(parsed);
-          setDb(purged);
-          localStorage.setItem('maci-pressing-local', JSON.stringify(purged));
-        }catch(e){ console.error('parse error', e); }
-        setLoading(false);
-      });
-
-      // Premier chargement : si pas de données, crée la base vide
-      (async () => {
-        const raw = await storageGet(DB_KEY);
-        if(!raw){
-          const fresh = emptyDB();
-          await storageSet(DB_KEY, JSON.stringify(fresh));
+      // En ligne : si des changements hors ligne traînent encore, on les envoie
+      // D'ABORD à Firebase, avant de commencer à écouter — pour ne jamais les perdre.
+      const envoyerChangementsEnAttente = async () => {
+        if(localDataEnAttente){
+          try {
+            const parsed = JSON.parse(localDataEnAttente);
+            await saveToDB(DB_KEY, parsed);
+            localStorage.removeItem('maci-offline-db');
+            setPendingSync(false);
+          } catch(e){ console.error('Erreur de synchronisation au démarrage', e); }
         }
-      })();
+      };
+
+      envoyerChangementsEnAttente().then(() => {
+        // En ligne et authentifié : écoute en temps réel Firebase
+        unsubscribeDB = subscribeToDB(DB_KEY, (data) => {
+          try{
+            const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+            const purged = purgeCorbeille(parsed);
+            setDb(purged);
+            localStorage.setItem('maci-pressing-local', JSON.stringify(purged));
+          }catch(e){ console.error('parse error', e); }
+          setLoading(false);
+        });
+
+        // Premier chargement : si pas de données, crée la base vide
+        (async () => {
+          const raw = await storageGet(DB_KEY);
+          if(!raw){
+            const fresh = emptyDB();
+            await storageSet(DB_KEY, JSON.stringify(fresh));
+          }
+        })();
+      });
     });
 
     return () => { unsubscribeAuth(); if(unsubscribeDB) unsubscribeDB(); };
