@@ -1,4 +1,6 @@
-const CACHE_NAME = 'maci-pressing-v2';
+
+Sw · JS
+const CACHE_NAME = 'maci-pressing-v3';
 const ASSETS = [
   '/macipressing/',
   '/macipressing/index.html',
@@ -46,3 +48,7 @@ self.addEventListener('fetch', event => {
       }))
   );
 });
+ 
+
+Downloaded index_92.html Show in Explorer
+
