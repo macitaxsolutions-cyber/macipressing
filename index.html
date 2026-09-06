@@ -7,7 +7,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-06-3">
+<meta name="app-version" content="2026-09-06-4">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -22,7 +22,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-06-3';
+  const APP_VERSION_ACTUELLE = '2026-09-06-4';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -5744,6 +5744,9 @@ function EquipeView({ site, updateSite, db }){
   const [newPass, setNewPass] = useState('');
   const [showNewPass, setShowNewPass] = useState(false);
   const [passFlash, setPassFlash] = useState(false);
+  const [editNomEmp, setEditNomEmp] = useState(null);
+  const [newNom, setNewNom] = useState('');
+  const [nomFlash, setNomFlash] = useState(false);
 
   function removeEmp(id){
     const emp = site.employes.find(e=>e.id===id);
@@ -5757,6 +5760,12 @@ function EquipeView({ site, updateSite, db }){
     setPassFlash(true);
     setTimeout(()=>{ setPassFlash(false); setEditPassEmp(null); setNewPass(''); }, 1500);
   }
+  function saveNewNom(){
+    if(!newNom.trim()) return;
+    updateSite({ ...site, employes: site.employes.map(e => e.id===editNomEmp.id ? {...e, nom: newNom.trim()} : e) });
+    setNomFlash(true);
+    setTimeout(()=>{ setNomFlash(false); setEditNomEmp(null); setNewNom(''); }, 1500);
+  }
 
   return (
     <div>
@@ -5767,7 +5776,12 @@ function EquipeView({ site, updateSite, db }){
           <div key={e.id} className="card" style={{padding:'1.1rem 1.25rem'}}>
             <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start'}}>
               <div>
-                <div style={{fontWeight:600, fontSize:14.5}}>{e.nom}</div>
+                <div style={{display:'flex', alignItems:'center', gap:6}}>
+                  <div style={{fontWeight:600, fontSize:14.5}}>{e.nom}</div>
+                  <button className="btn btn-ghost btn-sm" style={{padding:2}} title="Renommer" onClick={()=>{ setEditNomEmp(e); setNewNom(e.nom); }}>
+                    <Icon name="edit" size={12}/>
+                  </button>
+                </div>
                 <div style={{fontSize:12.5, color:'var(--steam)'}}>{e.role}</div>
               </div>
               <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>setConfirmEmp(e)}><Icon name="trash" size={14}/></button>
@@ -5813,11 +5827,108 @@ function EquipeView({ site, updateSite, db }){
         </ModalShell>
       )}
 
+      {editNomEmp && (
+        <ModalShell title={`Renommer — ${editNomEmp.nom}`} onClose={()=>{ setEditNomEmp(null); setNewNom(''); }} width={400}>
+          <div style={{display:'grid', gap:14}}>
+            <div>
+              <label>Nom de l'employé</label>
+              <input type="text" value={newNom} onChange={e=>setNewNom(e.target.value)} autoFocus />
+            </div>
+            <p style={{fontSize:12.5, color:'var(--steam)', margin:0, lineHeight:1.5}}>
+              Le mot de passe et l'historique de l'employé (commandes, dépenses, encaissements) ne changent pas — seul le nom affiché est modifié.
+            </p>
+            <p style={{fontSize:12.5, color:'var(--warn)', margin:0, lineHeight:1.5}}>
+              ⚠️ Certains calculs (salaire journalier automatique de Mamadou Alpha et Nene Djiba, correspondance avec les acteurs de Distribution des recettes) reconnaissent l'employé par son NOM. Après un renommage, vérifiez ces deux endroits.
+            </p>
+            <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
+              <button className="btn" onClick={()=>{ setEditNomEmp(null); setNewNom(''); }}>Annuler</button>
+              <button className="btn btn-rust" disabled={!newNom.trim()} onClick={saveNewNom}>
+                {nomFlash ? <><Icon name="check" size={14}/> Modifié !</> : 'Enregistrer'}
+              </button>
+            </div>
+          </div>
+        </ModalShell>
+      )}
+
       {confirmEmp && <ConfirmDelete db={db}
         message={`Supprimer définitivement l'employé « ${confirmEmp.nom} » ? Il ne pourra plus se connecter.`}
         onConfirm={()=>{ removeEmp(confirmEmp.id); setConfirmEmp(null); }}
         onCancel={()=>setConfirmEmp(null)}
       />}
+    </div>
+  );
+}
+
+// Page en libre-service permettant à l'employé (caissier ou repasseur) de choisir son propre mot de passe.
+// Le mot de passe choisi reste enregistré dans le même champ que celui géré par le gérant (Équipe) —
+// il n'est donc jamais caché au gérant, qui peut toujours le consulter ou le changer à nouveau lui-même.
+function MonCompteView({ site, updateSite, employeId }){
+  const monProfil = (site.employes||[]).find(e => e.id === employeId);
+  const [motdepasseActuel, setMotdepasseActuel] = useState('');
+  const [nouveauMdp, setNouveauMdp] = useState('');
+  const [confirmMdp, setConfirmMdp] = useState('');
+  const [voirMdp, setVoirMdp] = useState(false);
+  const [erreur, setErreur] = useState('');
+  const [succes, setSucces] = useState(false);
+
+  if(!monProfil){
+    return (
+      <div>
+        <PageHeader title="Mon compte" />
+        <p style={{color:'var(--steam)'}}>Profil introuvable.</p>
+      </div>
+    );
+  }
+
+  function submit(){
+    setErreur(''); setSucces(false);
+    if(motdepasseActuel !== monProfil.motdepasse){
+      setErreur('Le mot de passe actuel est incorrect.');
+      return;
+    }
+    if(!nouveauMdp.trim()){
+      setErreur('Choisissez un nouveau mot de passe.');
+      return;
+    }
+    if(nouveauMdp !== confirmMdp){
+      setErreur('Les deux mots de passe ne correspondent pas.');
+      return;
+    }
+    updateSite({ ...site, employes: site.employes.map(e => e.id === employeId ? { ...e, motdepasse: nouveauMdp.trim() } : e) });
+    setSucces(true);
+    setMotdepasseActuel(''); setNouveauMdp(''); setConfirmMdp('');
+    setTimeout(()=>setSucces(false), 2500);
+  }
+
+  return (
+    <div>
+      <PageHeader title="Mon compte" subtitle={`${monProfil.nom} — ${monProfil.role}`} />
+      <div className="card" style={{padding:'1.5rem', maxWidth:420}}>
+        <h3 style={{margin:'0 0 14px', fontSize:15}}>Changer mon mot de passe</h3>
+        <div style={{display:'grid', gap:14}}>
+          <div>
+            <label>Mot de passe actuel</label>
+            <input type={voirMdp?'text':'password'} value={motdepasseActuel} onChange={e=>setMotdepasseActuel(e.target.value)} autoFocus />
+          </div>
+          <div>
+            <label>Nouveau mot de passe</label>
+            <input type={voirMdp?'text':'password'} value={nouveauMdp} onChange={e=>setNouveauMdp(e.target.value)} />
+          </div>
+          <div>
+            <label>Confirmer le nouveau mot de passe</label>
+            <input type={voirMdp?'text':'password'} value={confirmMdp} onChange={e=>setConfirmMdp(e.target.value)} />
+          </div>
+          <label style={{display:'flex', alignItems:'center', gap:8, fontSize:12.5, color:'var(--steam)', cursor:'pointer'}}>
+            <input type="checkbox" checked={voirMdp} onChange={e=>setVoirMdp(e.target.checked)} /> Afficher les mots de passe
+          </label>
+          {erreur && <p style={{color:'var(--danger)', fontSize:13, margin:0}}>{erreur}</p>}
+          {succes && <p style={{color:'var(--ok)', fontSize:13, margin:0, display:'flex', alignItems:'center', gap:6}}><Icon name="check" size={14}/> Mot de passe modifié.</p>}
+          <button className="btn btn-rust" onClick={submit}>Enregistrer</button>
+        </div>
+      </div>
+      <p style={{fontSize:12, color:'var(--steam)', margin:'14px 0 0', maxWidth:420, lineHeight:1.5}}>
+        ℹ️ Le gérant peut voir ce mot de passe à tout moment dans le menu Équipe — le choisir vous-même ne le rend pas privé.
+      </p>
     </div>
   );
 }
@@ -9814,11 +9925,13 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
         { key:'agenda', label:'Agenda du jour', icon:'clock' },
         { key:'remuneration', label:'Ma rémunération', icon:'chart' },
         { key:'suiviRepassage', label:'Suivi repassage', icon:'euro' },
+        { key:'moncompte', label:'Mon mot de passe', icon:'edit' },
       ]} active={page} onNav={setPage} onLogout={onLogout}>
         {page === 'repassage' && <RepasseurView site={site} updateSite={updateSite} employeId={employeId} />}
         {page === 'agenda' && <AgendaView site={site} />}
         {page === 'remuneration' && <RemunerationView site={site} updateSite={updateSite} db={db} siteId={siteId} employeId={employeId} />}
         {page === 'suiviRepassage' && <PaiementsAValiderView site={site} updateSite={updateSite} employeId={employeId} />}
+        {page === 'moncompte' && <MonCompteView site={site} updateSite={updateSite} employeId={employeId} />}
       </Shell>
     );
   }
@@ -9835,6 +9948,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
     { key:'detailMensuel', label:'Détail mensuel', icon:'chart' },
     { key:'performanceCaissiers', label:'Performance caissiers', icon:'chart' },
     { key:'suiviRepassage', label:'Suivi repassage', icon:'euro' },
+    { key:'moncompte', label:'Mon mot de passe', icon:'edit' },
   ];
   return (
     <Shell title={site.nom} role={`${monProfil ? monProfil.nom + ' — ' : ''}${monProfil ? monProfil.role : 'Espace employé'}`} navItems={navItems} active={page} onNav={setPage} onLogout={onLogout}>
@@ -9849,6 +9963,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
       {page === 'encaissements' && <MesEncaissementsView site={site} updateSite={updateSite} db={db} employeId={employeId} />}
       {page === 'performanceCaissiers' && <PerformanceCaissiersView site={site} />}
       {page === 'suiviRepassage' && <RepassageApercuView site={site} updateSite={updateSite} />}
+      {page === 'moncompte' && <MonCompteView site={site} updateSite={updateSite} employeId={employeId} />}
     </Shell>
   );
 }
