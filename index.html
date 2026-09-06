@@ -1002,10 +1002,14 @@ function RoleSelect({ db, setDb, onSelect }){
   }
 
   function recordDailyCaissierExpense(siteId, emp){
-    if(new Date().getDay() === 0) return; // pas de salaire journalier le dimanche
+    const today = todayISO();
+    // Le jour de la semaine est calculé à partir de la MÊME date que celle enregistrée sur la dépense
+    // (todayISO(), qui n'est pas toujours pareil que l'heure locale de la tablette) — sinon, sur un
+    // appareil dont l'horloge/le fuseau horaire est mal réglé, la vérification "dimanche" peut porter
+    // sur un jour différent de celui réellement inscrit, et laisser passer un salaire le dimanche.
+    if(new Date(today + 'T00:00:00Z').getUTCDay() === 0) return; // pas de salaire journalier le dimanche
     const site = db.sites.find(s => s.id === siteId);
     if(!site) return;
-    const today = todayISO();
     const depenses = site.depenses || [];
     const deja = depenses.some(d => d.autoCaissierId === emp.id && d.date === today);
     if(deja) return;
