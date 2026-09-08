@@ -7,7 +7,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-06-6">
+<meta name="app-version" content="2026-09-08-1">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -22,7 +22,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-06-6';
+  const APP_VERSION_ACTUELLE = '2026-09-08-1';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -4051,7 +4051,7 @@ function EncaisserSansCommandeModal({ site: siteFixe, sites, updateSite, employe
   const [montant, setMontant] = useState('');
   const [mode, setMode] = useState('Espèces');
   const [note, setNote] = useState('');
-  const [date, setDate] = useState(todayISO());
+  const [date, setDate] = useState('');
 
   const clients = (site && site.clients) || [];
   const clientsFiltres = useMemo(() => {
@@ -4070,7 +4070,7 @@ function EncaisserSansCommandeModal({ site: siteFixe, sites, updateSite, employe
 
   function submit(){
     const montantNum = Number(montant)||0;
-    if(!site || montantNum <= 0) return;
+    if(!site || montantNum <= 0 || !date) return;
     const nomClientFinal = clientChoisi ? clientChoisi.nom : (nouveauNomClient.trim() || 'Client non précisé');
     const entry = {
       id: uid('phc_'),
@@ -4090,6 +4090,9 @@ function EncaisserSansCommandeModal({ site: siteFixe, sites, updateSite, employe
     <ModalShell title="Encaisser sans commande" onClose={onClose} width={480}>
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
         Pour un client qui vient récupérer une commande prise avant le lancement de l'app (papier) et régler son solde — ça compte comme argent reçu, sans créer de nouvelle commande ni fausser le nombre de commandes.
+      </p>
+      <p style={{fontSize:12.5, color:'var(--rust)', margin:'0 0 14px', lineHeight:1.5, fontWeight:600}}>
+        ⚠️ Indiquez la date à laquelle la commande d'origine (papier) a été créée — pas la date d'aujourd'hui. Le montant sera comptabilisé dans le mois de cette date, pas dans le mois où vous saisissez l'encaissement.
       </p>
       <div style={{display:'grid', gap:14}}>
         {!siteFixe && (
@@ -4135,7 +4138,11 @@ function EncaisserSansCommandeModal({ site: siteFixe, sites, updateSite, employe
         </div>
         <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12}}>
           <div><label>Montant reçu (GNF)</label><input type="number" value={montant} onChange={e=>setMontant(e.target.value)} placeholder="0" /></div>
-          <div><label>Date</label><input type="date" value={date} onChange={e=>setDate(e.target.value)} max={todayISO()} /></div>
+          <div>
+            <label>Date de création de la commande d'origine *</label>
+            <input type="date" value={date} onChange={e=>setDate(e.target.value)} max={todayISO()} required />
+            {!date && <div style={{fontSize:11.5, color:'var(--rust)', marginTop:4}}>Obligatoire — c'est cette date qui détermine le mois du montant.</div>}
+          </div>
         </div>
         <div>
           <label>Mode de paiement</label>
@@ -4154,7 +4161,7 @@ function EncaisserSansCommandeModal({ site: siteFixe, sites, updateSite, employe
           <label>Note (optionnel)</label>
           <input type="text" placeholder="Ex: solde commande papier avant lancement" value={note} onChange={e=>setNote(e.target.value)} />
         </div>
-        <button className="btn btn-rust" style={{width:'100%'}} disabled={!site || !montant || Number(montant)<=0} onClick={submit}>
+        <button className="btn btn-rust" style={{width:'100%'}} disabled={!site || !montant || Number(montant)<=0 || !date} onClick={submit}>
           Enregistrer l'encaissement
         </button>
       </div>
