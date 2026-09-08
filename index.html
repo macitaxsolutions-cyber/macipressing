@@ -7,7 +7,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-06-4">
+<meta name="app-version" content="2026-09-06-6">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -22,7 +22,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-06-4';
+  const APP_VERSION_ACTUELLE = '2026-09-06-6';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -1404,6 +1404,7 @@ function GerantApp({ db, setDb, onLogout }){
     { key:'depensesPropres', label:'Dépenses propres', icon:'trash' },
     { key:'detailMensuelConsolide', label:'Détail mensuel', icon:'chart' },
     { key:'encaissementsDecaissements', label:'Mes encaissements Et Décaissements', icon:'euro' },
+    { key:'encaisserSansCommandeBilan', label:'Encaisser sans commande', icon:'euro' },
     { key:'distribution', label:'Distribution des recettes', icon:'euro' },
     { key:'comparaison', label:'Comparaison annuelle', icon:'chart' },
   ];
@@ -1422,6 +1423,7 @@ function GerantApp({ db, setDb, onLogout }){
           {page === 'depensesPropres' && <DepensesPropresActeursView db={db} setDb={setDb} />}
           {page === 'detailMensuelConsolide' && <DetailMensuelConsolideView db={db} />}
           {page === 'encaissementsDecaissements' && <EncaissementsDecaissementsGlobalView db={db} updateSite={updateSite} />}
+          {page === 'encaisserSansCommandeBilan' && <BilanEncaisserSansCommandeGlobalView db={db} updateSite={updateSite} />}
           {page === 'distribution' && <DistributionView db={db} setDb={setDb} anneeInitiale={anneeDistribution} />}
           {page === 'comparaison' && <ComparaisonAnneesView db={db} onOpenAnnee={ouvrirAnneeDansDistribution} />}
         </>
@@ -2851,6 +2853,293 @@ function EncaissementsDecaissementsGlobalView({ db, updateSite }){
   );
 }
 
+/* ===================== BILAN "ENCAISSER SANS COMMANDE" (gérant, tous pressings) ===================== */
+
+function BilanEncaisserSansCommandeGlobalView({ db, updateSite }){
+  const [periode, setPeriode] = useState('mois');
+  const [moisChoisi, setMoisChoisi] = useState(todayISO().slice(0,7));
+  const [anneeChoisie, setAnneeChoisie] = useState(Number(todayISO().slice(0,4)));
+  const [siteFiltre, setSiteFiltre] = useState('tous');
+  const [confirmSuppr, setConfirmSuppr] = useState(null); // { site, entry }
+
+  const today = todayISO();
+  const getWeekDates = () => {
+    const d = new Date(today + 'T00:00:00');
+    const day = d.getDay() || 7;
+    const monday = new Date(d); monday.setDate(d.getDate() - day + 1);
+    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+    const toISO = (dt) => dt.toISOString().slice(0,10);
+    return { start: toISO(monday), end: toISO(sunday) };
+  };
+  const week = getWeekDates();
+
+  function dansPeriode(dateStr){
+    const d = (dateStr||'').slice(0,10);
+    if(periode === 'jour') return d === today;
+    if(periode === 'semaine') return d >= week.start && d <= week.end;
+    if(periode === 'mois') return d.slice(0,7) === moisChoisi;
+    if(periode === 'annee') return d.slice(0,4) === String(anneeChoisie);
+    return true; // 'total'
+  }
+
+  const anneesDisponibles = useMemo(() => {
+    const arr = [];
+    const currentYear = Number(today.slice(0,4));
+    for(let y = currentYear; y >= ANNEE_DEBUT_APP - 10; y--) arr.push(y);
+    return arr;
+  }, [today]);
+
+  // Toutes les entrées "Encaisser sans commande", tous pressings, avec le nom du pressing et de l'employé attaché
+  const toutesLesEntrees = useMemo(() => {
+    const liste = [];
+    db.sites.forEach(site => {
+      if(siteFiltre !== 'tous' && siteFiltre !== site.id) return;
+      (site.paiementsHorsCommande||[]).forEach(p => {
+        if(!p.date || !dansPeriode(p.date)) return;
+        const employe = p.employeId ? (site.employes||[]).find(e=>e.id===p.employeId) : null;
+        liste.push({ ...p, siteId: site.id, siteNom: site.nom, encaissePar: employe ? employe.nom : 'Gérant' });
+      });
+    });
+    return liste.sort((a,b) => new Date(b.date) - new Date(a.date));
+  }, [db.sites, periode, moisChoisi, anneeChoisie, siteFiltre, today]);
+
+  const totaux = useMemo(() => {
+    let especes = 0, orangeMoney = 0;
+    toutesLesEntrees.forEach(p => {
+      if(p.mode === 'Orange Money') orangeMoney += Number(p.montant)||0;
+      else especes += Number(p.montant)||0;
+    });
+    return { especes, orangeMoney, total: especes + orangeMoney, count: toutesLesEntrees.length };
+  }, [toutesLesEntrees]);
+
+  const periodeLabel = periode==='jour' ? "Aujourd'hui" : periode==='semaine' ? 'Cette semaine' : periode==='mois' ? 'Ce mois' : periode==='annee' ? 'Cette année' : 'À ce jour (tout confondu)';
+
+  function supprimerEntree(){
+    if(!confirmSuppr) return;
+    const { site, entry } = confirmSuppr;
+    const trashEntry = { id: uid('trash_'), type:'paiementHorsCommande', label: `Encaissement sans commande — ${entry.clientNom||'Client non précisé'} (${fmtGNF(entry.montant)})`, data: entry, dateSuppression: new Date().toISOString() };
+    updateSite({ ...site, paiementsHorsCommande: (site.paiementsHorsCommande||[]).filter(p=>p.id!==entry.id), corbeille: [trashEntry, ...(site.corbeille||[])] });
+    setConfirmSuppr(null);
+  }
+
+  const HEADERS = ['Date', 'Pressing', 'Client', 'Montant', 'Mode', 'Encaissé par', 'Note'];
+  const rowsExport = toutesLesEntrees.map(p => [fmtDate(p.date), p.siteNom, p.clientNom||'—', Math.round(p.montant), p.mode, p.encaissePar, p.note||'']);
+
+  return (
+    <div>
+      <PageHeader title="Encaisser sans commande" subtitle="Tous les encaissements de soldes clients réglés sans nouvelle commande, tous pressings confondus"
+        right={<ExportButtons
+          onCSV={()=>exportTableToCSV(`encaisser-sans-commande-${periode}`, HEADERS, rowsExport)}
+          onPDF={()=>exportTableToPDF({ filename:`encaisser-sans-commande-${periode}`, title:'Encaisser sans commande', subtitle:`Maci Pressing — ${periodeLabel}`, headers:HEADERS, rows:rowsExport })}
+        />}
+      />
+
+      <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
+        {[{k:'jour',l:"Aujourd'hui"},{k:'semaine',l:'Cette semaine'},{k:'mois',l:'Mois'},{k:'annee',l:'Année'},{k:'total',l:'À ce jour'}].map(opt => (
+          <button key={opt.k} className="btn btn-sm" onClick={()=>setPeriode(opt.k)}
+            style={{background:periode===opt.k?'var(--pine)':'transparent', color:periode===opt.k?'var(--white)':'var(--ink)', borderColor:periode===opt.k?'var(--pine)':'var(--line-strong)'}}>
+            {opt.l}
+          </button>
+        ))}
+        {periode === 'mois' && (
+          <input type="month" value={moisChoisi} onChange={e=>setMoisChoisi(e.target.value)} style={{width:'auto'}} />
+        )}
+        {periode === 'annee' && (
+          <select value={anneeChoisie} onChange={e=>setAnneeChoisie(Number(e.target.value))} style={{width:'auto', minWidth:100}}>
+            {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        )}
+        <select value={siteFiltre} onChange={e=>setSiteFiltre(e.target.value)} style={{width:'auto', minWidth:160}}>
+          <option value="tous">Tous les pressings</option>
+          {db.sites.map(s => <option key={s.id} value={s.id}>{s.nom}</option>)}
+        </select>
+      </div>
+
+      <div style={{display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:8, marginBottom:20}}>
+        {[
+          { label: 'Espèces', value: totaux.especes, danger: false },
+          { label: 'Orange Money', value: totaux.orangeMoney, danger: false },
+          { label: 'Total', value: totaux.total, danger: false },
+          { label: 'Nombre d\'encaissements', value: totaux.count, danger: false, brut: true },
+        ].map((c,i) => (
+          <div key={i} className="card" style={{padding:'0.7rem 0.8rem'}}>
+            <div style={{fontSize:10, color:'var(--steam)', textTransform:'uppercase', letterSpacing:'0.02em', fontWeight:600, lineHeight:1.3, marginBottom:4}}>{c.label}</div>
+            <div className="mono" style={{fontSize:14.5, fontWeight:700, color: c.danger ? 'var(--danger)' : 'var(--pine)'}}>{c.brut ? c.value : fmtGNF(c.value)}</div>
+          </div>
+        ))}
+      </div>
+      <p style={{fontSize:11, color:'var(--steam)', margin:'-12px 0 20px'}}>Montants pour la période : {periodeLabel}{siteFiltre!=='tous' ? ` — ${(db.sites.find(s=>s.id===siteFiltre)||{}).nom}` : ''}.</p>
+
+      <div className="card" style={{overflow:'hidden'}}>
+        <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+          <thead>
+            <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+              <th style={th}>Date</th>
+              <th style={th}>Pressing</th>
+              <th style={th}>Client</th>
+              <th style={th}>Montant</th>
+              <th style={th}>Mode</th>
+              <th style={th}>Encaissé par</th>
+              <th style={th}>Note</th>
+              <th style={th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {toutesLesEntrees.length === 0 && (
+              <tr><td colSpan={8} style={{...td, textAlign:'center', color:'var(--steam)'}}>Aucun encaissement sans commande pour cette période.</td></tr>
+            )}
+            {toutesLesEntrees.map(p => (
+              <tr key={p.id} style={{borderTop:'1px solid var(--line)'}}>
+                <td style={td}>{fmtDate(p.date)}</td>
+                <td style={td}>{p.siteNom}</td>
+                <td style={td}>{p.clientNom || '—'}</td>
+                <td style={{...td, fontWeight:600}} className="mono">{fmtGNF(p.montant)}</td>
+                <td style={td}>{p.mode}</td>
+                <td style={td}>{p.encaissePar}</td>
+                <td style={{...td, color:'var(--steam)'}}>{p.note || '—'}</td>
+                <td style={td}>
+                  <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)', padding:'3px 6px'}}
+                    onClick={()=>setConfirmSuppr({ site: db.sites.find(s=>s.id===p.siteId), entry: p })}>
+                    <Icon name="trash" size={13}/>
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {confirmSuppr && (
+        <ConfirmDelete db={db}
+          message={`Supprimer cet encaissement de ${fmtGNF(confirmSuppr.entry.montant)} (${confirmSuppr.entry.clientNom||'client non précisé'}) ? Il sera déplacé dans la Corbeille du pressing « ${confirmSuppr.site.nom} » pendant 30 jours.`}
+          onConfirm={supprimerEntree}
+          onCancel={()=>setConfirmSuppr(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ===================== BILAN "ENCAISSER SANS COMMANDE" (employé, son propre pressing, ses propres encaissements) ===================== */
+
+function BilanEncaisserSansCommandeSiteView({ site, employeId }){
+  const [periode, setPeriode] = useState('mois');
+  const [moisChoisi, setMoisChoisi] = useState(todayISO().slice(0,7));
+  const [anneeChoisie, setAnneeChoisie] = useState(Number(todayISO().slice(0,4)));
+
+  const today = todayISO();
+  const getWeekDates = () => {
+    const d = new Date(today + 'T00:00:00');
+    const day = d.getDay() || 7;
+    const monday = new Date(d); monday.setDate(d.getDate() - day + 1);
+    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+    const toISO = (dt) => dt.toISOString().slice(0,10);
+    return { start: toISO(monday), end: toISO(sunday) };
+  };
+  const week = getWeekDates();
+
+  function dansPeriode(dateStr){
+    const d = (dateStr||'').slice(0,10);
+    if(periode === 'jour') return d === today;
+    if(periode === 'semaine') return d >= week.start && d <= week.end;
+    if(periode === 'mois') return d.slice(0,7) === moisChoisi;
+    if(periode === 'annee') return d.slice(0,4) === String(anneeChoisie);
+    return true; // 'total'
+  }
+
+  const anneesDisponibles = useMemo(() => {
+    const arr = [];
+    const currentYear = Number(today.slice(0,4));
+    for(let y = currentYear; y >= ANNEE_DEBUT_APP - 10; y--) arr.push(y);
+    return arr;
+  }, [today]);
+
+  // Seulement MES encaissements sans commande (comme "Mes encaissements Et Décaissements", pour éviter
+  // toute confusion avec ceux des autres employés ou du gérant)
+  const mesEntrees = useMemo(() => {
+    return (site.paiementsHorsCommande||[])
+      .filter(p => p.employeId === employeId && p.date && dansPeriode(p.date))
+      .sort((a,b) => new Date(b.date) - new Date(a.date));
+  }, [site, periode, moisChoisi, anneeChoisie, employeId, today]);
+
+  const totaux = useMemo(() => {
+    let especes = 0, orangeMoney = 0;
+    mesEntrees.forEach(p => {
+      if(p.mode === 'Orange Money') orangeMoney += Number(p.montant)||0;
+      else especes += Number(p.montant)||0;
+    });
+    return { especes, orangeMoney, total: especes + orangeMoney, count: mesEntrees.length };
+  }, [mesEntrees]);
+
+  const periodeLabel = periode==='jour' ? "Aujourd'hui" : periode==='semaine' ? 'Cette semaine' : periode==='mois' ? 'Ce mois' : periode==='annee' ? 'Cette année' : 'À ce jour (tout confondu)';
+
+  return (
+    <div>
+      <PageHeader title="Encaisser sans commande" subtitle="Les soldes clients que vous avez réglés sans nouvelle commande" />
+
+      <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
+        {[{k:'jour',l:"Aujourd'hui"},{k:'semaine',l:'Cette semaine'},{k:'mois',l:'Mois'},{k:'annee',l:'Année'},{k:'total',l:'À ce jour'}].map(opt => (
+          <button key={opt.k} className="btn btn-sm" onClick={()=>setPeriode(opt.k)}
+            style={{background:periode===opt.k?'var(--pine)':'transparent', color:periode===opt.k?'var(--white)':'var(--ink)', borderColor:periode===opt.k?'var(--pine)':'var(--line-strong)'}}>
+            {opt.l}
+          </button>
+        ))}
+        {periode === 'mois' && (
+          <input type="month" value={moisChoisi} onChange={e=>setMoisChoisi(e.target.value)} style={{width:'auto'}} />
+        )}
+        {periode === 'annee' && (
+          <select value={anneeChoisie} onChange={e=>setAnneeChoisie(Number(e.target.value))} style={{width:'auto', minWidth:100}}>
+            {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        )}
+      </div>
+
+      <div style={{display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:8, marginBottom:20}}>
+        {[
+          { label: 'Espèces', value: totaux.especes },
+          { label: 'Orange Money', value: totaux.orangeMoney },
+          { label: 'Total', value: totaux.total },
+          { label: 'Nombre d\'encaissements', value: totaux.count, brut: true },
+        ].map((c,i) => (
+          <div key={i} className="card" style={{padding:'0.7rem 0.8rem'}}>
+            <div style={{fontSize:10, color:'var(--steam)', textTransform:'uppercase', letterSpacing:'0.02em', fontWeight:600, lineHeight:1.3, marginBottom:4}}>{c.label}</div>
+            <div className="mono" style={{fontSize:14.5, fontWeight:700, color:'var(--pine)'}}>{c.brut ? c.value : fmtGNF(c.value)}</div>
+          </div>
+        ))}
+      </div>
+      <p style={{fontSize:11, color:'var(--steam)', margin:'-12px 0 20px'}}>Montants pour la période : {periodeLabel}.</p>
+
+      <div className="card" style={{overflow:'hidden'}}>
+        <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+          <thead>
+            <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+              <th style={th}>Date</th>
+              <th style={th}>Client</th>
+              <th style={th}>Montant</th>
+              <th style={th}>Mode</th>
+              <th style={th}>Note</th>
+            </tr>
+          </thead>
+          <tbody>
+            {mesEntrees.length === 0 && (
+              <tr><td colSpan={5} style={{...td, textAlign:'center', color:'var(--steam)'}}>Aucun encaissement sans commande pour cette période.</td></tr>
+            )}
+            {mesEntrees.map(p => (
+              <tr key={p.id} style={{borderTop:'1px solid var(--line)'}}>
+                <td style={td}>{fmtDate(p.date)}</td>
+                <td style={td}>{p.clientNom || '—'}</td>
+                <td style={{...td, fontWeight:600}} className="mono">{fmtGNF(p.montant)}</td>
+                <td style={td}>{p.mode}</td>
+                <td style={{...td, color:'var(--steam)'}}>{p.note || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function GlobalDashboard({ db, onOpenSite }){
   const today = todayISO();
   const [periodeGlobale, setPeriodeGlobale] = useState('jour');
@@ -3311,6 +3600,7 @@ const CORBEILLE_TYPE_LABELS = {
   depenses_reset: '🗓️ Réinitialisation de dépenses',
   remunerations_reset: '🗓️ Réinitialisation de rémunérations',
   paiementsHorsCommande_reset: '🗓️ Réinitialisation d\'encaissements sans commande',
+  paiementHorsCommande: '💶 Encaissement sans commande',
   stock: '📦 Article de stock',
   service: '🧺 Service',
   employe: '👤 Employé',
@@ -3350,6 +3640,8 @@ function CorbeilleView({ site, updateSite }){
       nextSite.clients = [...nextSite.clients, entry.data];
     } else if(entry.type === 'depense'){
       nextSite.depenses = [entry.data, ...nextSite.depenses];
+    } else if(entry.type === 'paiementHorsCommande'){
+      nextSite.paiementsHorsCommande = [entry.data, ...(nextSite.paiementsHorsCommande||[])];
     }
     updateSite(nextSite);
   }
@@ -9945,6 +10237,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
     { key:'marketing', label:'Promos & Relances', icon:'bell' },
     { key:'stock', label:'Stock', icon:'box' },
     { key:'encaissements', label:'Mes encaissements Et Décaissements', icon:'euro' },
+    { key:'encaisserSansCommande', label:'Encaisser sans commande', icon:'euro' },
     { key:'detailMensuel', label:'Détail mensuel', icon:'chart' },
     { key:'performanceCaissiers', label:'Performance caissiers', icon:'chart' },
     { key:'suiviRepassage', label:'Suivi repassage', icon:'euro' },
@@ -9961,6 +10254,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
       {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} db={db} employeId={employeId} />}
       {page === 'detailMensuel' && <DetailMensuelSiteView site={site} updateSite={updateSite} employeId={employeId} />}
       {page === 'encaissements' && <MesEncaissementsView site={site} updateSite={updateSite} db={db} employeId={employeId} />}
+      {page === 'encaisserSansCommande' && <BilanEncaisserSansCommandeSiteView site={site} employeId={employeId} />}
       {page === 'performanceCaissiers' && <PerformanceCaissiersView site={site} />}
       {page === 'suiviRepassage' && <RepassageApercuView site={site} updateSite={updateSite} />}
       {page === 'moncompte' && <MonCompteView site={site} updateSite={updateSite} employeId={employeId} />}
