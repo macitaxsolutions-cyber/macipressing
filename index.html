@@ -7,7 +7,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-08-1">
+<meta name="app-version" content="2026-09-08-2">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -22,7 +22,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-08-1';
+  const APP_VERSION_ACTUELLE = '2026-09-08-2';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -3557,6 +3557,7 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
     { key:'detailMensuel', label:'Détail mensuel', icon:'chart' },
     { key:'performanceCaissiers', label:'Performance caissiers', icon:'chart' },
     { key:'remuneration', label:'Rémunérations', icon:'chart' },
+    { key:'suiviRepassage', label:'Suivi repassage', icon:'euro' },
     { key:'corbeille', label:'Corbeille', icon:'trash', badge: (site.corbeille||[]).length || undefined },
     { key:'parametres', label:'Paramètres', icon:'edit' },
   ];
@@ -3586,6 +3587,7 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
       {page === 'encaissements' && <EncaissementsGerantView site={site} />}
       {page === 'performanceCaissiers' && <PerformanceCaissiersView site={site} />}
       {page === 'remuneration' && <RemunerationGerantView site={site} />}
+      {page === 'suiviRepassage' && <RepassageApercuView site={site} updateSite={updateSite} />}
       {page === 'corbeille' && <CorbeilleView site={site} updateSite={updateSite} />}
       {page === 'parametres' && <ParametresView site={site} updateSite={updateSite} db={db} setDb={setDb} />}
     </div>
