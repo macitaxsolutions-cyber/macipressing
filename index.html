@@ -7,7 +7,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-11-2">
+<meta name="app-version" content="2026-09-11-3">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -22,7 +22,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-11-2';
+  const APP_VERSION_ACTUELLE = '2026-09-11-3';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -1512,19 +1512,16 @@ function nomsCorrespondent(nomEmploye, nomActeur){
   return mots.every(mot => acteurLower.includes(mot));
 }
 
-function calculerDepensesPropresEmployesParActeur(db, annee, periodeRepartition, moisRepartition, cumulRepartition){
+// moisCouverts : liste de { annee, mois } couverts par la période affichée (peut couvrir plusieurs années)
+function calculerDepensesPropresEmployesParActeur(db, moisCouverts){
   const parts = partsActuelles(db);
   const resultat = {};
   parts.forEach(p => { resultat[p.nom] = 0; });
   db.sites.forEach(site => {
-    const manuelAnnee = (site.detailMensuelManuel||{})[annee] || {};
-    for(let m=1; m<=12; m++){
-      if(periodeRepartition === 'mois'){
-        if(cumulRepartition){ if(m > moisRepartition) continue; }
-        else { if(m !== moisRepartition) continue; }
-      }
-      const parEmploye = normaliserMoisManuel(manuelAnnee[m]);
-      if(!parEmploye) continue;
+    (moisCouverts||[]).forEach(({annee, mois}) => {
+      const manuelAnnee = (site.detailMensuelManuel||{})[annee] || {};
+      const parEmploye = normaliserMoisManuel(manuelAnnee[mois]);
+      if(!parEmploye) return;
       Object.entries(parEmploye).forEach(([empId, valeurs]) => {
         if(empId === '_legacy') return;
         const emp = (site.employes||[]).find(e=>e.id===empId);
@@ -1535,7 +1532,7 @@ function calculerDepensesPropresEmployesParActeur(db, annee, periodeRepartition,
           if(nomsCorrespondent(emp.nom, p.nom)) resultat[p.nom] += depensesPropres;
         });
       });
-    }
+    });
   });
   return resultat;
 }
@@ -1682,25 +1679,72 @@ function DistributionView({ db, setDb, anneeInitiale }){
   }
   const estAnneeApp = annee >= ANNEE_DEBUT_APP;
 
-  const moisActuelDefaut = (estAnneeApp && annee === currentYear) ? Number(todayISO().slice(5,7)) : 12;
-  const [periodeRepartition, setPeriodeRepartition] = useState('mois'); // 'mois' | 'annee'
-  const [moisRepartition, setMoisRepartition] = useState(moisActuelDefaut);
-  const [cumulRepartition, setCumulRepartition] = useState(true); // cumul depuis janvier, ou ce mois seulement
+  const today = todayISO();
+  // ---- Période d'affichage pour « Répartition entre les acteurs » et « Total encaissé par mode de paiement »,
+  // même sélecteur que « Mes encaissements Et Décaissements » : Aujourd'hui / Cette semaine / Mois / Année / À ce jour
+  const [periodeRepartition, setPeriodeRepartition] = useState('mois'); // 'jour' | 'semaine' | 'mois' | 'annee' | 'total'
+  const [moisChoisi, setMoisChoisi] = useState(today.slice(0,7)); // 'AAAA-MM', utilisé en mode 'mois'
+  useEffect(() => {
+    // « Aujourd'hui » et « Cette semaine » sont toujours relatifs à maintenant : on aligne l'année affichée dessus
+    if((periodeRepartition === 'jour' || periodeRepartition === 'semaine') && annee !== currentYear) setAnnee(currentYear);
+  }, [periodeRepartition, currentYear]);
+
+  const getSemaineRepartition = () => {
+    const d = new Date(today + 'T00:00:00');
+    const day = d.getDay() || 7;
+    const monday = new Date(d); monday.setDate(d.getDate() - day + 1);
+    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+    const toISO = (dt) => dt.toISOString().slice(0,10);
+    return { start: toISO(monday), end: toISO(sunday) };
+  };
+  const semaineRepartition = useMemo(getSemaineRepartition, [today]);
+  const dateDebutRep = periodeRepartition === 'jour' ? today
+    : periodeRepartition === 'semaine' ? semaineRepartition.start
+    : periodeRepartition === 'mois' ? `${moisChoisi}-01`
+    : periodeRepartition === 'annee' ? `${annee}-01-01`
+    : '2000-01-01'; // 'total' — à ce jour, depuis le début
+  const dateFinRep = periodeRepartition === 'jour' ? today
+    : periodeRepartition === 'semaine' ? semaineRepartition.end
+    : periodeRepartition === 'mois' ? `${moisChoisi}-31`
+    : periodeRepartition === 'annee' ? `${annee}-12-31`
+    : today; // 'total'
 
   // Mois couverts par la période affichée (chaque mois utilise la grille de parts valable ce mois-là)
-  const moisPeriode = useMemo(() => {
-    if(periodeRepartition === 'annee') return Array.from({length:12}, (_,i) => i+1);
-    return cumulRepartition ? Array.from({length:moisRepartition}, (_,i) => i+1) : [moisRepartition];
-  }, [periodeRepartition, cumulRepartition, moisRepartition]);
-  const moisFinPeriode = moisPeriode[moisPeriode.length-1];
+  const moisCouverts = useMemo(() => {
+    if(periodeRepartition === 'jour' || periodeRepartition === 'semaine'){
+      return [{ annee: currentYear, mois: Number(today.slice(5,7)) }];
+    }
+    if(periodeRepartition === 'mois'){
+      const [a,m] = moisChoisi.split('-').map(Number);
+      return [{ annee:a, mois:m }];
+    }
+    if(periodeRepartition === 'annee'){
+      return Array.from({length:12}, (_,i) => ({ annee, mois:i+1 }));
+    }
+    // 'total' : tous les mois depuis le début de l'activité jusqu'à aujourd'hui
+    const liste = [];
+    for(let a = ANNEE_DEBUT_APP - 3; a <= currentYear; a++){
+      const finMois = a === currentYear ? Number(today.slice(5,7)) : 12;
+      for(let m = 1; m <= finMois; m++) liste.push({ annee:a, mois:m });
+    }
+    return liste;
+  }, [periodeRepartition, moisChoisi, annee, currentYear, today]);
+  const dernierMoisCouvert = moisCouverts[moisCouverts.length-1];
+  const anneesCouvertes = useMemo(() => Array.from(new Set(moisCouverts.map(mc=>mc.annee))), [moisCouverts]);
+  const donneesParAnneeMap = useMemo(() => {
+    const map = {};
+    anneesCouvertes.forEach(a => { map[a] = calculerDonneesMensuellesMultiSites(db.sites, a); });
+    return map;
+  }, [db.sites, anneesCouvertes]);
+
   // Grille affichée dans la colonne « Part » = celle du dernier mois de la période
-  const parts = partsPourMois(db, annee, moisFinPeriode);
-  const partsVarientDansPeriode = moisPeriode.some(m => partsPourMois(db, annee, m) !== parts);
+  const parts = partsPourMois(db, dernierMoisCouvert.annee, dernierMoisCouvert.mois);
+  const partsVarientDansPeriode = moisCouverts.some(mc => partsPourMois(db, mc.annee, mc.mois) !== parts);
   const historiqueParts = partsHistoriqueTriees(db);
 
   const [pctEdits, setPctEdits] = useState(() => Object.fromEntries(parts.map(p=>[p.nom, String(p.pct)])));
   const [pctDepuis, setPctDepuis] = useState(todayISO().slice(0,7)); // 'AAAA-MM' ou 'base'
-  useEffect(() => { setPctEdits(Object.fromEntries(parts.map(p=>[p.nom, String(p.pct)]))); }, [db.partsDistribution, db.partsHistorique, annee, moisFinPeriode]);
+  useEffect(() => { setPctEdits(Object.fromEntries(parts.map(p=>[p.nom, String(p.pct)]))); }, [db.partsDistribution, db.partsHistorique, dernierMoisCouvert.annee, dernierMoisCouvert.mois]);
   const pctModifie = parts.some(p => String(p.pct) !== (pctEdits[p.nom] ?? String(p.pct)));
   function enregistrerPcts(){
     const nouvellesParts = parts.map(p => ({ nom: p.nom, pct: Number(pctEdits[p.nom]) || 0 }));
@@ -1802,27 +1846,39 @@ function DistributionView({ db, setDb, anneeInitiale }){
   const depensesActeursActuel = dataHisto.depensesActeurs || {}; // { [nom]: [{id, description, montant}] }
   const totalDepensesActeurs = parts.reduce((s,p)=> s + ((depensesActeursActuel[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0)), 0);
 
-  // ---- Calculs spécifiques à la période choisie pour la répartition (mois / cumul depuis janvier / année entière) ----
-  function filtrerDepensesParPeriode(entries){
-    if(!entries) return [];
-    if(periodeRepartition === 'annee') return entries;
+  // ---- Calculs spécifiques à la période choisie pour la répartition (jour / semaine / mois / année / à ce jour) ----
+  // Dépenses saisies pour un acteur via « Dépenses propres de chaque acteur » (stockées par année dans db.historiqueAnnuel),
+  // filtrées sur la période affichée ici — peut couvrir plusieurs années en mode « À ce jour ».
+  function depensesActeurPourPeriode(nomActeur){
+    let entries = [];
+    anneesCouvertes.forEach(a => {
+      const liste = (((db.historiqueAnnuel||{})[a]||{}).depensesActeurs||{})[nomActeur] || [];
+      entries = entries.concat(liste);
+    });
+    if(periodeRepartition === 'annee' || periodeRepartition === 'total') return entries; // toutes les entrées des années couvertes
     return entries.filter(e => {
       if(!e.date) return true; // dépenses sans date (saisies avant cette fonctionnalité) : toujours comptées
-      const m = Number(e.date.slice(5,7));
-      return cumulRepartition ? m <= moisRepartition : m === moisRepartition;
+      if(periodeRepartition === 'mois') return e.date.slice(0,7) === moisChoisi;
+      return e.date >= dateDebutRep && e.date <= dateFinRep; // jour / semaine
     });
   }
 
-  const nomMoisRepartition = new Date(annee, moisRepartition-1, 1).toLocaleDateString('fr-FR',{month:'long'});
-  const periodeLabel = periodeRepartition === 'annee' || !estAnneeApp
-    ? `Année ${annee}`
-    : (cumulRepartition ? `Janvier à ${nomMoisRepartition} ${annee}` : `${nomMoisRepartition} ${annee}`);
+  const nomMoisRepartition = dernierMoisCouvert ? new Date(dernierMoisCouvert.annee, dernierMoisCouvert.mois-1, 1).toLocaleDateString('fr-FR',{month:'long'}) : '';
+  const periodeLabel = periodeRepartition === 'jour' ? "Aujourd'hui"
+    : periodeRepartition === 'semaine' ? 'Cette semaine'
+    : periodeRepartition === 'mois' ? `${nomMoisRepartition} ${moisChoisi.slice(0,4)}`
+    : periodeRepartition === 'annee' ? `Année ${annee}`
+    : 'À ce jour (tout confondu)';
 
-  const periodeDonnees = (periodeRepartition === 'mois')
-    ? (() => {
-        const subset = cumulRepartition
-          ? donneesParMois.filter(m => m.mois <= moisRepartition)
-          : donneesParMois.filter(m => m.mois === moisRepartition);
+  // Montants réels de la période, mois par mois (blend automatique + saisies manuelles pour les mois antérieurs à sept. 2026,
+  // déjà géré par calculerDonneesMensuellesSite) pour 'mois'/'annee'/'total' ; filtrage exact jour par jour pour 'jour'/'semaine'.
+  const periodeDonneesBrutes = (periodeRepartition === 'jour' || periodeRepartition === 'semaine')
+    ? calculerDonneesPeriodeMultiSites(db.sites, dateDebutRep, dateFinRep)
+    : null;
+  const periodeDonnees = periodeDonneesBrutes
+    ? { recetteBrute: periodeDonneesBrutes.recetteBrute, depenses: periodeDonneesBrutes.depenses, impayes: periodeDonneesBrutes.impayesReel, recetteNette: periodeDonneesBrutes.netPercu, especes: periodeDonneesBrutes.especes, orangeMoney: periodeDonneesBrutes.orangeMoney }
+    : (() => {
+        const subset = moisCouverts.map(({annee:a, mois:m}) => (donneesParAnneeMap[a]||[]).find(x=>x.mois===m)).filter(Boolean);
         const rb = subset.reduce((s,m)=>s+m.recetteBrute,0);
         const dep = subset.reduce((s,m)=>s+m.depenses,0);
         const impR = subset.reduce((s,m)=>s+(m.impayesReel||0),0);
@@ -1830,63 +1886,31 @@ function DistributionView({ db, setDb, anneeInitiale }){
         const especesP = subset.reduce((s,m)=>s+(m.montantRecuEspeces||0),0);
         const orangeMoneyP = subset.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0);
         return { recetteBrute: rb, depenses: dep, impayes: impR, recetteNette: netP, especes: especesP, orangeMoney: orangeMoneyP };
-      })()
-    : { recetteBrute, depenses: depensesAnnee, impayes: impayesReelAnnee, recetteNette: netPercuAnnee,
-        especes: aDesDonneesSite || estAnneeApp ? donneesParMois.reduce((s,m)=>s+(m.montantRecuEspeces||0),0) : (Number(dataHisto.especes)||0),
-        orangeMoney: aDesDonneesSite || estAnneeApp ? donneesParMois.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0) : (Number(dataHisto.orangeMoney)||0) };
+      })();
 
   // Part d'un acteur sur un montant de la période, calculée MOIS PAR MOIS avec la grille de parts valable chaque mois
-  // (permet de changer les pourcentages à partir d'un mois donné sans toucher aux mois précédents)
-  const donneesMensuellesDispo = periodeRepartition === 'mois' || aDesDonneesSite || estAnneeApp;
+  // (permet de changer les pourcentages à partir d'un mois donné sans toucher aux mois précédents).
+  // En mode Aujourd'hui/Cette semaine (période plus fine qu'un mois), la grille du mois en cours s'applique au montant filtré exactement.
   function partActeur(nom, champ){
-    if(!donneesMensuellesDispo) return (Number(periodeDonnees[champ])||0) * pctActeurMois(db, nom, annee, 12) / 100; // année ancienne saisie en bloc
     const cle = champ === 'recetteBrute' ? 'recetteBrute' : champ === 'impayes' ? 'impayesReel' : 'netPercu';
-    return donneesParMois
-      .filter(m => moisPeriode.includes(m.mois))
-      .reduce((s,m) => s + (Number(m[cle])||0) * pctActeurMois(db, nom, annee, m.mois) / 100, 0);
+    if(periodeDonneesBrutes){
+      const mc = moisCouverts[0];
+      return (Number(periodeDonneesBrutes[cle])||0) * pctActeurMois(db, nom, mc.annee, mc.mois) / 100;
+    }
+    return moisCouverts.reduce((s,{annee:a, mois:m}) => {
+      const dm = (donneesParAnneeMap[a]||[]).find(x=>x.mois===m);
+      if(!dm) return s;
+      return s + (Number(dm[cle])||0) * pctActeurMois(db, nom, a, m) / 100;
+    }, 0);
   }
 
   const depensesActeursPeriode = {};
-  parts.forEach(p => { depensesActeursPeriode[p.nom] = filtrerDepensesParPeriode(depensesActeursActuel[p.nom]); });
+  parts.forEach(p => { depensesActeursPeriode[p.nom] = depensesActeurPourPeriode(p.nom); });
   const depensesPropresEmployes = useMemo(
-    () => calculerDepensesPropresEmployesParActeur(db, annee, periodeRepartition, moisRepartition, cumulRepartition),
-    [db, annee, periodeRepartition, moisRepartition, cumulRepartition]
+    () => calculerDepensesPropresEmployesParActeur(db, moisCouverts),
+    [db, moisCouverts]
   );
   const totalDepensesActeursPeriode = parts.reduce((s,p)=> s + (depensesActeursPeriode[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0), 0);
-
-  // ---- Totaux encaissés par mode de paiement (Espèces / Orange Money), pour la période choisie ----
-  const totauxParMode = useMemo(() => {
-    const totaux = {};
-    db.sites.forEach(site => {
-      (site.commandes||[]).forEach(c => {
-        getPaiementsCommande(c).forEach(pmt => {
-          if(!pmt.date) return;
-          const d = pmt.date.slice(0,10);
-          const y = Number(d.slice(0,4)), m = Number(d.slice(5,7));
-          if(y !== annee) return;
-          if(periodeRepartition === 'mois' && estAnneeApp){
-            if(cumulRepartition){ if(m > moisRepartition) return; }
-            else { if(m !== moisRepartition) return; }
-          }
-          const mode = pmt.mode || 'Espèces';
-          totaux[mode] = (totaux[mode]||0) + Number(pmt.montant);
-        });
-      });
-      (site.paiementsHorsCommande||[]).forEach(p => {
-        if(!p.date) return;
-        const d = p.date.slice(0,10);
-        const y = Number(d.slice(0,4)), m = Number(d.slice(5,7));
-        if(y !== annee) return;
-        if(periodeRepartition === 'mois' && estAnneeApp){
-          if(cumulRepartition){ if(m > moisRepartition) return; }
-          else { if(m !== moisRepartition) return; }
-        }
-        const mode = p.mode || 'Espèces';
-        totaux[mode] = (totaux[mode]||0) + Number(p.montant);
-      });
-    });
-    return totaux;
-  }, [db, annee, periodeRepartition, moisRepartition, cumulRepartition, estAnneeApp]);
 
   // ---- Historique détaillé des paiements individuels (Espèces / Orange Money), pour traçabilité ----
   const [historiquePage, setHistoriquePage] = useState(1);
@@ -1899,12 +1923,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
         getPaiementsCommande(c).forEach(pmt => {
           if(!pmt.date) return;
           const d = pmt.date.slice(0,10);
-          const y = Number(d.slice(0,4)), m = Number(d.slice(5,7));
-          if(y !== annee) return;
-          if(periodeRepartition === 'mois' && estAnneeApp){
-            if(cumulRepartition){ if(m > moisRepartition) return; }
-            else { if(m !== moisRepartition) return; }
-          }
+          if(d < dateDebutRep || d > dateFinRep) return;
           const employeAttribue = pmt.employeId != null ? pmt.employeId : (c.caissierEmpId || null);
           const employe = employeAttribue ? (site.employes||[]).find(e=>e.id===employeAttribue) : null;
           liste.push({
@@ -1921,9 +1940,10 @@ function DistributionView({ db, setDb, anneeInitiale }){
       });
     });
     return liste.sort((a,b) => new Date(b.date) - new Date(a.date));
-  }, [db, annee, periodeRepartition, moisRepartition, cumulRepartition, estAnneeApp]);
+  }, [db, dateDebutRep, dateFinRep]);
 
-  useEffect(() => { setHistoriquePage(1); }, [annee, periodeRepartition, moisRepartition, cumulRepartition]);
+  useEffect(() => { setHistoriquePage(1); }, [periodeRepartition, moisChoisi, annee]);
+
 
   // Remboursement d'investissement : 20% du net perçu des 4 acteurs concernés est redirigé vers la Conservation du Capital Fixe
   const totalRedirigeVersCapitalFixe = remboursementActif ? parts.reduce((s,p) => {
@@ -1949,7 +1969,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
         : (estConcerne ? montantNet * 0.8 : montantNet);
       return [p.nom, `${p.pct}%`, Math.round(montantBrutAvantImpayes), Math.round(impayesPart), Math.round(montantBrut), Math.round(depensePropre), Math.round(montantNet), Math.round(montantAVerser)];
     });
-  }, [periodeDonnees, donneesParMois, moisPeriode, db.partsHistorique, db.partsDistribution, depensesActeursPeriode, depensesPropresEmployes, remboursementActif, totalRedirigeVersCapitalFixe]);
+  }, [periodeDonnees, donneesParAnneeMap, moisCouverts, db.partsHistorique, db.partsDistribution, depensesActeursPeriode, depensesPropresEmployes, remboursementActif, totalRedirigeVersCapitalFixe]);
   const REPARTITION_HEADERS = ['Bénéficiaire', 'Part', "Montant brut avant impayés", 'Impayés (part)', 'Net perçu (avant dépenses propres)', 'Dépenses propres', 'Net perçu', 'Montant à verser'];
 
   return (
@@ -2018,36 +2038,22 @@ function DistributionView({ db, setDb, anneeInitiale }){
 
       <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10, marginBottom:6}}>
         <h2 style={{fontSize:16, color:'var(--pine)', margin:0}}>Répartition entre les acteurs</h2>
-        <select value={annee} onChange={e=>setAnnee(Number(e.target.value))} style={{width:'auto', minWidth:100}}>
-          {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
-        </select>
       </div>
 
-      <div style={{display:'flex', gap:10, flexWrap:'wrap', alignItems:'center', marginBottom:14}}>
-        <button className="btn btn-sm" onClick={()=>setPeriodeRepartition('mois')}
-          style={{background: periodeRepartition==='mois'?'var(--pine)':'transparent', color: periodeRepartition==='mois'?'var(--white)':'var(--ink)', borderColor: periodeRepartition==='mois'?'var(--pine)':'var(--line-strong)'}}>
-          Mensuelle
-        </button>
-        <button className="btn btn-sm" onClick={()=>setPeriodeRepartition('annee')}
-          style={{background: periodeRepartition==='annee'?'var(--pine)':'transparent', color: periodeRepartition==='annee'?'var(--white)':'var(--ink)', borderColor: periodeRepartition==='annee'?'var(--pine)':'var(--line-strong)'}}>
-          Annuelle
-        </button>
+      <div style={{display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', marginBottom:14}}>
+        {[{k:'jour',l:"Aujourd'hui"},{k:'semaine',l:'Cette semaine'},{k:'mois',l:'Mois'},{k:'annee',l:'Année'},{k:'total',l:'À ce jour'}].map(opt => (
+          <button key={opt.k} className="btn btn-sm" onClick={()=>setPeriodeRepartition(opt.k)}
+            style={{background:periodeRepartition===opt.k?'var(--pine)':'transparent', color:periodeRepartition===opt.k?'var(--white)':'var(--ink)', borderColor:periodeRepartition===opt.k?'var(--pine)':'var(--line-strong)'}}>
+            {opt.l}
+          </button>
+        ))}
         {periodeRepartition === 'mois' && (
-          <>
-            <select value={moisRepartition} onChange={e=>setMoisRepartition(Number(e.target.value))} style={{width:'auto', minWidth:140}}>
-              {Array.from({length:12},(_,i)=>i+1).map(m => (
-                <option key={m} value={m}>{new Date(annee, m-1, 1).toLocaleDateString('fr-FR',{month:'long'})}</option>
-              ))}
-            </select>
-            <button className="btn btn-sm" onClick={()=>setCumulRepartition(true)}
-              style={{background: cumulRepartition?'var(--gold-light)':'transparent', color: cumulRepartition?'#7a5c00':'var(--ink)', borderColor: cumulRepartition?'var(--warn)':'var(--line-strong)'}}>
-              Cumul depuis janvier
-            </button>
-            <button className="btn btn-sm" onClick={()=>setCumulRepartition(false)}
-              style={{background: !cumulRepartition?'var(--gold-light)':'transparent', color: !cumulRepartition?'#7a5c00':'var(--ink)', borderColor: !cumulRepartition?'var(--warn)':'var(--line-strong)'}}>
-              Ce mois seulement
-            </button>
-          </>
+          <input type="month" value={moisChoisi} onChange={e=>{ setMoisChoisi(e.target.value); const a = Number(e.target.value.slice(0,4)); if(a) setAnnee(a); }} style={{width:'auto'}} />
+        )}
+        {periodeRepartition === 'annee' && (
+          <select value={annee} onChange={e=>setAnnee(Number(e.target.value))} style={{width:'auto', minWidth:100}}>
+            {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
         )}
       </div>
 
@@ -2170,7 +2176,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
       )}
       {partsVarientDansPeriode && (
         <p style={{fontSize:12.5, color:'var(--warn)', margin:'0 0 10px'}}>
-          ℹ️ Les parts ont changé au cours de cette période : chaque mois est calculé avec la grille valable ce mois-là. La colonne « Part » affiche la grille de {new Date(annee, moisFinPeriode-1, 1).toLocaleDateString('fr-FR',{month:'long', year:'numeric'})}.
+          ℹ️ Les parts ont changé au cours de cette période : chaque mois est calculé avec la grille valable ce mois-là. La colonne « Part » affiche la grille de {new Date(dernierMoisCouvert.annee, dernierMoisCouvert.mois-1, 1).toLocaleDateString('fr-FR',{month:'long', year:'numeric'})}.
         </p>
       )}
       {historiqueParts.length > 0 && (
@@ -10044,6 +10050,33 @@ function calculerDonneesMensuellesMultiSites(sites, annee){
     });
     return merged;
   });
+}
+
+// Totaux réels (transactions exactes, sans saisie manuelle) sur une plage de dates précise [dateDebut, dateFin] incluse,
+// tous pressings confondus — utilisé pour les périodes plus fines qu'un mois (Aujourd'hui / Cette semaine), toujours
+// postérieures au lancement de l'application, donc sans besoin de saisies manuelles.
+function calculerDonneesPeriodeMultiSites(sites, dateDebut, dateFin){
+  let recetteBrute = 0, depenses = 0, especes = 0, orangeMoney = 0;
+  const dansRange = (d) => { const s = (d||'').slice(0,10); return !!s && s >= dateDebut && s <= dateFin; };
+  (sites||[]).forEach(site => {
+    (site.commandes||[]).forEach(c => {
+      if(dansRange(c.dateCreation)) recetteBrute += calcCommandeTotal(c, site.services);
+      getPaiementsCommande(c).forEach(pmt => {
+        if(!dansRange(pmt.date)) return;
+        if(pmt.mode === 'Orange Money') orangeMoney += Number(pmt.montant)||0;
+        else especes += Number(pmt.montant)||0;
+      });
+    });
+    (site.depenses||[]).forEach(d => { if(dansRange(d.date)) depenses += Number(d.montant)||0; });
+    (site.paiementsHorsCommande||[]).forEach(p => {
+      if(!dansRange(p.date)) return;
+      if(p.mode === 'Orange Money') orangeMoney += Number(p.montant)||0;
+      else especes += Number(p.montant)||0;
+    });
+  });
+  const impayesReel = Math.max(0, recetteBrute - (especes + orangeMoney));
+  const netPercu = (especes + orangeMoney) - depenses;
+  return { recetteBrute, depenses, especes, orangeMoney, impayesReel, netPercu };
 }
 
 // Retrouve le nom d'un employé en cherchant dans tous les sites (utile pour le Détail mensuel consolidé)
