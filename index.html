@@ -7,7 +7,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-08-2">
+<meta name="app-version" content="2026-09-11-2">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -22,7 +22,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-08-2';
+  const APP_VERSION_ACTUELLE = '2026-09-11-2';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -381,6 +381,42 @@ function capitalizeNom(str){
   return (str||'').trim().split(/\s+/).filter(Boolean)
     .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
     .join(' ');
+}
+
+// ---- Détection et prévention de clients en double (par numéro de téléphone uniquement) ----
+function normaliserTelClient(tel){
+  const chiffres = (tel||'').replace(/\D/g,'');
+  return chiffres.length >= 6 ? chiffres.slice(-9) : '';
+}
+function normaliserNomClient(nom){
+  return (nom||'')
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/[^a-z0-9]+/g,' ')
+    .trim();
+}
+// Groupes de fiches qui partagent le même numéro de téléphone (seul critère retenu — un nom identique
+// peut très bien correspondre à deux personnes différentes, donc on ne détecte jamais sur ce seul critère).
+function detecterDoublonsClients(clients){
+  const list = clients || [];
+  const parTel = {};
+  list.forEach(c => {
+    const tel = normaliserTelClient(c.tel);
+    if(tel){ (parTel[tel] = parTel[tel] || []).push(c); }
+  });
+  const groupes = [];
+  Object.values(parTel).forEach(membres => {
+    if(membres.length > 1) groupes.push({ raison:'téléphone identique', clients: membres });
+  });
+  return groupes;
+}
+// Cherche, parmi une liste de clients, une fiche déjà enregistrée avec le même numéro de téléphone
+// mais un nom différent — utilisé pour bloquer la création/l'édition d'un doublon à la source.
+function trouverClientMemeTelAutreNom(clients, tel, nom, excludeId){
+  const telNorm = normaliserTelClient(tel);
+  if(!telNorm) return null;
+  const nomNorm = normaliserNomClient(nom);
+  return (clients||[]).find(c => c.id !== excludeId && normaliserTelClient(c.tel) === telNorm && normaliserNomClient(c.nom) !== nomNorm) || null;
 }
 
 const COUNTRY_CODES = [
@@ -4541,6 +4577,8 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
   const [newClientNom, setNewClientNom] = useState('');
   const [newClientIndicatif, setNewClientIndicatif] = useState('+224');
   const [newClientTel, setNewClientTel] = useState('');
+  const newClientTelComplet = newClientTel.trim() ? `${newClientIndicatif} ${newClientTel.trim()}` : '';
+  const doublonNewClientTel = useMemo(() => newClientMode ? trouverClientMemeTelAutreNom(site.clients, newClientTelComplet, newClientNom) : null, [newClientMode, site.clients, newClientTelComplet, newClientNom]);
   const [lignes, setLignes] = useState([]);
   const [dateDepot, setDateDepot] = useState(todayISO());
   const [dateRetrait, setDateRetrait] = useState('');
@@ -4598,8 +4636,8 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
     let finalClientId = clientId;
     let workingClients = site.clients;
     if(newClientMode){
-      if(!newClientNom.trim()) return;
-      const newClient = { id: uid('cli_'), nom: capitalizeNom(newClientNom), tel: newClientTel.trim() ? `${newClientIndicatif} ${newClientTel.trim()}` : '', canalPref:'SMS', dateInscription: todayISO() };
+      if(!newClientNom.trim() || doublonNewClientTel) return;
+      const newClient = { id: uid('cli_'), nom: capitalizeNom(newClientNom), tel: newClientTelComplet, canalPref:'SMS', dateInscription: todayISO() };
       workingClients = [...site.clients, newClient];
       finalClientId = newClient.id;
     }
@@ -4701,6 +4739,15 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
                 <input type="tel" placeholder="6XX XX XX XX" value={newClientTel} onChange={e=>setNewClientTel(e.target.value)} style={{flex:1}} />
               </div>
               <button className="btn btn-ghost btn-sm" style={{gridColumn:'1/-1', justifySelf:'start'}} onClick={()=>setNewClientMode(false)}>← Choisir un client existant</button>
+              {doublonNewClientTel && (
+                <div style={{gridColumn:'1/-1', background:'var(--warn-light)', color:'#B45309', borderRadius:8, padding:'10px 12px', fontSize:12.5, lineHeight:1.5}}>
+                  ⚠️ Ce numéro est déjà enregistré sous le nom « {doublonNewClientTel.nom} ». Corrigez le nom ci-dessus, ou utilisez directement cette fiche existante.
+                  <div style={{marginTop:8, display:'flex', gap:8, flexWrap:'wrap'}}>
+                    <button type="button" className="btn btn-sm" onClick={()=>setNewClientNom(doublonNewClientTel.nom)}>Reprendre le nom « {doublonNewClientTel.nom} »</button>
+                    <button type="button" className="btn btn-sm" onClick={()=>{ setNewClientMode(false); setClientId(doublonNewClientTel.id); setClientSearch(doublonNewClientTel.nom); }}>Utiliser ce client existant</button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -4961,7 +5008,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
 
         <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
           <button className="btn" onClick={onClose}>Annuler</button>
-          <button className="btn btn-rust" disabled={(!clientId && !newClientMode) || lignes.length===0 || creating} onClick={handleSubmit}>
+          <button className="btn btn-rust" disabled={(!clientId && !newClientMode) || lignes.length===0 || creating || !!doublonNewClientTel} onClick={handleSubmit}>
             {creating ? 'Génération du reçu…' : 'Créer le ticket'}
           </button>
         </div>
@@ -5628,6 +5675,9 @@ function ClientsView({ site, updateSite, db, isGerant }){
   const [selectionMode, setSelectionMode] = useState(false);
   const [clientsSelectionnes, setClientsSelectionnes] = useState([]);
   const [confirmSuppressionMultiple, setConfirmSuppressionMultiple] = useState(false);
+  const [showDoublons, setShowDoublons] = useState(false);
+
+  const groupesDoublons = useMemo(() => detecterDoublonsClients(site.clients), [site.clients]);
 
   const filtered = useMemo(() => {
     if(!search.trim()) return site.clients;
@@ -5685,6 +5735,11 @@ function ClientsView({ site, updateSite, db, isGerant }){
             {isGerant && (
               <button className="btn btn-sm" onClick={()=>{ setSelectionMode(!selectionMode); setClientsSelectionnes([]); }}>
                 {selectionMode ? 'Annuler' : 'Sélectionner plusieurs'}
+              </button>
+            )}
+            {isGerant && (
+              <button className="btn btn-sm" onClick={()=>setShowDoublons(true)} style={groupesDoublons.length>0 ? {borderColor:'var(--warn)', color:'#B45309'} : {}}>
+                <Icon name="users" size={13}/> Doublons{groupesDoublons.length>0 ? ` (${groupesDoublons.length})` : ''}
               </button>
             )}
             <button className="btn btn-rust" onClick={()=>setShowNew(true)}><Icon name="plus" size={15}/> Nouveau client</button>
@@ -5754,9 +5809,10 @@ function ClientsView({ site, updateSite, db, isGerant }){
         />
       )}
 
+      {showDoublons && <DoublonsClientsModal site={site} updateSite={updateSite} db={db} groupes={groupesDoublons} onClose={()=>setShowDoublons(false)} />}
       {showNew && <NewClientModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
       {selected && <ClientDetailModal client={selected} site={site} onClose={()=>setSelected(null)} onEdit={(c)=>{ setSelected(null); setEditClient(c); }} />}
-      {editClient && <EditClientModal client={editClient} onSave={saveEditClient} onClose={()=>setEditClient(null)} />}
+      {editClient && <EditClientModal client={editClient} clients={site.clients} onSave={saveEditClient} onClose={()=>setEditClient(null)} />}
       {confirmClient && (() => {
         const st = clientStats(confirmClient.id);
         const avertissement = st.count > 0 ? ` Ce client a ${st.count} commande(s) enregistrée(s) — elles resteront dans l'historique mais afficheront « Client inconnu » à la place de son nom.` : '';
@@ -5779,9 +5835,12 @@ function NewClientModal({ site, updateSite, onClose }){
   const [email, setEmail] = useState('');
   const [canalPref, setCanalPref] = useState('SMS');
 
+  const telComplet = tel.trim() ? `${indicatif} ${tel.trim()}` : '';
+  const doublonTel = useMemo(() => trouverClientMemeTelAutreNom(site.clients, telComplet, nom), [site.clients, telComplet, nom]);
+
   function submit(){
-    if(!nom.trim()) return;
-    const client = { id: uid('cli_'), nom: capitalizeNom(nom), tel: tel.trim() ? `${indicatif} ${tel.trim()}` : '', email: email.trim(), canalPref, dateInscription: todayISO() };
+    if(!nom.trim() || doublonTel) return;
+    const client = { id: uid('cli_'), nom: capitalizeNom(nom), tel: telComplet, email: email.trim(), canalPref, dateInscription: todayISO() };
     updateSite({ ...site, clients: [...site.clients, client] });
     onClose();
   }
@@ -5797,6 +5856,14 @@ function NewClientModal({ site, updateSite, onClose }){
             <input type="tel" placeholder="6XX XX XX XX" value={tel} onChange={e=>setTel(e.target.value)} style={{flex:1}} />
           </div>
         </div>
+        {doublonTel && (
+          <div style={{background:'var(--warn-light)', color:'#B45309', borderRadius:8, padding:'10px 12px', fontSize:12.5, lineHeight:1.5}}>
+            ⚠️ Ce numéro est déjà enregistré sous le nom « {doublonTel.nom} ». Corrigez le nom ci-dessus pour qu'il corresponde, ou choisissez ce client existant plutôt que d'en créer un nouveau.
+            <div style={{marginTop:8}}>
+              <button type="button" className="btn btn-sm" onClick={()=>setNom(doublonTel.nom)}>Reprendre le nom « {doublonTel.nom} »</button>
+            </div>
+          </div>
+        )}
         <div><label>Email (optionnel)</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)} /></div>
         <div>
           <label>Canal de notification préféré</label>
@@ -5807,8 +5874,144 @@ function NewClientModal({ site, updateSite, onClose }){
         </div>
         <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
           <button className="btn" onClick={onClose}>Annuler</button>
-          <button className="btn btn-rust" disabled={!nom.trim()} onClick={submit}>Créer</button>
+          <button className="btn btn-rust" disabled={!nom.trim() || !!doublonTel} onClick={submit}>Créer</button>
         </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function DoublonsClientsModal({ site, updateSite, db, groupes, onClose }){
+  const [choixPrincipal, setChoixPrincipal] = useState({}); // groupIndex -> clientId gardé
+  const [confirmFusion, setConfirmFusion] = useState(null); // { groupIndex, keepId, autres }
+  const [groupesFusionnes, setGroupesFusionnes] = useState([]); // clés de groupes déjà traités cette session
+
+  function statsClient(clientId){
+    const cmds = (site.commandes||[]).filter(c => c.clientId === clientId);
+    const phc = (site.paiementsHorsCommande||[]).filter(p => p.clientId === clientId);
+    return { commandes: cmds.length, encaissementsSansCommande: phc.length };
+  }
+
+  function keepIdPourGroupe(groupe, index){
+    if(choixPrincipal[index]) return choixPrincipal[index];
+    // par défaut : le client avec le plus de commandes, puis le plus ancien inscrit
+    const trie = [...groupe.clients].sort((a,b) => {
+      const sa = statsClient(a.id).commandes, sb = statsClient(b.id).commandes;
+      if(sb !== sa) return sb - sa;
+      return (a.dateInscription||'') < (b.dateInscription||'') ? -1 : 1;
+    });
+    return trie[0].id;
+  }
+
+  function fusionner(groupe, index, keepId){
+    const autresIds = groupe.clients.filter(c => c.id !== keepId).map(c => c.id);
+    const keep = groupe.clients.find(c => c.id === keepId);
+    const autres = groupe.clients.filter(c => c.id !== keepId);
+    const idSet = new Set(autresIds);
+
+    const merged = { ...keep };
+    autres.forEach(c => {
+      if(!merged.tel && c.tel) merged.tel = c.tel;
+      if(!merged.email && c.email) merged.email = c.email;
+      if(!merged.canalPref && c.canalPref) merged.canalPref = c.canalPref;
+      if(c.dateInscription && (!merged.dateInscription || c.dateInscription < merged.dateInscription)) merged.dateInscription = c.dateInscription;
+    });
+    merged.historiqueFusion = [
+      ...(keep.historiqueFusion || []),
+      ...autres.map(c => `Fusionné avec « ${c.nom} »${c.tel ? ' (' + c.tel + ')' : ''} le ${todayISO()}`),
+    ];
+
+    const nextCommandes = (site.commandes||[]).map(cmd => idSet.has(cmd.clientId) ? { ...cmd, clientId: keepId } : cmd);
+    const nextPaiements = (site.paiementsHorsCommande||[]).map(p => idSet.has(p.clientId) ? { ...p, clientId: keepId, clientNom: merged.nom } : p);
+    const nextNotifications = (site.notifications||[]).map(n => idSet.has(n.clientId) ? { ...n, clientId: keepId } : n);
+    const trashEntries = autres.map(c => ({
+      id: uid('trash_'), type:'client',
+      label: `Client fusionné dans « ${merged.nom} » : ${c.nom}`,
+      data: c, dateSuppression: new Date().toISOString(),
+    }));
+
+    updateSite({
+      ...site,
+      clients: site.clients.filter(c => !idSet.has(c.id)).map(c => c.id === keepId ? merged : c),
+      commandes: nextCommandes,
+      paiementsHorsCommande: nextPaiements,
+      notifications: nextNotifications,
+      corbeille: [...trashEntries, ...(site.corbeille||[])],
+    });
+    setGroupesFusionnes(prev => [...prev, groupe.clients.map(c=>c.id).sort().join('|')]);
+    setConfirmFusion(null);
+  }
+
+  const groupesRestants = groupes.filter(g => !groupesFusionnes.includes(g.clients.map(c=>c.id).sort().join('|')));
+
+  return (
+    <ModalShell title="Doublons de clients" onClose={onClose} width={680}>
+      <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 16px', lineHeight:1.5}}>
+        Détecté automatiquement par numéro de téléphone identique (un nom identique seul ne veut pas dire que c'est la même personne, donc ce n'est plus utilisé pour détecter). Fusionner regroupe tout l'historique (commandes, encaissements sans commande, notifications) sur le client gardé — aucune donnée n'est perdue. Le client retiré reste 30 jours dans la Corbeille (récupérable en fiche séparée, mais sans que l'historique refusionné se re-sépare automatiquement).
+      </p>
+
+      {groupesRestants.length === 0 ? (
+        <div className="card" style={{padding:'1.25rem', textAlign:'center', color:'var(--steam)', fontSize:13}}>
+          Aucun doublon détecté pour l'instant. 🎉
+        </div>
+      ) : (
+        <div style={{display:'grid', gap:16, maxHeight:520, overflowY:'auto', paddingRight:4}}>
+          {groupesRestants.map((groupe, i) => {
+            const keepId = keepIdPourGroupe(groupe, i);
+            return (
+              <div key={i} className="card" style={{padding:'1.1rem 1.25rem'}}>
+                <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10}}>
+                  <span className="tag" style={{background:'var(--warn-light)', color:'#B45309'}}>⚠️ {groupe.raison}</span>
+                  <span style={{fontSize:12, color:'var(--steam)'}}>{groupe.clients.length} fiches</span>
+                </div>
+                <div style={{display:'grid', gap:8, marginBottom:12}}>
+                  {groupe.clients.map(c => {
+                    const st = statsClient(c.id);
+                    const estGarde = c.id === keepId;
+                    return (
+                      <label key={c.id} style={{
+                        display:'flex', alignItems:'center', gap:10, padding:'8px 10px', borderRadius:8, cursor:'pointer',
+                        background: estGarde ? 'var(--pine-light)' : 'var(--paper-2)',
+                        border: estGarde ? '1px solid var(--pine)' : '1px solid transparent',
+                      }}>
+                        <input type="radio" name={`groupe-${i}`} checked={estGarde}
+                          onChange={()=>setChoixPrincipal(prev => ({ ...prev, [i]: c.id }))} />
+                        <div style={{flex:1}}>
+                          <div style={{fontSize:13.5, fontWeight:600}}>{c.nom} {estGarde && <span style={{fontSize:11, fontWeight:600, color:'var(--pine)'}}>— gardé</span>}</div>
+                          <div style={{fontSize:12, color:'var(--steam)'}}>
+                            {c.tel || 'Pas de téléphone'} · {st.commandes} commande(s) · {st.encaissementsSansCommande} encaissement(s) sans commande
+                            {c.dateInscription ? ` · depuis ${fmtDate(c.dateInscription)}` : ''}
+                          </div>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+                <div style={{display:'flex', justifyContent:'flex-end'}}>
+                  <button className="btn btn-rust btn-sm" onClick={()=>setConfirmFusion({ groupe, index:i, keepId })}>
+                    Fusionner ces {groupe.clients.length} fiches
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {confirmFusion && (() => {
+        const keep = confirmFusion.groupe.clients.find(c=>c.id===confirmFusion.keepId);
+        const autres = confirmFusion.groupe.clients.filter(c=>c.id!==confirmFusion.keepId);
+        return (
+          <ConfirmDelete db={db}
+            message={`Fusionner ${autres.map(c=>`« ${c.nom} »`).join(', ')} dans « ${keep.nom} » ? Toutes leurs commandes, encaissements sans commande et notifications seront rattachés à « ${keep.nom} ». Les fiches fusionnées seront retirées de la liste (récupérables 30 jours via la Corbeille).`}
+            onConfirm={()=>fusionner(confirmFusion.groupe, confirmFusion.index, confirmFusion.keepId)}
+            onCancel={()=>setConfirmFusion(null)}
+          />
+        );
+      })()}
+
+      <div style={{display:'flex', justifyContent:'flex-end', marginTop:16}}>
+        <button className="btn" onClick={onClose}>Fermer</button>
       </div>
     </ModalShell>
   );
@@ -5853,7 +6056,7 @@ function ClientDetailModal({ client, site, onClose, onEdit }){
   );
 }
 
-function EditClientModal({ client, onSave, onClose }){
+function EditClientModal({ client, clients, onSave, onClose }){
   const parsedTel = splitTel(client.tel);
   const [nom, setNom] = useState(client.nom || '');
   const [indicatif, setIndicatif] = useState(parsedTel.indicatif);
@@ -5861,9 +6064,12 @@ function EditClientModal({ client, onSave, onClose }){
   const [email, setEmail] = useState(client.email || '');
   const [canalPref, setCanalPref] = useState(client.canalPref || 'SMS');
 
+  const telComplet = tel.trim() ? `${indicatif} ${tel.trim()}` : '';
+  const doublonTel = useMemo(() => trouverClientMemeTelAutreNom(clients, telComplet, nom, client.id), [clients, telComplet, nom, client.id]);
+
   function submit(){
-    if(!nom.trim()) return;
-    onSave({ ...client, nom: capitalizeNom(nom), tel: tel.trim() ? `${indicatif} ${tel.trim()}` : '', email: email.trim(), canalPref });
+    if(!nom.trim() || doublonTel) return;
+    onSave({ ...client, nom: capitalizeNom(nom), tel: telComplet, email: email.trim(), canalPref });
   }
 
   return (
@@ -5877,6 +6083,14 @@ function EditClientModal({ client, onSave, onClose }){
             <input type="tel" placeholder="6XX XX XX XX" value={tel} onChange={e=>setTel(e.target.value)} style={{flex:1}} />
           </div>
         </div>
+        {doublonTel && (
+          <div style={{background:'var(--warn-light)', color:'#B45309', borderRadius:8, padding:'10px 12px', fontSize:12.5, lineHeight:1.5}}>
+            ⚠️ Ce numéro est déjà enregistré sous le nom « {doublonTel.nom} ». Corrigez le nom ci-dessus pour qu'il corresponde, ou changez le numéro.
+            <div style={{marginTop:8}}>
+              <button type="button" className="btn btn-sm" onClick={()=>setNom(doublonTel.nom)}>Reprendre le nom « {doublonTel.nom} »</button>
+            </div>
+          </div>
+        )}
         <div><label>Email (optionnel)</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)} /></div>
         <div>
           <label>Canal de notification préféré</label>
@@ -5888,7 +6102,7 @@ function EditClientModal({ client, onSave, onClose }){
         </div>
         <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
           <button className="btn" onClick={onClose}>Annuler</button>
-          <button className="btn btn-rust" disabled={!nom.trim()} onClick={submit}>Enregistrer</button>
+          <button className="btn btn-rust" disabled={!nom.trim() || !!doublonTel} onClick={submit}>Enregistrer</button>
         </div>
       </div>
     </ModalShell>
