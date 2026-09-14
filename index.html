@@ -7,7 +7,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-13-1">
+<meta name="app-version" content="2026-09-14-1">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -22,7 +22,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-13-1';
+  const APP_VERSION_ACTUELLE = '2026-09-14-1';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -7707,6 +7707,52 @@ function RegenererRecusSection({ site }){
   );
 }
 
+function SelectionManuellePanel({ items, getId, renderLabel, selection, setSelection, onSupprimer }){
+  const [recherche, setRecherche] = useState('');
+  const filtered = recherche.trim()
+    ? items.filter(it => renderLabel(it).toLowerCase().includes(recherche.trim().toLowerCase()))
+    : items;
+  const toutSelectionne = filtered.length > 0 && filtered.every(it => selection.has(getId(it)));
+  function toggleTout(){
+    setSelection(prev => {
+      const next = new Set(prev);
+      if(toutSelectionne){ filtered.forEach(it => next.delete(getId(it))); }
+      else { filtered.forEach(it => next.add(getId(it))); }
+      return next;
+    });
+  }
+  function toggleUn(id){
+    setSelection(prev => {
+      const next = new Set(prev);
+      if(next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  return (
+    <div style={{marginTop:12, padding:'12px', background:'var(--danger-light)', borderRadius:8}}>
+      <div style={{display:'flex', gap:10, alignItems:'center', flexWrap:'wrap', marginBottom:10}}>
+        <input type="text" placeholder="Rechercher..." value={recherche} onChange={e=>setRecherche(e.target.value)} style={{flex:'1 1 200px'}} />
+        <button className="btn btn-sm" onClick={toggleTout} type="button">{toutSelectionne ? 'Tout désélectionner' : 'Tout sélectionner'} ({filtered.length})</button>
+      </div>
+      <div style={{maxHeight:260, overflowY:'auto', display:'grid', gap:4, background:'var(--bg)', borderRadius:6, padding:8}}>
+        {filtered.length === 0 && <p style={{fontSize:13, color:'var(--steam)', margin:4}}>Aucune entrée.</p>}
+        {filtered.map(it => {
+          const id = getId(it);
+          return (
+            <label key={id} style={{display:'flex', alignItems:'center', gap:8, fontSize:13, padding:'4px 6px', borderRadius:4, cursor:'pointer'}}>
+              <input type="checkbox" checked={selection.has(id)} onChange={()=>toggleUn(id)} />
+              <span>{renderLabel(it)}</span>
+            </label>
+          );
+        })}
+      </div>
+      <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)', marginTop:10}} disabled={selection.size===0} onClick={onSupprimer} type="button">
+        <Icon name="trash" size={14}/> Supprimer la sélection ({selection.size})
+      </button>
+    </div>
+  );
+}
+
 function ParametresView({ site, updateSite, db, setDb }){
   const [nom, setNom] = useState(site.nom);
   const [adresse, setAdresse] = useState(site.adresse);
@@ -7733,12 +7779,16 @@ function ParametresView({ site, updateSite, db, setDb }){
   const [showPlageCmd, setShowPlageCmd] = useState(false);
   const [rangeDebutCmd, setRangeDebutCmd] = useState(todayISO());
   const [rangeFinCmd, setRangeFinCmd] = useState(todayISO());
+  const [showSelectionCmd, setShowSelectionCmd] = useState(false);
+  const [selectionCmd, setSelectionCmd] = useState(() => new Set());
+  const [rechercheSelectionCmd, setRechercheSelectionCmd] = useState('');
 
   function countForScope(scope){
     const today = todayISO();
     if(scope === 'jour') return site.commandes.filter(c => c.dateCreation.slice(0,10) === today).length;
     if(scope === 'mois') return site.commandes.filter(c => c.dateCreation.slice(0,7) === today.slice(0,7)).length;
     if(scope === 'plage') return site.commandes.filter(c => c.dateCreation.slice(0,10) >= rangeDebutCmd && c.dateCreation.slice(0,10) <= rangeFinCmd).length;
+    if(scope === 'selection') return selectionCmd.size;
     return site.commandes.length;
   }
 
@@ -7749,12 +7799,15 @@ function ParametresView({ site, updateSite, db, setDb }){
     if(resetScope === 'jour'){ removed = site.commandes.filter(c => c.dateCreation.slice(0,10) === today); remaining = site.commandes.filter(c => c.dateCreation.slice(0,10) !== today); }
     else if(resetScope === 'mois'){ removed = site.commandes.filter(c => c.dateCreation.slice(0,7) === today.slice(0,7)); remaining = site.commandes.filter(c => c.dateCreation.slice(0,7) !== today.slice(0,7)); }
     else if(resetScope === 'plage'){ removed = site.commandes.filter(c => c.dateCreation.slice(0,10) >= rangeDebutCmd && c.dateCreation.slice(0,10) <= rangeFinCmd); remaining = site.commandes.filter(c => !(c.dateCreation.slice(0,10) >= rangeDebutCmd && c.dateCreation.slice(0,10) <= rangeFinCmd)); }
+    else if(resetScope === 'selection'){ removed = site.commandes.filter(c => selectionCmd.has(c.id)); remaining = site.commandes.filter(c => !selectionCmd.has(c.id)); }
     else { removed = site.commandes; remaining = []; }
-    const labelPeriode = resetScope==='jour'?"aujourd'hui":resetScope==='mois'?'ce mois-ci':resetScope==='plage'?`du ${fmtDate(rangeDebutCmd)} au ${fmtDate(rangeFinCmd)}`:'toute la période';
+    const labelPeriode = resetScope==='jour'?"aujourd'hui":resetScope==='mois'?'ce mois-ci':resetScope==='plage'?`du ${fmtDate(rangeDebutCmd)} au ${fmtDate(rangeFinCmd)}`:resetScope==='selection'?'sélection manuelle':'toute la période';
     const entry = { id: uid('trash_'), type:'commandes_reset', label: `Réinitialisation (${labelPeriode}) — ${removed.length} commande(s)`, data: removed, dateSuppression: new Date().toISOString() };
     updateSite({ ...site, commandes: remaining, seq: resetScope === 'tout' ? 1 : site.seq, corbeille: [entry, ...(site.corbeille||[])] });
     setResetScope(null);
     setShowPlageCmd(false);
+    setSelectionCmd(new Set());
+    setShowSelectionCmd(false);
   }
 
   const [resetScopeDep, setResetScopeDep] = useState(null); // 'jour' | 'mois' | 'tout'
@@ -7762,6 +7815,8 @@ function ParametresView({ site, updateSite, db, setDb }){
   const [showPlageDep, setShowPlageDep] = useState(false);
   const [rangeDebutDep, setRangeDebutDep] = useState(todayISO());
   const [rangeFinDep, setRangeFinDep] = useState(todayISO());
+  const [showSelectionDep, setShowSelectionDep] = useState(false);
+  const [selectionDep, setSelectionDep] = useState(() => new Set());
 
   function countForScopeDep(scope){
     const today = todayISO();
@@ -7769,6 +7824,7 @@ function ParametresView({ site, updateSite, db, setDb }){
     if(scope === 'jour') return depenses.filter(d => d.date === today).length;
     if(scope === 'mois') return depenses.filter(d => d.date.slice(0,7) === today.slice(0,7)).length;
     if(scope === 'plage') return depenses.filter(d => d.date >= rangeDebutDep && d.date <= rangeFinDep).length;
+    if(scope === 'selection') return selectionDep.size;
     return depenses.length;
   }
 
@@ -7780,18 +7836,23 @@ function ParametresView({ site, updateSite, db, setDb }){
     if(resetScopeDep === 'jour'){ removed = depenses.filter(d => d.date === today); remaining = depenses.filter(d => d.date !== today); }
     else if(resetScopeDep === 'mois'){ removed = depenses.filter(d => d.date.slice(0,7) === today.slice(0,7)); remaining = depenses.filter(d => d.date.slice(0,7) !== today.slice(0,7)); }
     else if(resetScopeDep === 'plage'){ removed = depenses.filter(d => d.date >= rangeDebutDep && d.date <= rangeFinDep); remaining = depenses.filter(d => !(d.date >= rangeDebutDep && d.date <= rangeFinDep)); }
+    else if(resetScopeDep === 'selection'){ removed = depenses.filter(d => selectionDep.has(d.id)); remaining = depenses.filter(d => !selectionDep.has(d.id)); }
     else { removed = depenses; remaining = []; }
-    const labelPeriode = resetScopeDep==='jour'?"aujourd'hui":resetScopeDep==='mois'?'ce mois-ci':resetScopeDep==='plage'?`du ${fmtDate(rangeDebutDep)} au ${fmtDate(rangeFinDep)}`:'toute la période';
+    const labelPeriode = resetScopeDep==='jour'?"aujourd'hui":resetScopeDep==='mois'?'ce mois-ci':resetScopeDep==='plage'?`du ${fmtDate(rangeDebutDep)} au ${fmtDate(rangeFinDep)}`:resetScopeDep==='selection'?'sélection manuelle':'toute la période';
     const entry = { id: uid('trash_'), type:'depenses_reset', label: `Réinitialisation dépenses (${labelPeriode}) — ${removed.length} dépense(s)`, data: removed, dateSuppression: new Date().toISOString() };
     updateSite({ ...site, depenses: remaining, corbeille: [entry, ...(site.corbeille||[])] });
     setResetScopeDep(null);
     setShowPlageDep(false);
+    setSelectionDep(new Set());
+    setShowSelectionDep(false);
   }
 
   const [resetScopeRem, setResetScopeRem] = useState(null); // 'jour' | 'mois' | 'plage' | 'tout'
   const [showPlageRem, setShowPlageRem] = useState(false);
   const [rangeDebutRem, setRangeDebutRem] = useState(todayISO());
   const [rangeFinRem, setRangeFinRem] = useState(todayISO());
+  const [showSelectionRem, setShowSelectionRem] = useState(false);
+  const [selectionRem, setSelectionRem] = useState(() => new Set());
 
   function countForScopeRem(scope){
     const today = todayISO();
@@ -7799,6 +7860,7 @@ function ParametresView({ site, updateSite, db, setDb }){
     if(scope === 'jour') return remunerations.filter(r => (r.date||'').slice(0,10) === today).length;
     if(scope === 'mois') return remunerations.filter(r => (r.date||'').slice(0,7) === today.slice(0,7)).length;
     if(scope === 'plage') return remunerations.filter(r => (r.date||'').slice(0,10) >= rangeDebutRem && (r.date||'').slice(0,10) <= rangeFinRem).length;
+    if(scope === 'selection') return selectionRem.size;
     return remunerations.length;
   }
 
@@ -7810,18 +7872,23 @@ function ParametresView({ site, updateSite, db, setDb }){
     if(resetScopeRem === 'jour'){ removed = remunerations.filter(r => (r.date||'').slice(0,10) === today); remaining = remunerations.filter(r => (r.date||'').slice(0,10) !== today); }
     else if(resetScopeRem === 'mois'){ removed = remunerations.filter(r => (r.date||'').slice(0,7) === today.slice(0,7)); remaining = remunerations.filter(r => (r.date||'').slice(0,7) !== today.slice(0,7)); }
     else if(resetScopeRem === 'plage'){ removed = remunerations.filter(r => (r.date||'').slice(0,10) >= rangeDebutRem && (r.date||'').slice(0,10) <= rangeFinRem); remaining = remunerations.filter(r => !((r.date||'').slice(0,10) >= rangeDebutRem && (r.date||'').slice(0,10) <= rangeFinRem)); }
+    else if(resetScopeRem === 'selection'){ removed = remunerations.filter(r => selectionRem.has(r.id)); remaining = remunerations.filter(r => !selectionRem.has(r.id)); }
     else { removed = remunerations; remaining = []; }
-    const labelPeriode = resetScopeRem==='jour'?"aujourd'hui":resetScopeRem==='mois'?'ce mois-ci':resetScopeRem==='plage'?`du ${fmtDate(rangeDebutRem)} au ${fmtDate(rangeFinRem)}`:'toute la période';
+    const labelPeriode = resetScopeRem==='jour'?"aujourd'hui":resetScopeRem==='mois'?'ce mois-ci':resetScopeRem==='plage'?`du ${fmtDate(rangeDebutRem)} au ${fmtDate(rangeFinRem)}`:resetScopeRem==='selection'?'sélection manuelle':'toute la période';
     const entry = { id: uid('trash_'), type:'remunerations_reset', label: `Réinitialisation rémunérations (${labelPeriode}) — ${removed.length} entrée(s)`, data: removed, dateSuppression: new Date().toISOString() };
     updateSite({ ...site, remunerations: remaining, corbeille: [entry, ...(site.corbeille||[])] });
     setResetScopeRem(null);
     setShowPlageRem(false);
+    setSelectionRem(new Set());
+    setShowSelectionRem(false);
   }
 
   const [resetScopePhc, setResetScopePhc] = useState(null); // 'jour' | 'mois' | 'plage' | 'tout'
   const [showPlagePhc, setShowPlagePhc] = useState(false);
   const [rangeDebutPhc, setRangeDebutPhc] = useState(todayISO());
   const [rangeFinPhc, setRangeFinPhc] = useState(todayISO());
+  const [showSelectionPhc, setShowSelectionPhc] = useState(false);
+  const [selectionPhc, setSelectionPhc] = useState(() => new Set());
 
   function countForScopePhc(scope){
     const today = todayISO();
@@ -7829,6 +7896,7 @@ function ParametresView({ site, updateSite, db, setDb }){
     if(scope === 'jour') return phc.filter(p => (p.date||'').slice(0,10) === today).length;
     if(scope === 'mois') return phc.filter(p => (p.date||'').slice(0,7) === today.slice(0,7)).length;
     if(scope === 'plage') return phc.filter(p => (p.date||'').slice(0,10) >= rangeDebutPhc && (p.date||'').slice(0,10) <= rangeFinPhc).length;
+    if(scope === 'selection') return selectionPhc.size;
     return phc.length;
   }
 
@@ -7840,12 +7908,15 @@ function ParametresView({ site, updateSite, db, setDb }){
     if(resetScopePhc === 'jour'){ removed = phc.filter(p => (p.date||'').slice(0,10) === today); remaining = phc.filter(p => (p.date||'').slice(0,10) !== today); }
     else if(resetScopePhc === 'mois'){ removed = phc.filter(p => (p.date||'').slice(0,7) === today.slice(0,7)); remaining = phc.filter(p => (p.date||'').slice(0,7) !== today.slice(0,7)); }
     else if(resetScopePhc === 'plage'){ removed = phc.filter(p => (p.date||'').slice(0,10) >= rangeDebutPhc && (p.date||'').slice(0,10) <= rangeFinPhc); remaining = phc.filter(p => !((p.date||'').slice(0,10) >= rangeDebutPhc && (p.date||'').slice(0,10) <= rangeFinPhc)); }
+    else if(resetScopePhc === 'selection'){ removed = phc.filter(p => selectionPhc.has(p.id)); remaining = phc.filter(p => !selectionPhc.has(p.id)); }
     else { removed = phc; remaining = []; }
-    const labelPeriode = resetScopePhc==='jour'?"aujourd'hui":resetScopePhc==='mois'?'ce mois-ci':resetScopePhc==='plage'?`du ${fmtDate(rangeDebutPhc)} au ${fmtDate(rangeFinPhc)}`:'toute la période';
+    const labelPeriode = resetScopePhc==='jour'?"aujourd'hui":resetScopePhc==='mois'?'ce mois-ci':resetScopePhc==='plage'?`du ${fmtDate(rangeDebutPhc)} au ${fmtDate(rangeFinPhc)}`:resetScopePhc==='selection'?'sélection manuelle':'toute la période';
     const entry = { id: uid('trash_'), type:'paiementsHorsCommande_reset', label: `Réinitialisation encaissements sans commande (${labelPeriode}) — ${removed.length} entrée(s)`, data: removed, dateSuppression: new Date().toISOString() };
     updateSite({ ...site, paiementsHorsCommande: remaining, corbeille: [entry, ...(site.corbeille||[])] });
     setResetScopePhc(null);
     setShowPlagePhc(false);
+    setSelectionPhc(new Set());
+    setShowSelectionPhc(false);
   }
 
   // Changement mot de passe gérant
@@ -8014,6 +8085,9 @@ function ParametresView({ site, updateSite, db, setDb }){
           <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)', background: showPlageCmd ? 'var(--danger-light)' : 'transparent'}} onClick={()=>setShowPlageCmd(!showPlageCmd)}>
             📅 Jours spécifiques
           </button>
+          <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)', background: showSelectionCmd ? 'var(--danger-light)' : 'transparent'}} onClick={()=>setShowSelectionCmd(!showSelectionCmd)}>
+            🎯 Sélection manuelle
+          </button>
         </div>
         {showPlageCmd && (
           <div style={{marginTop:12, padding:'12px', background:'var(--danger-light)', borderRadius:8, display:'flex', gap:10, alignItems:'flex-end', flexWrap:'wrap'}}>
@@ -8030,11 +8104,21 @@ function ParametresView({ site, updateSite, db, setDb }){
             </button>
           </div>
         )}
+        {showSelectionCmd && (
+          <SelectionManuellePanel
+            items={[...site.commandes].sort((a,b)=> (b.dateCreation||'').localeCompare(a.dateCreation||''))}
+            getId={c=>c.id}
+            renderLabel={c=>`${c.numero} — ${fmtDate(c.dateCreation)} — ${c.clientNom||''} — ${fmtGNF(calcCommandeTotal(c, site.services))}`}
+            selection={selectionCmd}
+            setSelection={setSelectionCmd}
+            onSupprimer={()=>setResetScope('selection')}
+          />
+        )}
       </div>
 
       {resetScope && (
         <ConfirmDelete db={db}
-          message={`Effacer ${countForScope(resetScope)} commande(s) — ${resetScope==='jour' ? "celles d'aujourd'hui" : resetScope==='mois' ? 'celles de ce mois-ci' : resetScope==='plage' ? `celles du ${fmtDate(rangeDebutCmd)} au ${fmtDate(rangeFinCmd)}` : 'TOUTES les commandes, toutes périodes confondues'} — de « ${site.nom} » ? Les clients, employés, services et stock ne seront pas touchés. Cette action est irréversible.`}
+          message={`Effacer ${countForScope(resetScope)} commande(s) — ${resetScope==='jour' ? "celles d'aujourd'hui" : resetScope==='mois' ? 'celles de ce mois-ci' : resetScope==='plage' ? `celles du ${fmtDate(rangeDebutCmd)} au ${fmtDate(rangeFinCmd)}` : resetScope==='selection' ? 'celles sélectionnées manuellement' : 'TOUTES les commandes, toutes périodes confondues'} — de « ${site.nom} » ? Les clients, employés, services et stock ne seront pas touchés. Cette action est irréversible.`}
           onConfirm={resetCommandes}
           onCancel={()=>setResetScope(null)}
         />
@@ -8062,6 +8146,9 @@ function ParametresView({ site, updateSite, db, setDb }){
           <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)', background: showPlageDep ? 'var(--danger-light)' : 'transparent'}} onClick={()=>setShowPlageDep(!showPlageDep)}>
             📅 Jours spécifiques
           </button>
+          <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)', background: showSelectionDep ? 'var(--danger-light)' : 'transparent'}} onClick={()=>setShowSelectionDep(!showSelectionDep)}>
+            🎯 Sélection manuelle
+          </button>
         </div>
         {showPlageDep && (
           <div style={{marginTop:12, padding:'12px', background:'var(--danger-light)', borderRadius:8, display:'flex', gap:10, alignItems:'flex-end', flexWrap:'wrap'}}>
@@ -8078,11 +8165,21 @@ function ParametresView({ site, updateSite, db, setDb }){
             </button>
           </div>
         )}
+        {showSelectionDep && (
+          <SelectionManuellePanel
+            items={[...(site.depenses||[])].sort((a,b)=> (b.date||'').localeCompare(a.date||''))}
+            getId={d=>d.id}
+            renderLabel={d=>`${fmtDate(d.date)} — ${d.description||''} — ${d.categorie||''} — ${fmtGNF(d.montant)}`}
+            selection={selectionDep}
+            setSelection={setSelectionDep}
+            onSupprimer={()=>setResetScopeDep('selection')}
+          />
+        )}
       </div>
 
       {resetScopeDep && (
         <ConfirmDelete db={db}
-          message={`Effacer ${countForScopeDep(resetScopeDep)} dépense(s) — ${resetScopeDep==='jour' ? "celles d'aujourd'hui" : resetScopeDep==='mois' ? 'celles de ce mois-ci' : resetScopeDep==='plage' ? `celles du ${fmtDate(rangeDebutDep)} au ${fmtDate(rangeFinDep)}` : 'TOUTES les dépenses, toutes périodes confondues'} — de « ${site.nom} » ? Les clients, employés, services, stock et commandes ne seront pas touchés. Cette action est irréversible.`}
+          message={`Effacer ${countForScopeDep(resetScopeDep)} dépense(s) — ${resetScopeDep==='jour' ? "celles d'aujourd'hui" : resetScopeDep==='mois' ? 'celles de ce mois-ci' : resetScopeDep==='plage' ? `celles du ${fmtDate(rangeDebutDep)} au ${fmtDate(rangeFinDep)}` : resetScopeDep==='selection' ? 'celles sélectionnées manuellement' : 'TOUTES les dépenses, toutes périodes confondues'} — de « ${site.nom} » ? Les clients, employés, services, stock et commandes ne seront pas touchés. Cette action est irréversible.`}
           onConfirm={resetDepenses}
           onCancel={()=>setResetScopeDep(null)}
         />
@@ -8110,6 +8207,9 @@ function ParametresView({ site, updateSite, db, setDb }){
           <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)', background: showPlageRem ? 'var(--danger-light)' : 'transparent'}} onClick={()=>setShowPlageRem(!showPlageRem)}>
             📅 Jours spécifiques
           </button>
+          <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)', background: showSelectionRem ? 'var(--danger-light)' : 'transparent'}} onClick={()=>setShowSelectionRem(!showSelectionRem)}>
+            🎯 Sélection manuelle
+          </button>
         </div>
         {showPlageRem && (
           <div style={{marginTop:12, padding:'12px', background:'var(--danger-light)', borderRadius:8, display:'flex', gap:10, alignItems:'flex-end', flexWrap:'wrap'}}>
@@ -8126,11 +8226,21 @@ function ParametresView({ site, updateSite, db, setDb }){
             </button>
           </div>
         )}
+        {showSelectionRem && (
+          <SelectionManuellePanel
+            items={[...(site.remunerations||[])].sort((a,b)=> (b.date||'').localeCompare(a.date||''))}
+            getId={r=>r.id}
+            renderLabel={r=>`${fmtDate(r.date)} — ${r.type==='repassage'?'Repassage':'Livraison'} — ${r.detail||''} — ${fmtGNF(r.montant)}`}
+            selection={selectionRem}
+            setSelection={setSelectionRem}
+            onSupprimer={()=>setResetScopeRem('selection')}
+          />
+        )}
       </div>
 
       {resetScopeRem && (
         <ConfirmDelete db={db}
-          message={`Effacer ${countForScopeRem(resetScopeRem)} entrée(s) de rémunération — ${resetScopeRem==='jour' ? "celles d'aujourd'hui" : resetScopeRem==='mois' ? 'celles de ce mois-ci' : resetScopeRem==='plage' ? `celles du ${fmtDate(rangeDebutRem)} au ${fmtDate(rangeFinRem)}` : 'TOUTES les rémunérations, toutes périodes confondues'} — de « ${site.nom} » ? Les dépenses déjà créées à partir de ces rémunérations ne seront PAS effacées automatiquement — supprimez-les séparément si besoin. Cette action est irréversible.`}
+          message={`Effacer ${countForScopeRem(resetScopeRem)} entrée(s) de rémunération — ${resetScopeRem==='jour' ? "celles d'aujourd'hui" : resetScopeRem==='mois' ? 'celles de ce mois-ci' : resetScopeRem==='plage' ? `celles du ${fmtDate(rangeDebutRem)} au ${fmtDate(rangeFinRem)}` : resetScopeRem==='selection' ? 'celles sélectionnées manuellement' : 'TOUTES les rémunérations, toutes périodes confondues'} — de « ${site.nom} » ? Les dépenses déjà créées à partir de ces rémunérations ne seront PAS effacées automatiquement — supprimez-les séparément si besoin. Cette action est irréversible.`}
           onConfirm={resetRemunerations}
           onCancel={()=>setResetScopeRem(null)}
         />
@@ -8158,6 +8268,9 @@ function ParametresView({ site, updateSite, db, setDb }){
           <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)', background: showPlagePhc ? 'var(--danger-light)' : 'transparent'}} onClick={()=>setShowPlagePhc(!showPlagePhc)}>
             📅 Jours spécifiques
           </button>
+          <button className="btn" style={{color:'var(--danger)', borderColor:'var(--danger)', background: showSelectionPhc ? 'var(--danger-light)' : 'transparent'}} onClick={()=>setShowSelectionPhc(!showSelectionPhc)}>
+            🎯 Sélection manuelle
+          </button>
         </div>
         {showPlagePhc && (
           <div style={{marginTop:12, padding:'12px', background:'var(--danger-light)', borderRadius:8, display:'flex', gap:10, alignItems:'flex-end', flexWrap:'wrap'}}>
@@ -8174,11 +8287,21 @@ function ParametresView({ site, updateSite, db, setDb }){
             </button>
           </div>
         )}
+        {showSelectionPhc && (
+          <SelectionManuellePanel
+            items={[...(site.paiementsHorsCommande||[])].sort((a,b)=> (b.date||'').localeCompare(a.date||''))}
+            getId={p=>p.id}
+            renderLabel={p=>`${fmtDate(p.date)} — ${p.clientNom||''} — ${p.mode||''} — ${fmtGNF(p.montant)}`}
+            selection={selectionPhc}
+            setSelection={setSelectionPhc}
+            onSupprimer={()=>setResetScopePhc('selection')}
+          />
+        )}
       </div>
 
       {resetScopePhc && (
         <ConfirmDelete db={db}
-          message={`Effacer ${countForScopePhc(resetScopePhc)} encaissement(s) sans commande — ${resetScopePhc==='jour' ? "ceux d'aujourd'hui" : resetScopePhc==='mois' ? 'ceux de ce mois-ci' : resetScopePhc==='plage' ? `ceux du ${fmtDate(rangeDebutPhc)} au ${fmtDate(rangeFinPhc)}` : 'TOUS les encaissements sans commande, toutes périodes confondues'} — de « ${site.nom} » ? Cette action est irréversible.`}
+          message={`Effacer ${countForScopePhc(resetScopePhc)} encaissement(s) sans commande — ${resetScopePhc==='jour' ? "ceux d'aujourd'hui" : resetScopePhc==='mois' ? 'ceux de ce mois-ci' : resetScopePhc==='plage' ? `ceux du ${fmtDate(rangeDebutPhc)} au ${fmtDate(rangeFinPhc)}` : resetScopePhc==='selection' ? 'ceux sélectionnés manuellement' : 'TOUS les encaissements sans commande, toutes périodes confondues'} — de « ${site.nom} » ? Cette action est irréversible.`}
           onConfirm={resetPaiementsHorsCommande}
           onCancel={()=>setResetScopePhc(null)}
         />
