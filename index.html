@@ -7,7 +7,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-14-1">
+<meta name="app-version" content="2026-09-15-3">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -22,7 +22,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-14-1';
+  const APP_VERSION_ACTUELLE = '2026-09-15-3';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -1061,6 +1061,30 @@ function App(){
     });
   }, []);
 
+  // Correction ponctuelle (une seule fois, tous appareils confondus) : réattribue le "décaissement"
+  // (saisiPar) des salaires journaliers automatiques déjà enregistrés depuis le 1er septembre 2026 à la
+  // personne responsable de la caisse ce jour-là (planning : Nene Djiba lundi-mercredi, Mamadou Alpha
+  // jeudi-samedi), au lieu de l'employé bénéficiaire lui-même — pour que ces paiements passés se voient
+  // désormais dans les dépenses de qui a réellement payé, comme pour les nouveaux enregistrements.
+  useEffect(() => {
+    if(!db || loading) return;
+    if(db.migrationDecaissementSalaireSept2026) return;
+    persist(prevDb => {
+      if(!prevDb || prevDb.migrationDecaissementSalaireSept2026) return prevDb;
+      const sites = prevDb.sites.map(site => {
+        const depenses = (site.depenses||[]).map(d => {
+          if(d.autoCaissierId && d.date && d.date >= '2026-09-01'){
+            const responsable = employeResponsableCaisse(site, d.date);
+            if(responsable && d.saisiPar !== responsable.id) return { ...d, saisiPar: responsable.id };
+          }
+          return d;
+        });
+        return { ...site, depenses };
+      });
+      return { ...prevDb, sites, migrationDecaissementSalaireSept2026: true };
+    });
+  }, [db, loading, persist]);
+
   if(loading || !db){
     return (
       <div style={{minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', color:'var(--pine)'}}>
@@ -1121,6 +1145,29 @@ function ConflitBanner({ onFermer }){
 
 /* ===================== ECRAN CHOIX DE ROLE ===================== */
 
+// Employés concernés par le salaire journalier automatique (50 000 GNF/jour, jamais le dimanche).
+const EMPLOYES_SALAIRE_JOURNALIER = ['mamadou alpha', 'nene djiba'];
+function estEmployeSalaireJournalier(emp){
+  const nom = (emp.nom||'').trim().toLowerCase();
+  return EMPLOYES_SALAIRE_JOURNALIER.some(cible => nom.includes(cible));
+}
+
+// Planning caisse : détermine qui DÉCAISSE (paie physiquement) le salaire journalier des DEUX employés
+// chaque jour (jour selon Date.getUTCDay() : 0=dimanche, 1=lundi, 2=mardi, 3=mercredi, 4=jeudi, 5=vendredi,
+// 6=samedi). Le salaire (50 000 GNF/jour/employé) continue d'être crédité normalement à CHAQUE employé qui
+// se connecte (lundi à samedi) — seul CELUI QUI DÉCAISSE (saisiPar, donc dans quelles dépenses le paiement
+// apparaît) change selon ce planning, pas le fait que le salaire soit dû ou non.
+const PLANNING_DECAISSEMENT_SALAIRE = [
+  { cible: 'nene djiba', jours: [1, 2, 3] },    // lundi, mardi, mercredi
+  { cible: 'mamadou alpha', jours: [4, 5, 6] }, // jeudi, vendredi, samedi
+];
+function employeResponsableCaisse(site, dateISO){
+  const jour = new Date(dateISO + 'T00:00:00Z').getUTCDay();
+  const entree = PLANNING_DECAISSEMENT_SALAIRE.find(p => p.jours.includes(jour));
+  if(!entree) return null;
+  return (site.employes||[]).find(e => (e.nom||'').trim().toLowerCase().includes(entree.cible)) || null;
+}
+
 function RoleSelect({ db, setDb, onSelect }){
   const [mode, setMode] = useState(null);
   const [loginRole, setLoginRole] = useState(null);
@@ -1139,12 +1186,6 @@ function RoleSelect({ db, setDb, onSelect }){
     return list;
   }, [db]);
 
-  const EMPLOYES_SALAIRE_JOURNALIER = ['mamadou alpha', 'nene djiba'];
-  function estEmployeSalaireJournalier(emp){
-    const nom = (emp.nom||'').trim().toLowerCase();
-    return EMPLOYES_SALAIRE_JOURNALIER.some(cible => nom.includes(cible));
-  }
-
   function recordDailyCaissierExpense(siteId, emp){
     const today = todayISO();
     // Le jour de la semaine est calculé à partir de la MÊME date que celle enregistrée sur la dépense
@@ -1157,6 +1198,12 @@ function RoleSelect({ db, setDb, onSelect }){
     const depenses = site.depenses || [];
     const deja = depenses.some(d => d.autoCaissierId === emp.id && d.date === today);
     if(deja) return;
+    // Le salaire est dû à cet employé dès qu'il se connecte un jour non-dimanche — mais celui qui
+    // DÉCAISSE (saisiPar, donc dans les dépenses de qui le paiement apparaît) suit le planning caisse :
+    // c'est la personne responsable de la caisse ce jour-là qui paie, que ce soit son propre salaire
+    // ou celui de l'autre employé absent ce jour. Si personne du planning ne correspond sur ce site
+    // (autre pressing, ou noms différents), on retombe sur l'employé lui-même.
+    const responsable = employeResponsableCaisse(site, today);
     const dep = {
       id: uid('dep_'),
       date: today,
@@ -1164,6 +1211,7 @@ function RoleSelect({ db, setDb, onSelect }){
       montant: 50000,
       categorie: 'Salaires',
       autoCaissierId: emp.id,
+      saisiPar: (responsable ? responsable.id : emp.id),
     };
     setDb(prevDb => ({ ...prevDb, sites: prevDb.sites.map(s => s.id === siteId ? { ...s, depenses: [dep, ...(s.depenses||[])] } : s) }));
   }
@@ -7707,6 +7755,101 @@ function RegenererRecusSection({ site }){
   );
 }
 
+function AjusterSalaireJournalierModal({ site, updateSite, onClose }){
+  const employesEligibles = (site.employes||[]).filter(estEmployeSalaireJournalier);
+  const [empId, setEmpId] = useState(employesEligibles[0] ? employesEligibles[0].id : '');
+  const [date, setDate] = useState(todayISO());
+  const [montant, setMontant] = useState(50000);
+  const [saisiParId, setSaisiParId] = useState('');
+  const [flash, setFlash] = useState('');
+
+  const emp = employesEligibles.find(e => e.id === empId) || null;
+  const jourSemaine = date ? new Date(date + 'T00:00:00Z').getUTCDay() : null;
+  const estDimanche = jourSemaine === 0;
+  const existant = (emp && date) ? (site.depenses||[]).find(d => d.autoCaissierId === emp.id && d.date === date) : null;
+
+  useEffect(() => {
+    if(!emp || !date) return;
+    if(existant){
+      setMontant(existant.montant);
+      setSaisiParId(existant.saisiPar || emp.id);
+    } else {
+      setMontant(50000);
+      const responsable = employeResponsableCaisse(site, date);
+      setSaisiParId(responsable ? responsable.id : emp.id);
+    }
+    // eslint-disable-next-line
+  }, [empId, date]);
+
+  function enregistrer(){
+    if(!emp || !date || estDimanche || !montant) return;
+    if(existant){
+      const depenses = (site.depenses||[]).map(d => d.id === existant.id ? { ...d, montant: Number(montant), saisiPar: saisiParId || emp.id } : d);
+      updateSite({ ...site, depenses });
+    } else {
+      const dep = {
+        id: uid('dep_'),
+        date,
+        description: `Salaire journalier — ${emp.nom}`,
+        montant: Number(montant),
+        categorie: 'Salaires',
+        autoCaissierId: emp.id,
+        saisiPar: saisiParId || emp.id,
+        ajouteParGerant: true,
+      };
+      updateSite({ ...site, depenses: [dep, ...(site.depenses||[])] });
+    }
+    setFlash(existant ? 'Salaire journalier réajusté !' : 'Salaire journalier ajouté !');
+    setTimeout(()=>{ onClose(); }, 1100);
+  }
+
+  return (
+    <ModalShell title="➕ Ajouter / réajuster un salaire journalier" onClose={onClose} width={420}>
+      <div style={{display:'grid', gap:14}}>
+        <p style={{fontSize:12.5, color:'var(--steam)', margin:0, lineHeight:1.5}}>
+          À utiliser si un employé a travaillé un jour mais a oublié de se connecter (le salaire automatique ne s'est donc pas enregistré), ou pour corriger un montant déjà enregistré.
+        </p>
+        {employesEligibles.length === 0 ? (
+          <p style={{fontSize:13, color:'var(--danger)', margin:0}}>Aucun employé de « {site.nom} » n'est éligible au salaire journalier (Mamadou Alpha / Nene Djiba).</p>
+        ) : (
+          <>
+            <div>
+              <label>Employé</label>
+              <select value={empId} onChange={e=>setEmpId(e.target.value)}>
+                {employesEligibles.map(e => <option key={e.id} value={e.id}>{e.nom}</option>)}
+              </select>
+            </div>
+            <div>
+              <label>Date travaillée</label>
+              <input type="date" value={date} onChange={e=>setDate(e.target.value)} max={todayISO()} />
+              {estDimanche && <p style={{color:'var(--danger)', fontSize:12.5, margin:'4px 0 0'}}>Aucun salaire journalier n'est versé le dimanche.</p>}
+            </div>
+            <div>
+              <label>Montant (GNF)</label>
+              <input type="number" value={montant} onChange={e=>setMontant(e.target.value)} min={0} step={1000} />
+            </div>
+            <div>
+              <label>Décaissé par (qui a payé)</label>
+              <select value={saisiParId} onChange={e=>setSaisiParId(e.target.value)}>
+                {(site.employes||[]).map(e => <option key={e.id} value={e.id}>{e.nom}</option>)}
+              </select>
+            </div>
+            {existant && (
+              <p style={{fontSize:12.5, color:'var(--warn)', margin:0}}>
+                Un salaire journalier existe déjà pour {emp?.nom} le {fmtDate(date)} ({fmtGNF(existant.montant)}) — cet enregistrement sera réajusté, pas dupliqué.
+              </p>
+            )}
+            {flash && <p style={{color:'var(--ok)', fontWeight:600, margin:0}}><Icon name="check" size={14}/> {flash}</p>}
+            <button className="btn btn-rust" onClick={enregistrer} disabled={!emp || !date || estDimanche || !montant}>
+              {existant ? 'Réajuster ce salaire' : 'Ajouter ce salaire'}
+            </button>
+          </>
+        )}
+      </div>
+    </ModalShell>
+  );
+}
+
 function SelectionManuellePanel({ items, getId, renderLabel, selection, setSelection, onSupprimer }){
   const [recherche, setRecherche] = useState('');
   const filtered = recherche.trim()
@@ -7760,6 +7903,7 @@ function ParametresView({ site, updateSite, db, setDb }){
   const [code, setCode] = useState(site.code);
   const [showRenameConfirm, setShowRenameConfirm] = useState(false);
   const [renameFlash, setRenameFlash] = useState(false);
+  const [showAjusterSalaire, setShowAjusterSalaire] = useState(false);
 
   function renommerTousLesTickets(){
     const nouveauCode = code.trim().toUpperCase() || site.code;
@@ -8062,6 +8206,23 @@ function ParametresView({ site, updateSite, db, setDb }){
           </div>
         )}
       </div>
+
+      {/* Ajouter / réajuster un salaire journalier oublié */}
+      <div className="card" style={{padding:'1.5rem', marginTop:18}}>
+        <h3 style={{margin:'0 0 6px', fontSize:15, display:'flex', alignItems:'center', gap:8}}>
+          💵 Salaire journalier — ajout ou correction manuelle
+        </h3>
+        <p style={{fontSize:13, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.6}}>
+          Si Mamadou Alpha ou Nene Djiba a travaillé un jour sans se connecter à l'app (le salaire automatique ne s'enregistre qu'à la connexion), ou si un montant enregistré doit être corrigé, utilisez cet outil plutôt que « Nouvelle dépense ».
+        </p>
+        <button className="btn" onClick={()=>setShowAjusterSalaire(true)}>
+          <Icon name="plus" size={14}/> Ajouter / réajuster un salaire journalier
+        </button>
+      </div>
+
+      {showAjusterSalaire && (
+        <AjusterSalaireJournalierModal site={site} updateSite={updateSite} onClose={()=>setShowAjusterSalaire(false)} />
+      )}
 
       {/* Réinitialiser les commandes (nouveau mois / nouvelle période) */}
       <div className="card" style={{padding:'1.5rem', marginTop:18, borderColor:'var(--danger)'}}>
