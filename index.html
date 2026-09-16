@@ -7,7 +7,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-15-3">
+<meta name="app-version" content="2026-09-16-1">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -22,7 +22,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-15-3';
+  const APP_VERSION_ACTUELLE = '2026-09-16-1';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -1011,55 +1011,74 @@ function App(){
     };
   }, []);
 
+  // Tente d'enregistrer "resolved" sur Firebase. Si "next" est une fonction (mutation relative à l'état
+  // précédent, ex: persist(prevDb => ...)) et que la sauvegarde est refusée pour cause de conflit de
+  // révision (un autre appareil a sauvegardé entre-temps), on REJOUE cette même mutation sur la version
+  // fraîche du serveur et on retente — au lieu d'abandonner le changement en silence. C'est ce qui causait
+  // la perte du salaire journalier d'un employé quand deux appareils (deux sites/tablettes) enregistraient
+  // presque au même moment : le perdant du conflit voyait sa modification locale purement et simplement
+  // remplacée par la version serveur, sans jamais être réappliquée ni renvoyée.
+  const tentativeSauvegarde = useCallback((next, resolved, essai) => {
+    if(!isConnectedRef.current){
+      localStorage.setItem('maci-offline-db', JSON.stringify(resolved));
+      setPendingSync(true);
+      return;
+    }
+    const revAttendue = (resolved && typeof resolved._rev === 'number') ? resolved._rev : 0;
+    storageSetSiRevisionValide(DB_KEY, resolved, revAttendue).then((res) => {
+      if(res.ok){
+        // On avance immédiatement le compteur de révision local (sans attendre
+        // l'écho de l'écouteur temps réel) : sinon, une saisie rapide (plusieurs
+        // champs modifiés coup sur coup) pourrait déclencher une sauvegarde
+        // suivante avant le retour de celle-ci, et la faire échouer à tort en
+        // la comparant à un numéro de révision pas encore mis à jour.
+        setDb(prevDb => (prevDb && prevDb._rev === revAttendue) ? { ...prevDb, _rev: revAttendue + 1 } : prevDb);
+        localStorage.removeItem('maci-offline-db');
+        return;
+      }
+      if(res.erreurTechnique){
+        localStorage.removeItem('maci-offline-db');
+        return;
+      }
+      // Sauvegarde refusée : la copie de cet appareil était périmée (quelqu'un d'autre a
+      // sauvegardé entre-temps). Si on a la mutation d'origine (fonction) et la version fraîche
+      // du serveur, on rejoue cette mutation sur cette version fraîche et on retente (jusqu'à 5
+      // fois) au lieu de perdre le changement local en silence.
+      if(res.fraiche && typeof next === 'function' && essai < 5){
+        const fraichePurgee = purgeCorbeille(res.fraiche);
+        const rejoue = next(fraichePurgee);
+        setDb(rejoue);
+        tentativeSauvegarde(next, rejoue, essai + 1);
+        return;
+      }
+      // Ni fonction rejouable, ni tentative encore possible : on garde la tentative de côté pour
+      // vérification manuelle au lieu de la perdre silencieusement, on adopte la version fraîche
+      // du serveur, et on prévient l'utilisateur au lieu d'écraser sans rien dire.
+      try{ localStorage.setItem('maci-offline-db-conflit', JSON.stringify(resolved)); }catch(e){}
+      if(res.fraiche){
+        const fraichePurgee = purgeCorbeille(res.fraiche);
+        setDb(fraichePurgee);
+        localStorage.setItem('maci-pressing-local', JSON.stringify(fraichePurgee));
+      }
+      setConflitDonneesAnciennes(true);
+      localStorage.removeItem('maci-offline-db');
+    });
+  }, []);
+
   const persist = useCallback((next) => {
     setDb(prevDb => {
       // Accepte soit une valeur directe, soit une fonction (prevDb => nextDb) —
       // la fonction garantit toujours de partir de l'état le plus à jour,
-      // même si l'appelant avait une référence "db" un peu ancienne.
+      // même si l'appelant avait une référence "db" un peu ancienne, et permet
+      // de la rejouer en cas de conflit de révision (voir tentativeSauvegarde).
       const resolved = typeof next === 'function' ? next(prevDb) : next;
       if(saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
-        if(isConnectedRef.current){
-          // En ligne : sauvegarder sur Firebase, mais SEULEMENT si personne d'autre
-          // n'a sauvegardé depuis la dernière fois que cet appareil a lu les données.
-          // Ce garde-fou protège aussi le cas d'un appareil resté "en ligne" en
-          // apparence mais dont l'onglet a été mis en veille par le navigateur
-          // (téléphone verrouillé, onglet en arrière-plan) : à son réveil, sa copie
-          // en mémoire peut être périmée sans que l'appareil ait jamais été détecté
-          // hors ligne — c'est ce qui a causé la perte de données du 12/09.
-          const revAttendue = (resolved && typeof resolved._rev === 'number') ? resolved._rev : 0;
-          storageSetSiRevisionValide(DB_KEY, resolved, revAttendue).then((res) => {
-            if(res.ok){
-              // On avance immédiatement le compteur de révision local (sans attendre
-              // l'écho de l'écouteur temps réel) : sinon, une saisie rapide (plusieurs
-              // champs modifiés coup sur coup) pourrait déclencher une sauvegarde
-              // suivante avant le retour de celle-ci, et la faire échouer à tort en
-              // la comparant à un numéro de révision pas encore mis à jour.
-              setDb(prevDb => (prevDb && prevDb._rev === revAttendue) ? { ...prevDb, _rev: revAttendue + 1 } : prevDb);
-            } else if(!res.erreurTechnique){
-              // Sauvegarde refusée : la copie de cet appareil était périmée. On garde
-              // sa tentative de côté pour vérification manuelle au lieu de la perdre
-              // silencieusement, on adopte la version fraîche du serveur, et on
-              // prévient l'utilisateur au lieu d'écraser sans rien dire.
-              try{ localStorage.setItem('maci-offline-db-conflit', JSON.stringify(resolved)); }catch(e){}
-              if(res.fraiche){
-                const fraichePurgee = purgeCorbeille(res.fraiche);
-                setDb(fraichePurgee);
-                localStorage.setItem('maci-pressing-local', JSON.stringify(fraichePurgee));
-              }
-              setConflitDonneesAnciennes(true);
-            }
-          });
-          localStorage.removeItem('maci-offline-db');
-        } else {
-          // Hors ligne : sauvegarder localement
-          localStorage.setItem('maci-offline-db', JSON.stringify(resolved));
-          setPendingSync(true);
-        }
+        tentativeSauvegarde(next, resolved, 0);
       }, 400);
       return resolved;
     });
-  }, []);
+  }, [tentativeSauvegarde]);
 
   // Correction ponctuelle (une seule fois, tous appareils confondus) : réattribue le "décaissement"
   // (saisiPar) des salaires journaliers automatiques déjà enregistrés depuis le 1er septembre 2026 à la
@@ -8172,6 +8191,12 @@ function ParametresView({ site, updateSite, db, setDb }){
         </div>
 
         <ServicesEditor site={site} updateSite={updateSite} db={db} />
+      </div>
+
+      {/* Numéro de version de l'application */}
+      <div className="card" style={{padding:'1rem 1.5rem', marginTop:18, display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+        <span style={{fontSize:13, color:'var(--muted)'}}>Version de l'application installée</span>
+        <span style={{fontSize:13, fontWeight:700, color:'var(--ink)'}}>{APP_VERSION_ACTUELLE}</span>
       </div>
 
       {/* Changement mot de passe gérant */}
