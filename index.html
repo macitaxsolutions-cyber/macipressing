@@ -7,7 +7,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-17-2">
+<meta name="app-version" content="2026-09-17-6">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -22,7 +22,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-17-2';
+  const APP_VERSION_ACTUELLE = '2026-09-17-6';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -3995,6 +3995,7 @@ function Dashboard({ site, updateSite }){
     : periode === 'semaine' ? 'Cette semaine'
     : periode === 'mois' ? 'Ce mois'
     : periode === 'annee' ? (anneeChoisie === currentYear ? 'Cette année' : `Année ${anneeChoisie}`)
+    : periode === 'total' ? 'À ce jour (tout confondu)'
     : periode === 'date' ? `Le ${fmtDate(bornes.debut)}`
     : `Du ${fmtDate(bornes.debut)} au ${fmtDate(bornes.fin)}`;
 
@@ -4003,7 +4004,36 @@ function Dashboard({ site, updateSite }){
   // au lancement de l'app (01/09/2026), y compris toute l'année 2025.
   const donneesAnneeChoisie = useMemo(() => calculerDonneesMensuellesSite(site, anneeChoisie), [site, anneeChoisie]);
 
+  // Pour "À ce jour" : même principe que "Cette année" mais cumulé sur TOUTES les années disponibles
+  // (mensuel auto + saisies manuelles de Détail mensuel pour les mois antérieurs au lancement), comme le
+  // fait déjà "À ce jour" sur les autres pages (Encaissements, Distribution des recettes, ...).
+  const donneesTousAns = useMemo(() => {
+    if(periode !== 'total') return [];
+    return anneesDisponibles.flatMap(y => calculerDonneesMensuellesSite(site, y).map(m => ({ ...m, annee: y })));
+  }, [site, periode, anneesDisponibles]);
+
   const stats = useMemo(() => {
+    if(periode === 'total'){
+      const especes = donneesTousAns.reduce((s,m)=>s+(m.montantRecuEspeces||0),0);
+      const orangeMoney = donneesTousAns.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0);
+      const ca = donneesTousAns.reduce((s,m)=>s+(m.recetteBrute||0),0);
+      const depenses = donneesTousAns.reduce((s,m)=>s+(m.depenses||0),0);
+      const montantImpaye = donneesTousAns.reduce((s,m)=>s+(m.impayesReel||0),0);
+      const nbCommandes = (site.commandes||[]).length;
+      const parAnnee = {};
+      donneesTousAns.forEach(m => { parAnnee[m.annee] = (parAnnee[m.annee]||0) + (m.recetteBrute||0); });
+      const barres = Object.keys(parAnnee).sort().map(a => ({ key:a, ca: parAnnee[a], label:a, actif: a === String(currentYear) }));
+      const maxCa = Math.max(...barres.map(d=>d.ca), 1);
+      const serviceCount = {};
+      (site.commandes||[]).forEach(c => (c.lignes||[]).forEach(l => { serviceCount[l.serviceId] = (serviceCount[l.serviceId]||0) + l.qte; }));
+      const topServices = Object.entries(serviceCount)
+        .map(([id, qte]) => ({ svc: site.services.find(s=>s.id===id), qte }))
+        .filter(x=>x.svc).sort((a,b)=>b.qte-a.qte).slice(0,5);
+      const impayesEnCours = (site.commandes||[]).filter(c => c.paiement === 'impaye');
+      const enCours = (site.commandes||[]).filter(c => c.statut === 'En cours' || c.statut === 'Reçu').length;
+      const pretsNonRecuperes = (site.commandes||[]).filter(c => c.statut === 'Prêt').length;
+      return { ca, encaisse: especes+orangeMoney, especes, orangeMoney, nbCommandes, montantImpaye, impayesCount: impayesEnCours.length, enCours, pretsNonRecuperes, topServices, barres, titreGraphe:"Chiffre d'affaires par année", maxCa, totalClients: (site.clients||[]).length, depenses, benefice: ca - depenses, netPercu: (especes+orangeMoney) - depenses, inclutSaisiesManuelles: donneesTousAns.some(m=>m.manuel) };
+    }
     if(periode === 'annee'){
       const especes = donneesAnneeChoisie.reduce((s,m)=>s+(m.montantRecuEspeces||0),0);
       const orangeMoney = donneesAnneeChoisie.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0);
@@ -4019,10 +4049,11 @@ function Dashboard({ site, updateSite }){
       const topServices = Object.entries(serviceCount)
         .map(([id, qte]) => ({ svc: site.services.find(s=>s.id===id), qte }))
         .filter(x=>x.svc).sort((a,b)=>b.qte-a.qte).slice(0,5);
-      const impayesEnCours = (site.commandes||[]).filter(c => c.paiement === 'impaye');
+      // Impayés de l'année choisie uniquement (commande créée cette année-là), comme pour les autres périodes.
+      const impayesEnCours = cmdsAnnee.filter(c => c.paiement === 'impaye');
       const enCours = (site.commandes||[]).filter(c => c.statut === 'En cours' || c.statut === 'Reçu').length;
       const pretsNonRecuperes = (site.commandes||[]).filter(c => c.statut === 'Prêt').length;
-      return { ca, encaisse: especes+orangeMoney, especes, orangeMoney, nbCommandes, montantImpaye, impayesCount: impayesEnCours.length, enCours, pretsNonRecuperes, topServices, barres, titreGraphe:"Chiffre d'affaires par mois", maxCa, totalClients: (site.clients||[]).length, depenses, benefice: ca - depenses, inclutSaisiesManuelles: donneesAnneeChoisie.some(m=>m.manuel) };
+      return { ca, encaisse: especes+orangeMoney, especes, orangeMoney, nbCommandes, montantImpaye, impayesCount: impayesEnCours.length, enCours, pretsNonRecuperes, topServices, barres, titreGraphe:"Chiffre d'affaires par mois", maxCa, totalClients: (site.clients||[]).length, depenses, benefice: ca - depenses, netPercu: (especes+orangeMoney) - depenses, inclutSaisiesManuelles: donneesAnneeChoisie.some(m=>m.manuel) };
     }
     const cmds = site.commandes || [];
     const cmdsPeriode = cmds.filter(c => c.dateCreation && dansPeriode(c.dateCreation));
@@ -4042,7 +4073,9 @@ function Dashboard({ site, updateSite }){
     });
     const encaisse = especes + orangeMoney;
 
-    const impayes = cmds.filter(c => c.paiement === 'impaye');
+    // Impayés filtrés sur la commande créée pendant la période choisie (comme CA/Encaissé/Commandes) —
+    // et non plus toutes les commandes impayées de tous temps confondus.
+    const impayes = cmdsPeriode.filter(c => c.paiement === 'impaye');
     const montantImpaye = impayes.reduce((s,c)=>s+calcCommandeTotal(c, site.services) - (Number(c.acompte)||0),0);
     const enCours = cmds.filter(c => c.statut === 'En cours' || c.statut === 'Reçu').length;
     const pretsNonRecuperes = cmds.filter(c => c.statut === 'Prêt').length;
@@ -4084,14 +4117,15 @@ function Dashboard({ site, updateSite }){
 
     const depenses = (site.depenses||[]).filter(d => d.date && dansPeriode(d.date)).reduce((s,d)=>s+Number(d.montant)||0,0);
     const benefice = ca - depenses;
+    const netPercu = encaisse - depenses;
 
-    return { ca, encaisse, especes, orangeMoney, nbCommandes: cmdsPeriode.length, montantImpaye, impayesCount: impayes.length, enCours, pretsNonRecuperes, topServices, barres, titreGraphe, maxCa, totalClients: (site.clients||[]).length, depenses, benefice, inclutSaisiesManuelles: false };
-  }, [site, bornes, today, periode, donneesAnneeChoisie, anneeChoisie]);
+    return { ca, encaisse, especes, orangeMoney, nbCommandes: cmdsPeriode.length, montantImpaye, impayesCount: impayes.length, enCours, pretsNonRecuperes, topServices, barres, titreGraphe, maxCa, totalClients: (site.clients||[]).length, depenses, benefice, netPercu, inclutSaisiesManuelles: false };
+  }, [site, bornes, today, periode, donneesAnneeChoisie, anneeChoisie, donneesTousAns, currentYear]);
 
   // Avant le lancement de l'app (01/09/2026), il n'existe pas de détail jour par jour — seulement des totaux mensuels
   // saisis dans Détail mensuel. Une période "Aujourd'hui / Cette semaine / Une date / Intervalle" tombant avant cette
   // date ne peut donc rien montrer de fiable ; seul "Cette année" (qui reprend Détail mensuel) couvre ces mois-là.
-  const periodeAvantLancement = periode !== 'annee' && periode !== 'mois' && bornes.fin < '2026-09-01';
+  const periodeAvantLancement = periode !== 'annee' && periode !== 'mois' && periode !== 'total' && bornes.fin < '2026-09-01';
 
   const lowStock = (site.stock||[]).filter(s => s.quantite <= s.seuil);
   const btn = (k, l) => (
@@ -4110,6 +4144,7 @@ function Dashboard({ site, updateSite }){
         {btn('semaine', 'Cette semaine')}
         {btn('mois', 'Ce mois')}
         {btn('annee', 'Cette année')}
+        {btn('total', 'À ce jour')}
         {btn('date', 'Une date')}
         {btn('plage', 'Intervalle')}
         {periode === 'annee' && (
@@ -4136,7 +4171,7 @@ function Dashboard({ site, updateSite }){
       </p>
       {stats.inclutSaisiesManuelles && (
         <p style={{fontSize:12, color:'var(--warn)', margin:'-4px 0 12px'}}>
-          ℹ️ Certains mois de {anneeChoisie} n'ont pas de détail jour par jour (avant le lancement de l'app le 01/09/2026) — leurs montants viennent des saisies faites dans « Détail mensuel ».
+          ℹ️ Certains mois {periode === 'total' ? '' : `de ${anneeChoisie} `}n'ont pas de détail jour par jour (avant le lancement de l'app le 01/09/2026) — leurs montants viennent des saisies faites dans « Détail mensuel ».
         </p>
       )}
       {periodeAvantLancement && (
@@ -4144,19 +4179,19 @@ function Dashboard({ site, updateSite }){
           ℹ️ Cette période est antérieure au lancement de l'app (01/09/2026) : il n'existe pas de détail jour par jour pour ces dates. Choisissez « Cette année » pour voir les totaux mensuels saisis dans Détail mensuel.
         </p>
       )}
-      <div style={{display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:14, marginBottom:14}}>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(160px, 1fr))', gap:14, marginBottom:14}}>
         <StatCard label={`CA — ${periodeLabel}`} value={fmtGNF(stats.ca)} sub={`${stats.nbCommandes} commande(s)`} icon="euro" />
-        <StatCard label={`Encaissé — ${periodeLabel}`} value={fmtGNF(stats.encaisse)} sub="Espèces + Orange Money" icon="chart" />
-        <StatCard label="Impayés (en cours)" value={fmtGNF(stats.montantImpaye)} sub={`${stats.impayesCount} commande(s), toutes périodes`} icon="alert" tone={stats.impayesCount>0 ? 'danger':'default'} />
+        <StatCard label={`Encaissé — ${periodeLabel}`} value={fmtGNF(stats.encaisse)} sub={`Espèces + Orange Money · ${stats.nbCommandes} commande(s)`} icon="chart" />
+        <StatCard label={`Impayés — ${periodeLabel}`} value={fmtGNF(stats.montantImpaye)} sub={`${stats.impayesCount} commande(s)`} icon="alert" tone={stats.impayesCount>0 ? 'danger':'default'} />
+        <StatCard label={`Commandes — ${periodeLabel}`} value={stats.nbCommandes} icon="box" />
         <StatCard label="Clients" value={stats.totalClients} icon="users" />
       </div>
-      <div style={{display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap:14, marginBottom:14}}>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(160px, 1fr))', gap:14, marginBottom:24}}>
         <StatCard label={`Espèces reçues — ${periodeLabel}`} value={fmtGNF(stats.especes)} icon="euro" />
         <StatCard label={`Orange Money reçu — ${periodeLabel}`} value={fmtGNF(stats.orangeMoney)} icon="euro" />
-      </div>
-      <div style={{display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap:14, marginBottom:24}}>
         <StatCard label={`Dépenses — ${periodeLabel}`} value={fmtGNF(stats.depenses)} icon="trash" tone="danger" />
         <StatCard label={`Bénéfice net — ${periodeLabel}`} value={fmtGNF(stats.benefice)} icon="chart" tone={stats.benefice>=0?'default':'danger'} sub="CA − Dépenses" />
+        <StatCard label={`Net perçu — ${periodeLabel}`} value={fmtGNF(stats.netPercu)} icon="chart" tone={stats.netPercu>=0?'default':'danger'} sub="Encaissé − Dépenses" />
       </div>
 
       <div style={{display:'grid', gridTemplateColumns:'1.4fr 1fr', gap:16, marginBottom:24}}>
