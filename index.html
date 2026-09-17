@@ -7,7 +7,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-17-1">
+<meta name="app-version" content="2026-09-17-2">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -22,7 +22,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-17-1';
+  const APP_VERSION_ACTUELLE = '2026-09-17-2';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -1118,17 +1118,37 @@ function App(){
         {conflitDonneesAnciennes && <ConflitBanner onFermer={()=>setConflitDonneesAnciennes(false)} />}
         {!isOnline && <OfflineBanner pending={pendingSync} />}
         <RoleSelect db={db} setDb={persist} onSelect={(r, siteId, clientId, employeId) => { setRole(r); setCurrentSiteId(siteId||null); setCurrentClientId(clientId||null); setCurrentEmployeId(employeId||null); }} />
+        <AppFooter />
       </>
     );
   }
 
   const offlineBanner = <>{conflitDonneesAnciennes && <ConflitBanner onFermer={()=>setConflitDonneesAnciennes(false)} />}{!isOnline && <OfflineBanner pending={pendingSync} />}</>;
 
-  if(role === 'gerant') return <>{offlineBanner}<GerantApp db={db} setDb={persist} onLogout={()=>{setRole(null); setCurrentSiteId(null);}} /></>;
-  if(role === 'employe') return <>{offlineBanner}<EmployeApp db={db} setDb={persist} siteId={currentSiteId} employeId={currentEmployeId} onLogout={()=>{setRole(null); setCurrentSiteId(null); setCurrentEmployeId(null);}} /></>;
-  if(role === 'client') return <>{offlineBanner}<ClientApp db={db} setDb={persist} siteId={currentSiteId} clientId={currentClientId} onLogout={()=>{setRole(null); setCurrentSiteId(null); setCurrentClientId(null);}} /></>;
+  if(role === 'gerant') return <>{offlineBanner}<GerantApp db={db} setDb={persist} onLogout={()=>{setRole(null); setCurrentSiteId(null);}} /><AppFooter /></>;
+  if(role === 'employe') return <>{offlineBanner}<EmployeApp db={db} setDb={persist} siteId={currentSiteId} employeId={currentEmployeId} onLogout={()=>{setRole(null); setCurrentSiteId(null); setCurrentEmployeId(null);}} /><AppFooter /></>;
+  if(role === 'client') return <>{offlineBanner}<ClientApp db={db} setDb={persist} siteId={currentSiteId} clientId={currentClientId} onLogout={()=>{setRole(null); setCurrentSiteId(null); setCurrentClientId(null);}} /><AppFooter /></>;
 
   return null;
+}
+
+/* ===================== PIED DE PAGE — VERSION & COPYRIGHT =====================
+   Affiché en bas de CHAQUE écran (choix de rôle, gérant, employé, client). Le numéro de
+   version vient directement de APP_VERSION_ACTUELLE (déclarée en haut du fichier, dans le
+   <script> de vérification de mise à jour) : il n'y a donc RIEN à changer ici — la mention
+   se met à jour toute seule dès que ce numéro est incrémenté à chaque nouvelle révision. */
+function AppFooter(){
+  return (
+    <div style={{
+      position:'fixed', bottom:0, left:0, right:0, zIndex:40,
+      display:'flex', justifyContent:'center', alignItems:'center',
+      padding:'3px 8px', pointerEvents:'none',
+      background:'rgba(255,255,255,0.75)', backdropFilter:'blur(2px)',
+      fontSize:10.5, color:'var(--steam)', textAlign:'center', lineHeight:1.3
+    }}>
+      © {new Date().getFullYear()} Maci Pressing — Propriétaire exclusif de cette application. Tous droits réservés. · v{APP_VERSION_ACTUELLE}
+    </div>
+  );
 }
 
 /* ===================== BANNIERE HORS LIGNE ===================== */
