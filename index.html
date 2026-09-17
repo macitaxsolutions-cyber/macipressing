@@ -7,7 +7,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-16-1">
+<meta name="app-version" content="2026-09-17-1">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -22,7 +22,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-16-1';
+  const APP_VERSION_ACTUELLE = '2026-09-17-1';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -8753,6 +8753,9 @@ function RepassageApercuView({ site, updateSite }){
   const [anneeChoisie, setAnneeChoisie] = useState(Number(todayISO().slice(0,4)));
   const [modeChoisi, setModeChoisi] = useState({});
   const today = todayISO();
+  const [dateChoisie, setDateChoisie] = useState(today);
+  const [plageDebut, setPlageDebut] = useState(today);
+  const [plageFin, setPlageFin] = useState(today);
 
   const getWeekDates = () => {
     const d = new Date(today + 'T00:00:00');
@@ -8782,8 +8785,15 @@ function RepassageApercuView({ site, updateSite }){
     if(periode === 'jour') return repassages.filter(r => (r.date||'').slice(0,10) === today);
     if(periode === 'semaine') return repassages.filter(r => { const d=(r.date||'').slice(0,10); return d >= semaine.start && d <= semaine.end; });
     if(periode === 'mois') return repassages.filter(r => r.date.slice(0,7) === moisChoisi);
-    return repassages.filter(r => Number(r.date.slice(0,4)) === anneeChoisie);
-  }, [repassages, periode, today, semaine, moisChoisi, anneeChoisie]);
+    if(periode === 'annee') return repassages.filter(r => Number(r.date.slice(0,4)) === anneeChoisie);
+    if(periode === 'date') return repassages.filter(r => (r.date||'').slice(0,10) === dateChoisie);
+    if(periode === 'plage'){
+      const a = plageDebut || today, b = plageFin || today;
+      const debut = a <= b ? a : b, fin = a <= b ? b : a;
+      return repassages.filter(r => { const d=(r.date||'').slice(0,10); return d >= debut && d <= fin; });
+    }
+    return repassages;
+  }, [repassages, periode, today, semaine, moisChoisi, anneeChoisie, dateChoisie, plageDebut, plageFin]);
 
   const parRepasseur = useMemo(() => {
     const acc = {};
@@ -8828,7 +8838,13 @@ function RepassageApercuView({ site, updateSite }){
 
   const totalGeneral = filtres.reduce((s,r)=>s+Number(r.montant),0);
   const totalArticlesGeneral = Object.values(parRepasseur).reduce((s,p)=>s+p.totalArticles,0);
-  const periodeLabel = periode==='jour' ? "Aujourd'hui" : periode==='semaine' ? 'Cette semaine' : periode==='mois' ? 'Ce mois' : 'Cette année';
+  const plageBornes = useMemo(() => { const a = plageDebut || today, b = plageFin || today; return a <= b ? { debut:a, fin:b } : { debut:b, fin:a }; }, [plageDebut, plageFin, today]);
+  const periodeLabel = periode==='jour' ? "Aujourd'hui"
+    : periode==='semaine' ? 'Cette semaine'
+    : periode==='mois' ? 'Ce mois'
+    : periode==='annee' ? 'Cette année'
+    : periode==='date' ? `Le ${fmtDate(dateChoisie)}`
+    : `Du ${fmtDate(plageBornes.debut)} au ${fmtDate(plageBornes.fin)}`;
   const repasseurIds = Object.keys(parRepasseur);
 
   return (
@@ -8837,10 +8853,10 @@ function RepassageApercuView({ site, updateSite }){
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px'}}>Articles repassés, totaux, et paiement des repasseurs — groupé par période</p>
 
       <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
-        {['jour','semaine','mois','annee'].map(v => (
+        {['jour','semaine','mois','annee','date','plage'].map(v => (
           <button key={v} className="btn btn-sm" onClick={()=>setPeriode(v)}
             style={{background:periode===v?'var(--pine)':'transparent', color:periode===v?'var(--white)':'var(--ink)', borderColor:periode===v?'var(--pine)':'var(--line-strong)'}}>
-            {v === 'jour' ? "Aujourd'hui" : v === 'semaine' ? 'Cette semaine' : v === 'mois' ? 'Ce mois' : 'Cette année'}
+            {v === 'jour' ? "Aujourd'hui" : v === 'semaine' ? 'Cette semaine' : v === 'mois' ? 'Ce mois' : v === 'annee' ? 'Cette année' : v === 'date' ? 'Une date' : 'Intervalle'}
           </button>
         ))}
         {periode === 'mois' && (
@@ -8852,6 +8868,17 @@ function RepassageApercuView({ site, updateSite }){
           <select value={anneeChoisie} onChange={e=>setAnneeChoisie(Number(e.target.value))} style={{width:'auto', minWidth:100}}>
             {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
           </select>
+        )}
+        {periode === 'date' && (
+          <input type="date" value={dateChoisie} max={today} onChange={e=>setDateChoisie(e.target.value)} style={{width:'auto'}} />
+        )}
+        {periode === 'plage' && (
+          <span style={{display:'flex', gap:6, alignItems:'center', flexWrap:'wrap'}}>
+            <span style={{fontSize:12.5}}>du</span>
+            <input type="date" value={plageDebut} max={today} onChange={e=>setPlageDebut(e.target.value)} style={{width:'auto'}} />
+            <span style={{fontSize:12.5}}>au</span>
+            <input type="date" value={plageFin} max={today} onChange={e=>setPlageFin(e.target.value)} style={{width:'auto'}} />
+          </span>
         )}
       </div>
 
