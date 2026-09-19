@@ -7,7 +7,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-19-9">
+<meta name="app-version" content="2026-09-19-10">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -22,7 +22,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-19-9';
+  const APP_VERSION_ACTUELLE = '2026-09-19-10';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -1219,6 +1219,69 @@ function App(){
         return { ...site, depenses };
       });
       return { ...prevDb, sites, migrationAttributionPaiementRepasseurSept2026: true };
+    });
+  }, [db, loading, persist]);
+
+  // Correction ponctuelle (une seule fois, tous appareils confondus) : avant ce correctif, chaque paiement
+  // au repasseur créait UNE dépense par prestation réglée (une commande = une ligne), si bien qu'un seul
+  // vrai décaissement (un clic « Marquer payé » dans Suivi repassage, pour plusieurs commandes à la fois)
+  // se retrouvait éclaté en plusieurs petites dépenses — et l'affichage les regroupait ensuite visuellement
+  // en une ligne « Groupé » non modifiable pour rester lisible. Résultat : impossible pour le gérant de
+  // corriger qui avait réellement décaissé. On fusionne ici, une seule fois, les dépenses « Paiement
+  // repasseur » qui partagent la même date, le même repasseur (extrait de la description) et le même mode
+  // de paiement, en UNE SEULE dépense réelle et modifiable (montant total, liste des prestations réglées
+  // dans autoPrestationIds). Le décaissement, dont l'attribution est censée déjà être la même pour tout le
+  // groupe (voir la correction précédente, basée sur la date), est repris du premier élément du groupe.
+  useEffect(() => {
+    if(!db || loading) return;
+    if(db.migrationConsolidationPaiementRepasseurSept2026) return;
+    persist(prevDb => {
+      if(!prevDb || prevDb.migrationConsolidationPaiementRepasseurSept2026) return prevDb;
+      function extraireNomRepasseurMigration(description){
+        const parts = (description||'').split(' — ');
+        return parts.length > 1 ? parts[parts.length-1].trim() : (description||'');
+      }
+      const sites = prevDb.sites.map(site => {
+        const aConsolider = [];
+        const autres = [];
+        (site.depenses||[]).forEach(d => {
+          if(d.categorie === 'Paiement repasseur' && d.autoPrestationId && !Array.isArray(d.autoPrestationIds)){
+            aConsolider.push(d);
+          } else {
+            autres.push(d);
+          }
+        });
+        if(aConsolider.length === 0) return site;
+        const groupes = {};
+        aConsolider.forEach(d => {
+          const nomRepasseur = extraireNomRepasseurMigration(d.description);
+          const key = `${d.date}|${nomRepasseur}|${d.modePaiement||'Espèces'}`;
+          if(!groupes[key]) groupes[key] = { date: d.date, nomRepasseur, mode: d.modePaiement||'Espèces', entries: [] };
+          groupes[key].entries.push(d);
+        });
+        const depensesConsolidees = Object.values(groupes).map(g => {
+          if(g.entries.length === 1){
+            const d = g.entries[0];
+            return { ...d, autoPrestationIds: [d.autoPrestationId] };
+          }
+          const montant = g.entries.reduce((s,d)=>s+(Number(d.montant)||0), 0);
+          const comptageSaisiPar = {};
+          g.entries.forEach(d => { const k = d.saisiPar||'__gerant__'; comptageSaisiPar[k] = (comptageSaisiPar[k]||0)+1; });
+          const saisiParMajoritaire = Object.entries(comptageSaisiPar).sort((a,b)=>b[1]-a[1])[0][0];
+          return {
+            id: uid('dep_'),
+            date: g.date,
+            description: `Paiements repassage — ${g.nomRepasseur} (${g.entries.length} paiement${g.entries.length>1?'s':''})`,
+            montant,
+            categorie: 'Paiement repasseur',
+            modePaiement: g.mode,
+            autoPrestationIds: g.entries.map(d=>d.autoPrestationId),
+            saisiPar: saisiParMajoritaire === '__gerant__' ? null : saisiParMajoritaire,
+          };
+        });
+        return { ...site, depenses: [...depensesConsolidees, ...autres] };
+      });
+      return { ...prevDb, sites, migrationConsolidationPaiementRepasseurSept2026: true };
     });
   }, [db, loading, persist]);
 
@@ -7046,7 +7109,11 @@ function DepensesView({ site, updateSite, db, employeId }){
   // Repassages/livraisons enregistrés AVANT la création automatique de dépenses (données historiques),
   // à inclure quand même dans la charge réelle de l'entreprise pour ne rien sous-estimer
   const remunerationsOrphelines = useMemo(() => {
-    const idsAvecDepense = new Set(depenses.filter(d=>d.autoPrestationId).map(d=>d.autoPrestationId));
+    const idsAvecDepense = new Set();
+    depenses.forEach(d => {
+      if(d.autoPrestationId) idsAvecDepense.add(d.autoPrestationId);
+      if(Array.isArray(d.autoPrestationIds)) d.autoPrestationIds.forEach(id => idsAvecDepense.add(id));
+    });
     // Ne compte que les prestations déjà PAYÉES (statutPaiement === 'paye') mais orphelines d'une dépense —
     // un vrai reliquat historique (avant la mise en place de la dépense au moment du décaissement). Une
     // prestation pas encore payée ne doit jamais apparaître ici comme dépense : l'argent n'est pas encore sorti.
@@ -7234,9 +7301,27 @@ function DepensesView({ site, updateSite, db, employeId }){
             ? { label: '✓ Confirmé', color: 'var(--pine)', bg: 'var(--pine-light)' }
             : { label: 'Non confirmé', color: 'var(--warn)', bg: 'var(--warn-light)' };
         }
+        // Confirmation agrégée pour une dépense qui regroupe plusieurs prestations réglées en un seul
+        // décaissement (autoPrestationIds) — « X/Y confirmé(s) » plutôt qu'un statut unique.
+        function statutConfirmationGroupe(remsLiees){
+          if(!remsLiees || remsLiees.length === 0) return null;
+          if(remsLiees[0].type === 'livraison') return null;
+          const confirmes = remsLiees.filter(r => r.valideParRepasseur).length;
+          return { label: `${confirmes}/${remsLiees.length} confirmé(s)`, color: confirmes===remsLiees.length ? 'var(--pine)' : 'var(--warn)', bg: confirmes===remsLiees.length ? 'var(--pine-light)' : 'var(--warn-light)' };
+        }
 
         const lignesBrutes = [
           ...filtered.map(d => {
+            if(Array.isArray(d.autoPrestationIds)){
+              const remsLiees = d.autoPrestationIds.map(id => remunerations.find(r => r.id === id)).filter(Boolean);
+              return {
+                id: d.id, date: d.date, description: d.description,
+                categorie: categorieAffichee(d, remunerations), mode: d.modePaiement || 'Espèces',
+                saisiParNom: d.saisiPar ? ((site.employes.find(e=>e.id===d.saisiPar)||{}).nom || 'Employé supprimé') : 'Gérant',
+                montant: Number(d.montant), original: d, isOrphan: false,
+                confirmation: statutConfirmationGroupe(remsLiees), remLieeId: null,
+              };
+            }
             const remLiee = d.autoPrestationId ? remunerations.find(r => r.id === d.autoPrestationId) : null;
             return {
               id: d.id, date: d.date, description: d.description,
@@ -7288,7 +7373,10 @@ function DepensesView({ site, updateSite, db, employeId }){
             if(!groupes[key]) groupes[key] = { ...l, id: key, description: '', montant: 0, count: 0, isGrouped: true, isOrphan: true };
             groupes[key].montant += l.montant;
             groupes[key].count += 1;
-          } else if(l.categorie === 'Paiement repasseur'){
+          } else if(l.categorie === 'Paiement repasseur' && l.isOrphan){
+            // Ne regroupe que les prestations encore virtuelles (reliquat historique sans dépense propre) —
+            // une vraie dépense enregistrée (isOrphan: false, désormais toujours UNE ligne par décaissement
+            // réel depuis Suivi repassage) s'affiche telle quelle, modifiable/supprimable individuellement.
             const nomRepasseur = extraireNomRepasseur(l.description);
             const key = `pai|${l.date.slice(0,10)}|${nomRepasseur}|${l.mode}`;
             if(!groupes[key]) groupes[key] = { ...l, id: key, description: '', nomRepasseur, montant: 0, count: 0, confirmesCount: 0, isGrouped: true, isOrphan: true };
@@ -9209,19 +9297,23 @@ function RepassageApercuView({ site, updateSite, employeId }){
       : r);
     // La dépense « Paiement repasseur » n'est créée qu'ici, au moment réel du décaissement — attribuée
     // à celui qui décaisse (employeId de la personne qui clique ce bouton, gérant = non attribué),
-    // pas à celui qui a confirmé la commande prête plus tôt (voir advanceStatut/marquerPret).
+    // pas à celui qui a confirmé la commande prête plus tôt (voir advanceStatut/marquerPret). Une seule
+    // dépense regroupe tout le paiement de ce clic (un seul décaissement réel), avec la liste des
+    // prestations réglées dans autoPrestationIds — pour rester UNE ligne modifiable/supprimable dans
+    // Dépenses, au lieu d'une ligne par prestation individuelle.
     const nomRepasseur = p.nom;
-    const nouvellesDepenses = p.nonPayees.map(r => ({
+    const totalPaye = p.nonPayees.reduce((s,r)=>s+(Number(r.montant)||0), 0);
+    const nouvelleDepense = {
       id: uid('dep_'),
       date: nowDate,
-      description: `Prestation repassage — ${nomRepasseur}${r.clientNom ? ` — ${r.clientNom} (#${r.ticketSuffix||''})` : ''}`,
-      montant: Number(r.montant)||0,
+      description: `Paiements repassage — ${nomRepasseur} (${p.nonPayees.length} paiement${p.nonPayees.length>1?'s':''})`,
+      montant: totalPaye,
       categorie: 'Paiement repasseur',
       modePaiement: mode,
-      autoPrestationId: r.id,
+      autoPrestationIds: p.nonPayees.map(r=>r.id),
       saisiPar: employeId || null,
-    }));
-    updateSite({ ...site, remunerations: nextRemunerations, depenses: [...nouvellesDepenses, ...(site.depenses||[])] });
+    };
+    updateSite({ ...site, remunerations: nextRemunerations, depenses: [nouvelleDepense, ...(site.depenses||[])] });
   }
 
   const totalGeneral = filtres.reduce((s,r)=>s+Number(r.montant),0);
