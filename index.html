@@ -7,7 +7,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-17-6">
+<meta name="app-version" content="2026-09-19-6">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -22,7 +22,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-17-6';
+  const APP_VERSION_ACTUELLE = '2026-09-19-6';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -905,6 +905,10 @@ function App(){
   const [conflitDonneesAnciennes, setConflitDonneesAnciennes] = useState(false);
   const saveTimer = useRef(null);
   const isConnectedRef = useRef(false); // vraie connexion Firebase (fiable), lue par persist()
+  // Liste des mutations (fonctions prevDb=>nextDb) coalescées depuis le dernier envoi — voir persist()
+  // et tentativeSauvegarde() : en cas de conflit, on doit rejouer TOUTES ces mutations, pas seulement
+  // la dernière, sinon un appel plus ancien coalescé dans la même fenêtre de 400ms se perd silencieusement.
+  const pendingMutators = useRef([]);
 
   useEffect(() => {
     setLoading(true);
@@ -1066,15 +1070,25 @@ function App(){
   }, []);
 
   const persist = useCallback((next) => {
+    // Chaque appel de persist() dans la fenêtre de 400ms est mémorisé individuellement (pas seulement
+    // le dernier) : si la sauvegarde groupée est refusée pour conflit de révision, tentativeSauvegarde
+    // doit pouvoir rejouer TOUTES les mutations de cette fenêtre sur la version fraîche du serveur, sinon
+    // celles qui ne sont pas la dernière se perdent silencieusement au moment du rejeu (même bug de fond
+    // que celui du salaire journalier perdu, mais côté fenêtre de regroupement plutôt que côté rejeu simple).
+    const mutator = typeof next === 'function' ? next : (() => next);
+    pendingMutators.current.push(mutator);
     setDb(prevDb => {
       // Accepte soit une valeur directe, soit une fonction (prevDb => nextDb) —
       // la fonction garantit toujours de partir de l'état le plus à jour,
       // même si l'appelant avait une référence "db" un peu ancienne, et permet
       // de la rejouer en cas de conflit de révision (voir tentativeSauvegarde).
-      const resolved = typeof next === 'function' ? next(prevDb) : next;
+      const resolved = mutator(prevDb);
       if(saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
-        tentativeSauvegarde(next, resolved, 0);
+        const mutateursAEnvoyer = pendingMutators.current;
+        pendingMutators.current = [];
+        const composed = (base) => mutateursAEnvoyer.reduce((acc, fn) => fn(acc), base);
+        tentativeSauvegarde(composed, resolved, 0);
       }, 400);
       return resolved;
     });
@@ -1101,6 +1115,57 @@ function App(){
         return { ...site, depenses };
       });
       return { ...prevDb, sites, migrationDecaissementSalaireSept2026: true };
+    });
+  }, [db, loading, persist]);
+
+  // Correction ponctuelle (une seule fois, tous appareils confondus) : avant la mise à jour du 19/09/2026,
+  // « Encaisser sans commande » n'avait qu'une seule date (celle de la commande papier d'origine), utilisée
+  // à tort pour compter l'argent reçu — alors que ces règlements ont en réalité tous été saisis/payés dans
+  // le courant de septembre 2026, avant aujourd'hui (19/09). On les renvoie donc vers septembre 2026 (entre
+  // le 1er et le 18) pour que l'argent apparaisse dans le bon mois (celui où il a réellement été encaissé,
+  // toujours avant aujourd'hui), tout en gardant la date de la commande d'origine pour que l'impayé du mois
+  // concerné continue de baisser correctement (voir dateCommandeOrigineHorsCommande).
+  useEffect(() => {
+    if(!db || loading) return;
+    if(db.migrationEncaisserSansCommandeSept2026) return;
+    persist(prevDb => {
+      if(!prevDb || prevDb.migrationEncaisserSansCommandeSept2026) return prevDb;
+      const sites = prevDb.sites.map(site => {
+        const paiementsHorsCommande = (site.paiementsHorsCommande||[]).map(p => {
+          if(p.datePaiement) return p; // déjà sur le nouveau schéma (créé depuis le 19/09), rien à changer
+          const dateOrigine = p.date || todayISO();
+          const jour = Math.min(18, Math.max(1, Number(dateOrigine.slice(8,10)) || 1));
+          const datePaiement = `2026-09-${String(jour).padStart(2,'0')}`;
+          return { ...p, dateCommandeOrigine: p.dateCommandeOrigine || dateOrigine, datePaiement };
+        });
+        return { ...site, paiementsHorsCommande };
+      });
+      return { ...prevDb, sites, migrationEncaisserSansCommandeSept2026: true };
+    });
+  }, [db, loading, persist]);
+
+  // Correction ponctuelle n°2 (une seule fois, tous appareils confondus) : la migration ci-dessus a déjà
+  // tourné sur les vraies données AVANT ce correctif, avec une plage de jours 1-30 au lieu de 1-18 — résultat,
+  // des paiements se sont retrouvés datés du 19 au 30 septembre, soit aujourd'hui ou dans le futur, alors que
+  // l'utilisateur confirme que tous ces règlements ont eu lieu avant aujourd'hui. On rattrape ici uniquement
+  // les entrées déjà migrées dont la date de paiement tombe entre le 19 et le 30 septembre, en la recalculant
+  // (même jour du mois que la commande d'origine, cette fois plafonné à 18).
+  useEffect(() => {
+    if(!db || loading) return;
+    if(db.migrationEncaisserSansCommandeClamp18Sept2026) return;
+    persist(prevDb => {
+      if(!prevDb || prevDb.migrationEncaisserSansCommandeClamp18Sept2026) return prevDb;
+      const sites = prevDb.sites.map(site => {
+        const paiementsHorsCommande = (site.paiementsHorsCommande||[]).map(p => {
+          const dp = p.datePaiement;
+          if(!dp || dp < '2026-09-19' || dp > '2026-09-30') return p;
+          const dateOrigine = p.dateCommandeOrigine || p.date || dp;
+          const jour = Math.min(18, Math.max(1, Number(dateOrigine.slice(8,10)) || 1));
+          return { ...p, datePaiement: `2026-09-${String(jour).padStart(2,'0')}` };
+        });
+        return { ...site, paiementsHorsCommande };
+      });
+      return { ...prevDb, sites, migrationEncaisserSansCommandeClamp18Sept2026: true };
     });
   }, [db, loading, persist]);
 
@@ -1554,6 +1619,21 @@ function getPaiementsCommande(c){
   return [];
 }
 
+// « Encaisser sans commande » : date à utiliser pour compter l'argent réellement REÇU (Espèces/Orange Money,
+// Tableau de bord, Encaissements, Distribution des recettes) — c'est la date du paiement, pas celle de la
+// commande d'origine (papier). Pour les entrées créées avant le 19/09/2026 (un seul champ `date`, qui servait
+// alors à la fois de date de paiement ET de date de commande d'origine), on retombe sur ce champ historique.
+function dateEncaissementHorsCommande(p){
+  return p.datePaiement || p.date || '';
+}
+
+// Date de la commande d'origine (papier) que ce paiement règle — sert uniquement à réduire dynamiquement
+// l'impayé de CE mois-là (voir calculerDonneesMensuellesSite), même si l'argent est compté, lui, dans le
+// mois où il a été réellement encaissé (dateEncaissementHorsCommande).
+function dateCommandeOrigineHorsCommande(p){
+  return p.dateCommandeOrigine || p.date || '';
+}
+
 function calcCommandeTotal(commande, services){
   const totalBrut = commande.lignes.reduce((sum, l) => {
     const svc = services.find(s => s.id === l.serviceId);
@@ -1692,9 +1772,16 @@ function calculerDepensesPropresEmployesParActeur(db, moisCouverts){
         if(!emp) return;
         const depensesPropres = Number(valeurs.depensesPropres)||0;
         if(depensesPropres <= 0) return;
-        parts.forEach(p => {
-          if(nomsCorrespondent(emp.nom, p.nom)) resultat[p.nom] += depensesPropres;
-        });
+        // Un seul acteur crédité par saisie : le bénéficiaire choisi explicitement dans Détail mensuel
+        // (peut différer du caissier s'il a décaissé pour un autre acteur — voir la comptabilité
+        // décaisseur/bénéficiaire), sinon la MEILLEURE correspondance nom caissier <-> nom acteur (find,
+        // pas forEach) — nomsCorrespondent compare par sous-chaîne et peut matcher plusieurs acteurs dont
+        // les noms se chevauchent (ex: un employé « Alpha » correspond à la fois à « Alpha Mamoudou Bah »
+        // et « Mamadou Alpha Bah ») : créditer tous les matches doublait à tort la dépense déduite.
+        const acteurCorrespondant = parts.find(p => nomsCorrespondent(emp.nom, p.nom));
+        const nomBeneficiaire = valeurs.depensesPropresBeneficiaire || (acteurCorrespondant && acteurCorrespondant.nom);
+        if(!nomBeneficiaire || resultat[nomBeneficiaire] === undefined) return;
+        resultat[nomBeneficiaire] += depensesPropres;
       });
     });
   });
@@ -2021,7 +2108,11 @@ function DistributionView({ db, setDb, anneeInitiale }){
     });
     if(periodeRepartition === 'annee' || periodeRepartition === 'total') return entries; // toutes les entrées des années couvertes
     return entries.filter(e => {
-      if(!e.date) return true; // dépenses sans date (saisies avant cette fonctionnalité) : toujours comptées
+      // Une dépense sans date (saisie avant l'ajout de ce champ) ne peut pas être rattachée à un jour,
+      // une semaine ou un mois précis : on l'exclut de ces vues étroites (sinon son montant total se
+      // retrouverait déduit à tort, en entier, à CHAQUE jour/semaine/mois consulté). Elle reste comptée
+      // normalement dans les vues cumulatives « Année » / « À ce jour » ci-dessus.
+      if(!e.date) return false;
       if(periodeRepartition === 'mois') return e.date.slice(0,7) === moisChoisi;
       return e.date >= dateDebutRep && e.date <= dateFinRep; // jour / semaine
     });
@@ -2440,16 +2531,23 @@ function DepensesPropresActeursView({ db, setDb }){
   const [depensesPropresJour, setDepensesPropresJour] = useState(todayISO());
   const [depensesPropresMois, setDepensesPropresMois] = useState(todayISO().slice(0,7));
   const [acteurAjout, setActeurAjout] = useState('');
+  const [decaisseurAjout, setDecaisseurAjout] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [editDraft, setEditDraft] = useState(null);
 
   const dataHisto = (db.historiqueAnnuel || {})[annee] || {};
   const depensesActeursActuel = dataHisto.depensesActeurs || {};
 
-  function ajouterDepenseActeur(nomActeur){
+  // « Décaissé par » : qui a physiquement sorti l'argent de la caisse pour cette dépense propre. Limité
+  // aux deux employés qui manipulent réellement l'argent (EMPLOYES_SALAIRE_JOURNALIER, déjà utilisé pour
+  // le planning caisse du salaire journalier) — sert à documenter que ce manque de caisse est un crédit
+  // pris par l'acteur bénéficiaire, pas une faute ou une dépense du caissier qui a payé.
+  function ajouterDepenseActeur(nomActeur, decaissePar){
     const desc = (draftDesc['_form']||'').trim();
     const montant = Number(draftMontant['_form'])||0;
     const date = draftDate['_form'] || todayISO();
-    if(!desc || montant<=0 || !nomActeur) return;
-    const entry = { id: uid('depact_'), description: desc, montant, date };
+    if(!desc || montant<=0 || !nomActeur || !decaissePar) return;
+    const entry = { id: uid('depact_'), description: desc, montant, date, decaissePar };
     const anneeActuelle = (db.historiqueAnnuel||{})[annee] || {};
     const listeActuelle = (anneeActuelle.depensesActeurs||{})[nomActeur] || [];
     const nextDepensesActeurs = { ...(anneeActuelle.depensesActeurs||{}), [nomActeur]: [...listeActuelle, entry] };
@@ -2458,6 +2556,7 @@ function DepensesPropresActeursView({ db, setDb }){
     setDraftMontant({...draftMontant, _form: ''});
     setDraftDate({...draftDate, _form: todayISO()});
     setActeurAjout('');
+    setDecaisseurAjout('');
   }
 
   function supprimerDepenseActeur(nomActeur, entryId){
@@ -2465,6 +2564,40 @@ function DepensesPropresActeursView({ db, setDb }){
     const listeActuelle = (anneeActuelle.depensesActeurs||{})[nomActeur] || [];
     const nextDepensesActeurs = { ...(anneeActuelle.depensesActeurs||{}), [nomActeur]: listeActuelle.filter(e=>e.id!==entryId) };
     setDb({ ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [annee]: { ...anneeActuelle, depensesActeurs: nextDepensesActeurs } } });
+  }
+
+  // Le gérant peut corriger une dépense propre saisie manuellement (description, montant, date,
+  // bénéficiaire, décaisseur) après coup — utile en cas d'erreur de saisie.
+  function commencerModificationDepenseActeur(e){
+    setEditingId(e.id);
+    setEditDraft({ description: e.description, montant: e.montant, date: e.date, nomActeur: e.nomActeur, decaissePar: e.decaissePar || '' });
+  }
+
+  function annulerModificationDepenseActeur(){
+    setEditingId(null);
+    setEditDraft(null);
+  }
+
+  function enregistrerModificationDepenseActeur(ancienNomActeur, entryId){
+    if(!editDraft) return;
+    const desc = (editDraft.description||'').trim();
+    const montant = Number(editDraft.montant)||0;
+    const date = editDraft.date || todayISO();
+    const nomActeur = editDraft.nomActeur || ancienNomActeur;
+    const decaissePar = editDraft.decaissePar || '';
+    if(!desc || montant<=0 || !nomActeur || !decaissePar) return;
+    const anneeActuelle = (db.historiqueAnnuel||{})[annee] || {};
+    const depensesActeurs = { ...(anneeActuelle.depensesActeurs||{}) };
+    const ancienneListe = depensesActeurs[ancienNomActeur] || [];
+    const entryExistante = ancienneListe.find(e=>e.id===entryId);
+    if(!entryExistante) return;
+    depensesActeurs[ancienNomActeur] = ancienneListe.filter(e=>e.id!==entryId);
+    const nouvelleEntry = { ...entryExistante, description: desc, montant, date, decaissePar };
+    const listeCible = depensesActeurs[nomActeur] || [];
+    depensesActeurs[nomActeur] = [...listeCible, nouvelleEntry];
+    setDb({ ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [annee]: { ...anneeActuelle, depensesActeurs } } });
+    setEditingId(null);
+    setEditDraft(null);
   }
 
   function estDansPeriode(dateStr){
@@ -2485,7 +2618,7 @@ function DepensesPropresActeursView({ db, setDb }){
 
       <div className="card" style={{padding:'1.5rem', marginBottom:20}}>
         <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 16px', lineHeight:1.5}}>
-          Dépenses personnelles engagées par chaque acteur sur son propre compte (avances, retraits, achats personnels…). Elles seront déduites de sa part pour refléter son montant net réel — sans affecter la recette nette globale de l'entreprise. Si un acteur est aussi caissier dans un pressing, ses « dépenses propres » saisies dans « Détail mensuel » s'ajoutent automatiquement ici.
+          Dépenses personnelles engagées par chaque acteur sur son propre compte (avances, retraits, achats personnels…). Elles seront déduites de sa part pour refléter son montant net réel — sans affecter la recette nette globale de l'entreprise. Si un acteur est aussi caissier dans un pressing, ses « dépenses propres » saisies dans « Détail mensuel » s'ajoutent automatiquement ici. Chaque dépense propre indique aussi qui a physiquement décaissé l'argent (Mamadou Alpha ou Nene Djiba) — voir « Compte des caissiers » plus bas.
         </p>
 
         {(() => {
@@ -2504,16 +2637,25 @@ function DepensesPropresActeursView({ db, setDb }){
                 if(montantDp <= 0 || empId === '_legacy') return;
                 const emp = site.employes.find(e => e.id === empId);
                 if(!emp) return;
+                // Bénéficiaire : celui choisi explicitement dans Détail mensuel (peut être différent du
+                // caissier qui a saisi, s'il a décaissé pour un autre acteur), sinon on retombe sur l'ancien
+                // comportement (auto-correspondance nom caissier ↔ nom acteur, cas le plus courant).
                 const acteurCorrespondant = acteursSansCapitalFixe.find(p => nomsCorrespondent(emp.nom, p.nom));
-                if(!acteurCorrespondant) return;
+                const nomBeneficiaire = v.depensesPropresBeneficiaire || (acteurCorrespondant && acteurCorrespondant.nom);
+                if(!nomBeneficiaire) return;
                 const moisStr = String(m).padStart(2,'0');
                 const descriptionSaisie = (v.depensesPropresDescription||'').trim();
+                // Décaissé par : toujours le caissier dont c'est la ligne de saisie (l'argent est sorti de
+                // sa caisse), à condition que ce soit bien l'un des deux employés qui manipulent l'argent.
+                const decaisseurTrouve = EMPLOYES_SALAIRE_JOURNALIER.find(cible => (emp.nom||'').trim().toLowerCase().includes(cible));
                 toutesEntrees.push({
                   id: `dm_${site.id}_${m}_${empId}`,
-                  date: `${annee}-${moisStr}-01`,
+                  date: v.depensesPropresDate || `${annee}-${moisStr}-01`,
+                  dateApproximative: !v.depensesPropresDate,
                   description: descriptionSaisie || `Dépenses propres — ${site.nom}`,
                   montant: montantDp,
-                  nomActeur: acteurCorrespondant.nom,
+                  nomActeur: nomBeneficiaire,
+                  decaissePar: decaisseurTrouve || null,
                   depuisDetailMensuel: true,
                 });
               });
@@ -2521,6 +2663,7 @@ function DepensesPropresActeursView({ db, setDb }){
           });
           const entreesFiltrees = toutesEntrees.filter(e => estDansPeriode(e.date)).sort((a,b) => new Date(b.date||0) - new Date(a.date||0));
           const totalFiltre = entreesFiltrees.reduce((s,e)=>s+(Number(e.montant)||0),0);
+          const periodeDepensesPropresLabel = depensesPropresPeriode === 'jour' ? fmtDate(depensesPropresJour) : depensesPropresPeriode === 'mois' ? formatMoisAnnee(depensesPropresMois) : `année ${annee}`;
 
           // Cumulé toutes années, tous pressings confondus, par acteur
           const cumuleToutesAnneesParActeur = {};
@@ -2540,8 +2683,9 @@ function DepensesPropresActeursView({ db, setDb }){
                   const emp = site.employes.find(e => e.id === empId);
                   if(!emp) return;
                   const acteurCorrespondant = acteursSansCapitalFixe.find(p => nomsCorrespondent(emp.nom, p.nom));
-                  if(!acteurCorrespondant) return;
-                  cumuleToutesAnneesParActeur[acteurCorrespondant.nom] += Number(v.depensesPropres)||0;
+                  const nomBeneficiaire = v.depensesPropresBeneficiaire || (acteurCorrespondant && acteurCorrespondant.nom);
+                  if(!nomBeneficiaire || cumuleToutesAnneesParActeur[nomBeneficiaire] === undefined) return;
+                  cumuleToutesAnneesParActeur[nomBeneficiaire] += Number(v.depensesPropres)||0;
                 });
               });
             });
@@ -2571,32 +2715,68 @@ function DepensesPropresActeursView({ db, setDb }){
                       <th style={th}>Mois</th>
                       <th style={th}>Nom</th>
                       <th style={th}>Description</th>
+                      <th style={th}>Décaissé par</th>
                       <th style={th}>Montant</th>
                       <th style={th}></th>
                     </tr>
                   </thead>
                   <tbody>
                     {entreesFiltrees.length === 0 ? (
-                      <tr><td colSpan={5} style={{...td, textAlign:'center', color:'var(--steam)', padding:'1.5rem'}}>Aucune dépense propre sur cette période.</td></tr>
+                      <tr><td colSpan={6} style={{...td, textAlign:'center', color:'var(--steam)', padding:'1.5rem'}}>Aucune dépense propre sur cette période.</td></tr>
                     ) : entreesFiltrees.map(e => (
+                      editingId === e.id ? (
+                        <tr key={e.id} style={{borderTop:'1px solid var(--line)', background:'var(--pine-light)'}}>
+                          <td style={td}>
+                            <input type="date" value={editDraft.date||''} onChange={ev=>setEditDraft({...editDraft, date: ev.target.value})} style={{width:'auto', fontSize:12.5}} />
+                          </td>
+                          <td style={td}>
+                            <select value={editDraft.nomActeur||''} onChange={ev=>setEditDraft({...editDraft, nomActeur: ev.target.value})} style={{fontSize:12.5}}>
+                              {parts.filter(p => p.nom !== 'Conservation du Capital Fixe').map(p => <option key={p.nom} value={p.nom}>{p.nom}</option>)}
+                            </select>
+                          </td>
+                          <td style={td}>
+                            <input type="text" value={editDraft.description||''} onChange={ev=>setEditDraft({...editDraft, description: ev.target.value})} style={{fontSize:12.5}} />
+                          </td>
+                          <td style={td}>
+                            <select value={editDraft.decaissePar||''} onChange={ev=>setEditDraft({...editDraft, decaissePar: ev.target.value})} style={{fontSize:12.5, textTransform:'capitalize'}}>
+                              <option value="">Décaissé par…</option>
+                              {EMPLOYES_SALAIRE_JOURNALIER.map(cle => <option key={cle} value={cle} style={{textTransform:'capitalize'}}>{cle.replace(/\b\w/g, c=>c.toUpperCase())}</option>)}
+                            </select>
+                          </td>
+                          <td style={td}>
+                            <input type="number" value={editDraft.montant||''} onChange={ev=>setEditDraft({...editDraft, montant: ev.target.value})} style={{fontSize:12.5}} />
+                          </td>
+                          <td style={{...td, textAlign:'right', whiteSpace:'nowrap'}}>
+                            <button className="btn btn-ghost btn-sm" style={{color:'var(--pine)'}} onClick={()=>enregistrerModificationDepenseActeur(e.nomActeur, e.id)}><Icon name="check" size={13}/></button>
+                            <button className="btn btn-ghost btn-sm" onClick={annulerModificationDepenseActeur}><Icon name="x" size={13}/></button>
+                          </td>
+                        </tr>
+                      ) : (
                       <tr key={e.id} style={{borderTop:'1px solid var(--line)'}}>
-                        <td style={{...td, textTransform: e.depuisDetailMensuel ? 'capitalize' : 'none'}}>{e.date ? (e.depuisDetailMensuel ? formatMoisAnnee(e.date.slice(0,7)) : fmtDate(e.date)) : '—'}</td>
+                        <td style={{...td, textTransform: (e.depuisDetailMensuel && e.dateApproximative) ? 'capitalize' : 'none'}}>
+                          {e.date ? (e.depuisDetailMensuel && e.dateApproximative ? formatMoisAnnee(e.date.slice(0,7))+' (mois)' : fmtDate(e.date)) : '—'}
+                        </td>
                         <td style={{...td, fontWeight:600}}>{e.nomActeur}</td>
                         <td style={td}>
                           {e.description}
                           {e.depuisDetailMensuel && <span className="tag" style={{marginLeft:6, fontSize:9.5, background:'var(--pine-light)', color:'var(--pine)'}}>Détail mensuel</span>}
                         </td>
+                        <td style={{...td, textTransform:'capitalize'}}>{e.decaissePar || <span style={{color:'var(--steam)'}}>—</span>}</td>
                         <td style={{...td, color:'var(--danger)', fontWeight:600}} className="mono">{fmtGNF(e.montant)}</td>
-                        <td style={{...td, textAlign:'right'}}>
+                        <td style={{...td, textAlign:'right', whiteSpace:'nowrap'}}>
                           {!e.depuisDetailMensuel && (
-                            <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>supprimerDepenseActeur(e.nomActeur, e.id)}><Icon name="trash" size={13}/></button>
+                            <>
+                              <button className="btn btn-ghost btn-sm" onClick={()=>commencerModificationDepenseActeur(e)}><Icon name="edit" size={13}/></button>
+                              <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>supprimerDepenseActeur(e.nomActeur, e.id)}><Icon name="trash" size={13}/></button>
+                            </>
                           )}
                         </td>
                       </tr>
+                      )
                     ))}
                     {entreesFiltrees.length > 0 && (
                       <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
-                        <td colSpan={3} style={{...td, fontWeight:700}}>Total</td>
+                        <td colSpan={4} style={{...td, fontWeight:700}}>Total</td>
                         <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalFiltre)}</td>
                         <td></td>
                       </tr>
@@ -2621,16 +2801,50 @@ function DepensesPropresActeursView({ db, setDb }){
                 </table>
               </div>
 
-              <div style={{display:'grid', gridTemplateColumns:'1.1fr 1.4fr 0.9fr 0.9fr auto', gap:8}}>
+              <h4 style={{fontSize:13, color:'var(--pine)', margin:'0 0 8px'}}>🛡️ Compte des caissiers — décaissé pour d'autres ({periodeDepensesPropresLabel})</h4>
+              <p style={{fontSize:11.5, color:'var(--steam)', margin:'0 0 8px', lineHeight:1.5}}>
+                Ce que chaque caissier a physiquement sorti de sa caisse pour le compte d'un AUTRE acteur (pas pour lui-même). Ce montant ne compte pas comme un manque de caisse ou une dépense du caissier — c'est un crédit pris par l'acteur bénéficiaire, qui lui reste dû.
+              </p>
+              <div className="card" style={{overflow:'hidden', marginBottom:16}}>
+                <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
+                  <tbody>
+                    {EMPLOYES_SALAIRE_JOURNALIER.map(cle => {
+                      const entreesPourAutres = entreesFiltrees.filter(e => e.decaissePar === cle && !nomsCorrespondent(cle, e.nomActeur||''));
+                      const totalPourAutres = entreesPourAutres.reduce((s,e)=>s+(Number(e.montant)||0),0);
+                      const nomAffiche = cle.replace(/\b\w/g, c=>c.toUpperCase());
+                      return (
+                        <tr key={cle} style={{borderTop:'1px solid var(--line)'}}>
+                          <td style={{...td, fontWeight:600}}>{nomAffiche}</td>
+                          <td style={{...td, color:'var(--steam)', fontSize:12}}>
+                            {entreesPourAutres.length === 0 ? 'Rien décaissé pour un autre acteur sur cette période' : entreesPourAutres.map(e=>e.nomActeur).filter((v,i,a)=>a.indexOf(v)===i).join(', ')}
+                          </td>
+                          <td style={{...td, textAlign:'right', fontWeight:600}} className="mono">
+                            {totalPourAutres>0 ? fmtGNF(totalPourAutres) : '—'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <p style={{fontSize:11.5, color:'var(--steam)', margin:'0 0 8px'}}>
+                « Décaissé par » = qui a physiquement sorti l'argent de la caisse (obligatoire) — permet de documenter que ce manque de caisse est un crédit pris par l'acteur, pas une dépense ou une faute du caissier qui a payé.
+              </p>
+              <div style={{display:'grid', gridTemplateColumns:'1fr 1.3fr 0.85fr 0.85fr 0.9fr auto', gap:8}}>
                 <select value={acteurAjout} onChange={e=>setActeurAjout(e.target.value)}>
-                  <option value="">Acteur…</option>
+                  <option value="">Bénéficiaire…</option>
                   {acteursSansCapitalFixe.map(p => <option key={p.nom} value={p.nom}>{p.nom}</option>)}
                 </select>
                 <input type="text" placeholder="Description (ex: avance sur salaire)" value={draftDesc['_form']||''} onChange={e=>setDraftDesc({...draftDesc, _form: e.target.value})} />
                 <input type="number" placeholder="Montant" value={draftMontant['_form']||''} onChange={e=>setDraftMontant({...draftMontant, _form: e.target.value})} />
                 <input type="date" value={draftDate['_form']||todayISO()} onChange={e=>setDraftDate({...draftDate, _form: e.target.value})} />
-                <button className="btn btn-sm" disabled={!acteurAjout || !(draftDesc['_form']||'').trim() || !draftMontant['_form']}
-                  onClick={()=>{ ajouterDepenseActeur(acteurAjout); }}>
+                <select value={decaisseurAjout} onChange={e=>setDecaisseurAjout(e.target.value)}>
+                  <option value="">Décaissé par…</option>
+                  {EMPLOYES_SALAIRE_JOURNALIER.map(cle => <option key={cle} value={cle} style={{textTransform:'capitalize'}}>{cle.replace(/\b\w/g, c=>c.toUpperCase())}</option>)}
+                </select>
+                <button className="btn btn-sm" disabled={!acteurAjout || !decaisseurAjout || !(draftDesc['_form']||'').trim() || !draftMontant['_form']}
+                  onClick={()=>{ ajouterDepenseActeur(acteurAjout, decaisseurAjout); }}>
                   <Icon name="plus" size={13}/> Ajouter
                 </button>
               </div>
@@ -2840,7 +3054,7 @@ function EncaissementsDecaissementsGlobalView({ db, updateSite }){
         if(d.date && dansPeriode(d.date)) depenses += Number(d.montant)||0;
       });
       (site.paiementsHorsCommande||[]).forEach(p => {
-        if(!p.date || !dansPeriode(p.date)) return;
+        if(!dateEncaissementHorsCommande(p) || !dansPeriode(dateEncaissementHorsCommande(p))) return;
         if(p.mode === 'Orange Money') orangeMoney += Number(p.montant)||0;
         else especes += Number(p.montant)||0;
       });
@@ -2922,7 +3136,7 @@ function EncaissementsDecaissementsGlobalView({ db, updateSite }){
           });
           (site.depenses||[]).forEach(d => { if(d.date && dansPeriode(d.date)) siteDepenses += Number(d.montant)||0; });
           (site.paiementsHorsCommande||[]).forEach(p => {
-            if(!p.date || !dansPeriode(p.date)) return;
+            if(!dateEncaissementHorsCommande(p) || !dansPeriode(dateEncaissementHorsCommande(p))) return;
             if(p.mode === 'Orange Money') siteOrangeMoney += Number(p.montant)||0;
             else siteEspeces += Number(p.montant)||0;
           });
@@ -2953,7 +3167,7 @@ function EncaissementsDecaissementsGlobalView({ db, updateSite }){
               });
             });
             (site.paiementsHorsCommande||[]).forEach(p => {
-              if(!p.date || !dansPeriode(p.date)) return;
+              if(!dateEncaissementHorsCommande(p) || !dansPeriode(dateEncaissementHorsCommande(p))) return;
               const l = ligne(p.employeId || null);
               if(p.mode === 'Orange Money') l.orangeMoney += Number(p.montant)||0;
               else l.especes += Number(p.montant)||0;
@@ -3101,12 +3315,13 @@ function BilanEncaisserSansCommandeGlobalView({ db, updateSite }){
     db.sites.forEach(site => {
       if(siteFiltre !== 'tous' && siteFiltre !== site.id) return;
       (site.paiementsHorsCommande||[]).forEach(p => {
-        if(!p.date || !dansPeriode(p.date)) return;
+        const datePaiementEffective = dateEncaissementHorsCommande(p);
+        if(!datePaiementEffective || !dansPeriode(datePaiementEffective)) return;
         const employe = p.employeId ? (site.employes||[]).find(e=>e.id===p.employeId) : null;
-        liste.push({ ...p, siteId: site.id, siteNom: site.nom, encaissePar: employe ? employe.nom : 'Gérant' });
+        liste.push({ ...p, siteId: site.id, siteNom: site.nom, encaissePar: employe ? employe.nom : 'Gérant', datePaiementEffective, dateOrigineEffective: dateCommandeOrigineHorsCommande(p) });
       });
     });
-    return liste.sort((a,b) => new Date(b.date) - new Date(a.date));
+    return liste.sort((a,b) => new Date(b.datePaiementEffective) - new Date(a.datePaiementEffective));
   }, [db.sites, periode, moisChoisi, anneeChoisie, siteFiltre, today]);
 
   const totaux = useMemo(() => {
@@ -3128,8 +3343,8 @@ function BilanEncaisserSansCommandeGlobalView({ db, updateSite }){
     setConfirmSuppr(null);
   }
 
-  const HEADERS = ['Date', 'Pressing', 'Client', 'Montant', 'Mode', 'Encaissé par', 'Note'];
-  const rowsExport = toutesLesEntrees.map(p => [fmtDate(p.date), p.siteNom, p.clientNom||'—', Math.round(p.montant), p.mode, p.encaissePar, p.note||'']);
+  const HEADERS = ['Date du paiement', "Commande d'origine", 'Pressing', 'Client', 'Montant', 'Mode', 'Encaissé par', 'Note'];
+  const rowsExport = toutesLesEntrees.map(p => [fmtDate(p.datePaiementEffective), p.dateOrigineEffective && p.dateOrigineEffective !== p.datePaiementEffective ? fmtDate(p.dateOrigineEffective) : '—', p.siteNom, p.clientNom||'—', Math.round(p.montant), p.mode, p.encaissePar, p.note||'']);
 
   return (
     <div>
@@ -3180,7 +3395,8 @@ function BilanEncaisserSansCommandeGlobalView({ db, updateSite }){
         <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
           <thead>
             <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
-              <th style={th}>Date</th>
+              <th style={th}>Date du paiement</th>
+              <th style={th}>Commande d'origine</th>
               <th style={th}>Pressing</th>
               <th style={th}>Client</th>
               <th style={th}>Montant</th>
@@ -3192,11 +3408,12 @@ function BilanEncaisserSansCommandeGlobalView({ db, updateSite }){
           </thead>
           <tbody>
             {toutesLesEntrees.length === 0 && (
-              <tr><td colSpan={8} style={{...td, textAlign:'center', color:'var(--steam)'}}>Aucun encaissement sans commande pour cette période.</td></tr>
+              <tr><td colSpan={9} style={{...td, textAlign:'center', color:'var(--steam)'}}>Aucun encaissement sans commande pour cette période.</td></tr>
             )}
             {toutesLesEntrees.map(p => (
               <tr key={p.id} style={{borderTop:'1px solid var(--line)'}}>
-                <td style={td}>{fmtDate(p.date)}</td>
+                <td style={td}>{fmtDate(p.datePaiementEffective)}</td>
+                <td style={{...td, color:'var(--steam)'}}>{p.dateOrigineEffective && p.dateOrigineEffective !== p.datePaiementEffective ? fmtDate(p.dateOrigineEffective) : '—'}</td>
                 <td style={td}>{p.siteNom}</td>
                 <td style={td}>{p.clientNom || '—'}</td>
                 <td style={{...td, fontWeight:600}} className="mono">{fmtGNF(p.montant)}</td>
@@ -3264,8 +3481,10 @@ function BilanEncaisserSansCommandeSiteView({ site, employeId }){
   // toute confusion avec ceux des autres employés ou du gérant)
   const mesEntrees = useMemo(() => {
     return (site.paiementsHorsCommande||[])
-      .filter(p => p.employeId === employeId && p.date && dansPeriode(p.date))
-      .sort((a,b) => new Date(b.date) - new Date(a.date));
+      .filter(p => p.employeId === employeId)
+      .map(p => ({ ...p, datePaiementEffective: dateEncaissementHorsCommande(p), dateOrigineEffective: dateCommandeOrigineHorsCommande(p) }))
+      .filter(p => p.datePaiementEffective && dansPeriode(p.datePaiementEffective))
+      .sort((a,b) => new Date(b.datePaiementEffective) - new Date(a.datePaiementEffective));
   }, [site, periode, moisChoisi, anneeChoisie, employeId, today]);
 
   const totaux = useMemo(() => {
@@ -3319,7 +3538,8 @@ function BilanEncaisserSansCommandeSiteView({ site, employeId }){
         <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
           <thead>
             <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
-              <th style={th}>Date</th>
+              <th style={th}>Date du paiement</th>
+              <th style={th}>Commande d'origine</th>
               <th style={th}>Client</th>
               <th style={th}>Montant</th>
               <th style={th}>Mode</th>
@@ -3328,11 +3548,12 @@ function BilanEncaisserSansCommandeSiteView({ site, employeId }){
           </thead>
           <tbody>
             {mesEntrees.length === 0 && (
-              <tr><td colSpan={5} style={{...td, textAlign:'center', color:'var(--steam)'}}>Aucun encaissement sans commande pour cette période.</td></tr>
+              <tr><td colSpan={6} style={{...td, textAlign:'center', color:'var(--steam)'}}>Aucun encaissement sans commande pour cette période.</td></tr>
             )}
             {mesEntrees.map(p => (
               <tr key={p.id} style={{borderTop:'1px solid var(--line)'}}>
-                <td style={td}>{fmtDate(p.date)}</td>
+                <td style={td}>{fmtDate(p.datePaiementEffective)}</td>
+                <td style={{...td, color:'var(--steam)'}}>{p.dateOrigineEffective && p.dateOrigineEffective !== p.datePaiementEffective ? fmtDate(p.dateOrigineEffective) : '—'}</td>
                 <td style={td}>{p.clientNom || '—'}</td>
                 <td style={{...td, fontWeight:600}} className="mono">{fmtGNF(p.montant)}</td>
                 <td style={td}>{p.mode}</td>
@@ -3410,7 +3631,7 @@ function GlobalDashboard({ db, onOpenSite }){
         if(d.date && dansPeriode(d.date)) depenses += Number(d.montant)||0;
       });
       (site.paiementsHorsCommande||[]).forEach(p => {
-        if(!p.date || !dansPeriode(p.date)) return;
+        if(!dateEncaissementHorsCommande(p) || !dansPeriode(dateEncaissementHorsCommande(p))) return;
         if(p.mode === 'Orange Money') orangeMoney += Number(p.montant)||0;
         else especes += Number(p.montant)||0;
       });
@@ -3458,7 +3679,7 @@ function GlobalDashboard({ db, onOpenSite }){
       });
     });
     (site.paiementsHorsCommande||[]).forEach(p => {
-      if(!p.date || p.date.slice(0,7) !== today.slice(0,7)) return;
+      if(!dateEncaissementHorsCommande(p) || dateEncaissementHorsCommande(p).slice(0,7) !== today.slice(0,7)) return;
       if(p.mode === 'Orange Money') orangeMoneyMois += Number(p.montant)||0;
       else especesMois += Number(p.montant)||0;
     });
@@ -3789,7 +4010,7 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
       {page === 'employes' && <EquipeView site={site} updateSite={updateSite} db={db} />}
       {page === 'notifications' && <NotificationsView site={site} />}
       {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} db={db} />}
-      {page === 'detailMensuel' && <DetailMensuelGerantView site={site} updateSite={updateSite} />}
+      {page === 'detailMensuel' && <DetailMensuelGerantView site={site} updateSite={updateSite} db={db} />}
       {page === 'encaissements' && <EncaissementsGerantView site={site} />}
       {page === 'performanceCaissiers' && <PerformanceCaissiersView site={site} />}
       {page === 'remuneration' && <RemunerationGerantView site={site} />}
@@ -4067,7 +4288,7 @@ function Dashboard({ site, updateSite }){
       else especes += Number(pmt.montant)||0;
     }));
     (site.paiementsHorsCommande||[]).forEach(p => {
-      if(!p.date || !dansPeriode(p.date)) return;
+      if(!dateEncaissementHorsCommande(p) || !dansPeriode(dateEncaissementHorsCommande(p))) return;
       if(p.mode === 'Orange Money') orangeMoney += Number(p.montant)||0;
       else especes += Number(p.montant)||0;
     });
@@ -4294,7 +4515,8 @@ function EncaisserSansCommandeModal({ site: siteFixe, sites, updateSite, employe
   const [montant, setMontant] = useState('');
   const [mode, setMode] = useState('Espèces');
   const [note, setNote] = useState('');
-  const [date, setDate] = useState('');
+  const [datePaiement, setDatePaiement] = useState(todayISO());
+  const [dateOrigine, setDateOrigine] = useState('');
 
   const clients = (site && site.clients) || [];
   const clientsFiltres = useMemo(() => {
@@ -4313,11 +4535,12 @@ function EncaisserSansCommandeModal({ site: siteFixe, sites, updateSite, employe
 
   function submit(){
     const montantNum = Number(montant)||0;
-    if(!site || montantNum <= 0 || !date) return;
+    if(!site || montantNum <= 0 || !datePaiement) return;
     const nomClientFinal = clientChoisi ? clientChoisi.nom : (nouveauNomClient.trim() || 'Client non précisé');
     const entry = {
       id: uid('phc_'),
-      date,
+      datePaiement,
+      dateCommandeOrigine: dateOrigine || datePaiement,
       clientId: clientId || null,
       clientNom: nomClientFinal,
       montant: montantNum,
@@ -4334,8 +4557,8 @@ function EncaisserSansCommandeModal({ site: siteFixe, sites, updateSite, employe
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
         Pour un client qui vient récupérer une commande prise avant le lancement de l'app (papier) et régler son solde — ça compte comme argent reçu, sans créer de nouvelle commande ni fausser le nombre de commandes.
       </p>
-      <p style={{fontSize:12.5, color:'var(--rust)', margin:'0 0 14px', lineHeight:1.5, fontWeight:600}}>
-        ⚠️ Indiquez la date à laquelle la commande d'origine (papier) a été créée — pas la date d'aujourd'hui. Le montant sera comptabilisé dans le mois de cette date, pas dans le mois où vous saisissez l'encaissement.
+      <p style={{fontSize:12.5, color:'var(--pine)', margin:'0 0 14px', lineHeight:1.5, fontWeight:600}}>
+        💵 Le montant compte comme argent reçu dans le mois de la « Date du paiement » (Tableau de bord, Encaissements, Distribution des recettes) — c'est la date d'aujourd'hui par défaut. La « Date de la commande d'origine » (optionnelle) sert uniquement à faire baisser l'impayé du mois concerné, sans déplacer l'argent dans ce mois-là.
       </p>
       <div style={{display:'grid', gap:14}}>
         {!siteFixe && (
@@ -4382,10 +4605,15 @@ function EncaisserSansCommandeModal({ site: siteFixe, sites, updateSite, employe
         <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12}}>
           <div><label>Montant reçu (GNF)</label><input type="number" value={montant} onChange={e=>setMontant(e.target.value)} placeholder="0" /></div>
           <div>
-            <label>Date de création de la commande d'origine *</label>
-            <input type="date" value={date} onChange={e=>setDate(e.target.value)} max={todayISO()} required />
-            {!date && <div style={{fontSize:11.5, color:'var(--rust)', marginTop:4}}>Obligatoire — c'est cette date qui détermine le mois du montant.</div>}
+            <label>Date du paiement *</label>
+            <input type="date" value={datePaiement} onChange={e=>setDatePaiement(e.target.value)} max={todayISO()} required />
+            {!datePaiement && <div style={{fontSize:11.5, color:'var(--rust)', marginTop:4}}>Obligatoire — c'est cette date qui détermine le mois où l'argent est compté.</div>}
           </div>
+        </div>
+        <div>
+          <label>Date de la commande d'origine (papier), si connue — optionnel</label>
+          <input type="date" value={dateOrigine} onChange={e=>setDateOrigine(e.target.value)} max={todayISO()} />
+          <div style={{fontSize:11.5, color:'var(--steam)', marginTop:4}}>Laissez vide si vous ne la connaissez pas ou si ce n'est pas pertinent — l'impayé de ce mois-là baissera automatiquement dès l'enregistrement.</div>
         </div>
         <div>
           <label>Mode de paiement</label>
@@ -4404,7 +4632,7 @@ function EncaisserSansCommandeModal({ site: siteFixe, sites, updateSite, employe
           <label>Note (optionnel)</label>
           <input type="text" placeholder="Ex: solde commande papier avant lancement" value={note} onChange={e=>setNote(e.target.value)} />
         </div>
-        <button className="btn btn-rust" style={{width:'100%'}} disabled={!site || !montant || Number(montant)<=0 || !date} onClick={submit}>
+        <button className="btn btn-rust" style={{width:'100%'}} disabled={!site || !montant || Number(montant)<=0 || !datePaiement} onClick={submit}>
           Enregistrer l'encaissement
         </button>
       </div>
@@ -8111,9 +8339,9 @@ function ParametresView({ site, updateSite, db, setDb }){
   function countForScopePhc(scope){
     const today = todayISO();
     const phc = site.paiementsHorsCommande || [];
-    if(scope === 'jour') return phc.filter(p => (p.date||'').slice(0,10) === today).length;
-    if(scope === 'mois') return phc.filter(p => (p.date||'').slice(0,7) === today.slice(0,7)).length;
-    if(scope === 'plage') return phc.filter(p => (p.date||'').slice(0,10) >= rangeDebutPhc && (p.date||'').slice(0,10) <= rangeFinPhc).length;
+    if(scope === 'jour') return phc.filter(p => (dateEncaissementHorsCommande(p)||'').slice(0,10) === today).length;
+    if(scope === 'mois') return phc.filter(p => (dateEncaissementHorsCommande(p)||'').slice(0,7) === today.slice(0,7)).length;
+    if(scope === 'plage') return phc.filter(p => (dateEncaissementHorsCommande(p)||'').slice(0,10) >= rangeDebutPhc && (dateEncaissementHorsCommande(p)||'').slice(0,10) <= rangeFinPhc).length;
     if(scope === 'selection') return selectionPhc.size;
     return phc.length;
   }
@@ -8123,9 +8351,9 @@ function ParametresView({ site, updateSite, db, setDb }){
     const today = todayISO();
     const phc = site.paiementsHorsCommande || [];
     let removed, remaining;
-    if(resetScopePhc === 'jour'){ removed = phc.filter(p => (p.date||'').slice(0,10) === today); remaining = phc.filter(p => (p.date||'').slice(0,10) !== today); }
-    else if(resetScopePhc === 'mois'){ removed = phc.filter(p => (p.date||'').slice(0,7) === today.slice(0,7)); remaining = phc.filter(p => (p.date||'').slice(0,7) !== today.slice(0,7)); }
-    else if(resetScopePhc === 'plage'){ removed = phc.filter(p => (p.date||'').slice(0,10) >= rangeDebutPhc && (p.date||'').slice(0,10) <= rangeFinPhc); remaining = phc.filter(p => !((p.date||'').slice(0,10) >= rangeDebutPhc && (p.date||'').slice(0,10) <= rangeFinPhc)); }
+    if(resetScopePhc === 'jour'){ removed = phc.filter(p => (dateEncaissementHorsCommande(p)||'').slice(0,10) === today); remaining = phc.filter(p => (dateEncaissementHorsCommande(p)||'').slice(0,10) !== today); }
+    else if(resetScopePhc === 'mois'){ removed = phc.filter(p => (dateEncaissementHorsCommande(p)||'').slice(0,7) === today.slice(0,7)); remaining = phc.filter(p => (dateEncaissementHorsCommande(p)||'').slice(0,7) !== today.slice(0,7)); }
+    else if(resetScopePhc === 'plage'){ removed = phc.filter(p => (dateEncaissementHorsCommande(p)||'').slice(0,10) >= rangeDebutPhc && (dateEncaissementHorsCommande(p)||'').slice(0,10) <= rangeFinPhc); remaining = phc.filter(p => !((dateEncaissementHorsCommande(p)||'').slice(0,10) >= rangeDebutPhc && (dateEncaissementHorsCommande(p)||'').slice(0,10) <= rangeFinPhc)); }
     else if(resetScopePhc === 'selection'){ removed = phc.filter(p => selectionPhc.has(p.id)); remaining = phc.filter(p => !selectionPhc.has(p.id)); }
     else { removed = phc; remaining = []; }
     const labelPeriode = resetScopePhc==='jour'?"aujourd'hui":resetScopePhc==='mois'?'ce mois-ci':resetScopePhc==='plage'?`du ${fmtDate(rangeDebutPhc)} au ${fmtDate(rangeFinPhc)}`:resetScopePhc==='selection'?'sélection manuelle':'toute la période';
@@ -8530,9 +8758,9 @@ function ParametresView({ site, updateSite, db, setDb }){
         )}
         {showSelectionPhc && (
           <SelectionManuellePanel
-            items={[...(site.paiementsHorsCommande||[])].sort((a,b)=> (b.date||'').localeCompare(a.date||''))}
+            items={[...(site.paiementsHorsCommande||[])].sort((a,b)=> (dateEncaissementHorsCommande(b)||'').localeCompare(dateEncaissementHorsCommande(a)||''))}
             getId={p=>p.id}
-            renderLabel={p=>`${fmtDate(p.date)} — ${p.clientNom||''} — ${p.mode||''} — ${fmtGNF(p.montant)}`}
+            renderLabel={p=>`${fmtDate(dateEncaissementHorsCommande(p))} — ${p.clientNom||''} — ${p.mode||''} — ${fmtGNF(p.montant)}`}
             selection={selectionPhc}
             setSelection={setSelectionPhc}
             onSupprimer={()=>setResetScopePhc('selection')}
@@ -9158,13 +9386,14 @@ function EncaissementsGerantView({ site }){
       });
     });
     (site.paiementsHorsCommande||[]).forEach(p => {
-      if(!p.date) return;
+      const datePaiement = dateEncaissementHorsCommande(p);
+      if(!datePaiement) return;
       liste.push({
         id: p.id,
-        date: p.date,
-        jour: p.date.slice(0,10),
-        mois: p.date.slice(0,7),
-        annee: Number(p.date.slice(0,4)),
+        date: datePaiement,
+        jour: datePaiement.slice(0,10),
+        mois: datePaiement.slice(0,7),
+        annee: Number(datePaiement.slice(0,4)),
         ticket: '—',
         employeId: p.employeId || null,
         mode: p.mode || 'Espèces',
@@ -9388,13 +9617,15 @@ function MesEncaissementsView({ site, updateSite, db, employeId }){
       });
     });
     (site.paiementsHorsCommande||[]).forEach(p => {
-      if(!p.date || p.employeId !== employeId) return;
+      if(p.employeId !== employeId) return;
+      const datePaiement = dateEncaissementHorsCommande(p);
+      if(!datePaiement) return;
       liste.push({
         id: p.id,
-        date: p.date,
-        jour: p.date.slice(0,10),
-        mois: p.date.slice(0,7),
-        annee: Number(p.date.slice(0,4)),
+        date: datePaiement,
+        jour: datePaiement.slice(0,10),
+        mois: datePaiement.slice(0,7),
+        annee: Number(datePaiement.slice(0,4)),
         ticket: '—',
         client: p.clientNom || 'Client non précisé',
         mode: p.mode || 'Espèces',
@@ -10252,23 +10483,31 @@ function RepasseurView({ site, updateSite, employeId }){
 
 /* ===================== DETAIL MENSUEL (espace caissier — vue par site) ===================== */
 
-function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave, montantRecu }){
-  const mesValeurs = (valeurs.parEmploye && valeurs.parEmploye[employeId]) || { recetteBrute: 0, depenses: 0, impayes: 0, depensesPropres: 0, depensesPropresDescription: '', montantRecuEspeces: 0, montantRecuOrangeMoney: 0 };
+function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave, montantRecu, acteurs, annee }){
+  const mesValeurs = (valeurs.parEmploye && valeurs.parEmploye[employeId]) || { recetteBrute: 0, depenses: 0, impayes: 0, depensesPropres: 0, depensesPropresDescription: '', depensesPropresBeneficiaire: '', depensesPropresDate: '', montantRecuEspeces: 0, montantRecuOrangeMoney: 0 };
+  const acteurAutoMatch = useMemo(() => (acteurs||[]).find(p=>nomsCorrespondent(monNom, p.nom)), [acteurs, monNom]);
+  const moisStr = String(valeurs.mois).padStart(2,'0');
+  const minDateMois = `${annee}-${moisStr}-01`;
+  const maxDateMois = new Date(annee, valeurs.mois, 0).toISOString().slice(0,10);
   const [recetteBrute, setRecetteBrute] = useState(String(mesValeurs.recetteBrute || ''));
   const [depenses, setDepenses] = useState(String(mesValeurs.depenses || ''));
   const [depensesPropres, setDepensesPropres] = useState(String(mesValeurs.depensesPropres || ''));
   const [depensesPropresDescription, setDepensesPropresDescription] = useState(mesValeurs.depensesPropresDescription || '');
+  const [depensesPropresBeneficiaire, setDepensesPropresBeneficiaire] = useState(mesValeurs.depensesPropresBeneficiaire || (acteurAutoMatch||{}).nom || '');
+  const [depensesPropresDate, setDepensesPropresDate] = useState(mesValeurs.depensesPropresDate || '');
   const [montantRecuEspeces, setMontantRecuEspeces] = useState(String(mesValeurs.montantRecuEspeces || ''));
   const [montantRecuOrangeMoney, setMontantRecuOrangeMoney] = useState(String(mesValeurs.montantRecuOrangeMoney || ''));
   const [ouvert, setOuvert] = useState(false);
   const [flash, setFlash] = useState(false);
 
   useEffect(() => {
-    const mv = (valeurs.parEmploye && valeurs.parEmploye[employeId]) || { recetteBrute: 0, depenses: 0, impayes: 0, depensesPropres: 0, depensesPropresDescription: '', montantRecuEspeces: 0, montantRecuOrangeMoney: 0 };
+    const mv = (valeurs.parEmploye && valeurs.parEmploye[employeId]) || { recetteBrute: 0, depenses: 0, impayes: 0, depensesPropres: 0, depensesPropresDescription: '', depensesPropresBeneficiaire: '', depensesPropresDate: '', montantRecuEspeces: 0, montantRecuOrangeMoney: 0 };
     setRecetteBrute(mv.recetteBrute ? String(mv.recetteBrute) : '');
     setDepenses(mv.depenses ? String(mv.depenses) : '');
     setDepensesPropres(mv.depensesPropres ? String(mv.depensesPropres) : '');
     setDepensesPropresDescription(mv.depensesPropresDescription || '');
+    setDepensesPropresBeneficiaire(mv.depensesPropresBeneficiaire || (acteurAutoMatch||{}).nom || '');
+    setDepensesPropresDate(mv.depensesPropresDate || '');
     setMontantRecuEspeces(mv.montantRecuEspeces ? String(mv.montantRecuEspeces) : '');
     setMontantRecuOrangeMoney(mv.montantRecuOrangeMoney ? String(mv.montantRecuOrangeMoney) : '');
   }, [valeurs.mois, employeId]);
@@ -10283,6 +10522,8 @@ function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave, monta
       depenses: Number(depenses)||0,
       depensesPropres: Number(depensesPropres)||0,
       depensesPropresDescription: depensesPropresDescription.trim(),
+      depensesPropresBeneficiaire: depensesPropresBeneficiaire || '',
+      depensesPropresDate: depensesPropresDate || '',
       montantRecuEspeces: Number(montantRecuEspeces)||0,
       montantRecuOrangeMoney: Number(montantRecuOrangeMoney)||0,
     });
@@ -10321,6 +10562,17 @@ function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave, monta
               )}
               <div><label>Mes dépenses propres</label><input type="number" value={depensesPropres} onChange={e=>setDepensesPropres(e.target.value)} style={{width:140}}/></div>
               <div><label>Description (pour situer)</label><input type="text" placeholder="Ex: avance sur salaire" value={depensesPropresDescription} onChange={e=>setDepensesPropresDescription(e.target.value)} style={{width:180}}/></div>
+              <div>
+                <label>Bénéficiaire (si ce n'est pas vous)</label>
+                <select value={depensesPropresBeneficiaire} onChange={e=>setDepensesPropresBeneficiaire(e.target.value)} style={{width:180}}>
+                  <option value="">— Choisir —</option>
+                  {(acteurs||[]).map(p => <option key={p.nom} value={p.nom}>{p.nom}</option>)}
+                </select>
+              </div>
+              <div>
+                <label>Date du décaissement</label>
+                <input type="date" value={depensesPropresDate} min={minDateMois} max={maxDateMois} onChange={e=>setDepensesPropresDate(e.target.value)} style={{width:150}}/>
+              </div>
               {avantSeuil ? (
                 <>
                   <div><label>Montant net reçu (Espèces)</label><input type="number" value={montantRecuEspeces} onChange={e=>setMontantRecuEspeces(e.target.value)} style={{width:140}}/></div>
@@ -10372,6 +10624,7 @@ function calculerDonneesMensuellesSite(site, annee){
     depenses: 0,
     especes: 0,
     orangeMoney: 0,
+    montantRegleTotalCommandes: 0,
   }));
   (site.commandes||[]).forEach(c => {
     if(c.dateCreation && c.dateCreation.slice(0,4) === String(annee)){
@@ -10379,6 +10632,13 @@ function calculerDonneesMensuellesSite(site, annee){
       const totalCmd = calcCommandeTotal(c, site.services);
       auto[m].recetteBrute += totalCmd;
       auto[m].recetteEncaissee += c.paiement === 'paye' ? totalCmd : (Number(c.acompte)||0);
+      // Total réellement réglé sur CETTE commande, tous paiements confondus, quelle que soit leur date —
+      // attribué au mois de CRÉATION de la commande (pas au mois du paiement) pour que l'impayé de ce
+      // mois baisse correctement même si le client règle le solde un mois plus tard (cas courant : vente
+      // à crédit soldée le mois suivant). L'argent lui-même reste compté par mois de réception ci-dessous
+      // (especes/orangeMoney), pour que les Encaissements reflètent le cash réellement entré ce mois-là.
+      const totalRegleCommande = getPaiementsCommande(c).reduce((s,pmt)=>s+(Number(pmt.montant)||0), 0);
+      auto[m].montantRegleTotalCommandes += totalRegleCommande;
     }
     getPaiementsCommande(c).forEach(pmt => {
       if(!pmt.date || pmt.date.slice(0,4) !== String(annee)) return;
@@ -10394,10 +10654,28 @@ function calculerDonneesMensuellesSite(site, annee){
     }
   });
   (site.paiementsHorsCommande||[]).forEach(p => {
-    if(!p.date || p.date.slice(0,4) !== String(annee)) return;
-    const m = Number(p.date.slice(5,7)) - 1;
+    const datePaiement = dateEncaissementHorsCommande(p);
+    if(!datePaiement || datePaiement.slice(0,4) !== String(annee)) return;
+    const m = Number(datePaiement.slice(5,7)) - 1;
     if(p.mode === 'Orange Money') auto[m].orangeMoney += Number(p.montant)||0;
     else auto[m].especes += Number(p.montant)||0;
+  });
+  // Règlements « Encaisser sans commande » qui soldent une commande papier d'un mois antérieur : l'argent
+  // lui-même est compté ci-dessus dans le mois où il a été réellement reçu (pas ici), mais l'impayé du mois
+  // de la commande d'origine doit quand même baisser dès que ce règlement est saisi — d'où ce cumul séparé,
+  // par mois d'ORIGINE, qui vient réduire dynamiquement l'impayé de ce mois-là plus bas.
+  const reglementsAnciensParMois = Array(12).fill(0);
+  (site.paiementsHorsCommande||[]).forEach(p => {
+    const dateOrigine = dateCommandeOrigineHorsCommande(p);
+    const datePaiement = dateEncaissementHorsCommande(p);
+    if(!dateOrigine || dateOrigine.slice(0,4) !== String(annee)) return;
+    // Si l'origine et le paiement tombent le même mois (champ « commande d'origine » laissé vide, donc
+    // égal à la date du paiement — cas d'un encaissement ordinaire, pas le règlement d'un vieux solde),
+    // l'argent est déjà compté normalement dans le mois via especes/orangeMoney : il ne faut PAS aussi le
+    // déduire ici, sinon l'impayé du mois est réduit deux fois pour la même somme.
+    if(dateOrigine.slice(0,7) === (datePaiement||'').slice(0,7)) return;
+    const m = Number(dateOrigine.slice(5,7)) - 1;
+    reglementsAnciensParMois[m] += Number(p.montant)||0;
   });
   const manuel = (site.detailMensuelManuel||{})[annee] || {};
   return auto.map(a => {
@@ -10411,15 +10689,21 @@ function calculerDonneesMensuellesSite(site, annee){
     const montantRecuOrangeMoney = aDesSaisiesManuelles
       ? Object.values(parEmploye).reduce((s,v)=>s+(Number(v.montantRecuOrangeMoney)||0),0)
       : a.orangeMoney;
+    const reglementsAnciens = reglementsAnciensParMois[a.mois-1];
     if(aDesSaisiesManuelles){
       const rb = Object.values(parEmploye).reduce((s,v)=>s+(Number(v.recetteBrute)||0),0);
       const dep = Object.values(parEmploye).reduce((s,v)=>s+(Number(v.depenses)||0),0);
       const imp = Object.values(parEmploye).reduce((s,v)=>s+(Number(v.impayes)||0),0);
-      const impayesReel = Math.max(0, rb - (montantRecuEspeces + montantRecuOrangeMoney));
+      const impayesReel = Math.max(0, rb - (montantRecuEspeces + montantRecuOrangeMoney) - reglementsAnciens);
       const netPercu = (montantRecuEspeces + montantRecuOrangeMoney) - dep;
       return { mois:a.mois, label:a.label, avantSeuil, recetteBrute: rb, impayes: imp, depenses: dep, depensesPropres, manuel: true, parEmploye, net: rb - imp - dep, montantRecuEspeces, montantRecuOrangeMoney, impayesReel, netPercu };
     }
-    const impayesReel = Math.max(0, a.recetteBrute - (montantRecuEspeces + montantRecuOrangeMoney));
+    // Impayé réel = recette brute − TOUT ce qui a été réglé sur les commandes de ce mois (quelle que soit
+    // la date du règlement, cf. montantRegleTotalCommandes ci-dessus) − les vieux soldes réglés ce mois-ci
+    // qui appartenaient à un mois antérieur. On n'utilise PAS (especes+orangeMoney) ici car cet agrégat est
+    // classé par date de RÉCEPTION de l'argent, pas par mois de la commande : un acompte de septembre soldé
+    // en octobre ferait sinon apparaître un impayé de septembre qui ne baisse jamais.
+    const impayesReel = Math.max(0, a.recetteBrute - a.montantRegleTotalCommandes - reglementsAnciens);
     const imp = impayesReel;
     const netPercu = (montantRecuEspeces + montantRecuOrangeMoney) - a.depenses;
     return { mois:a.mois, label:a.label, avantSeuil, recetteBrute: a.recetteBrute, impayes: imp, depenses: a.depenses, depensesPropres, manuel: false, parEmploye, net: a.recetteBrute - imp - a.depenses, montantRecuEspeces, montantRecuOrangeMoney, impayesReel, netPercu };
@@ -10437,6 +10721,7 @@ function calculerDonneesMensuellesEmploye(site, annee, employeId){
     depenses: 0,
     especes: 0,
     orangeMoney: 0,
+    montantRegleTotalCommandes: 0,
   }));
   (site.commandes||[]).forEach(c => {
     if(c.dateCreation && c.dateCreation.slice(0,4) === String(annee) && c.caissierEmpId === employeId){
@@ -10444,6 +10729,8 @@ function calculerDonneesMensuellesEmploye(site, annee, employeId){
       const totalCmd = calcCommandeTotal(c, site.services);
       auto[m].recetteBrute += totalCmd;
       auto[m].recetteEncaissee += c.paiement === 'paye' ? totalCmd : (Number(c.acompte)||0);
+      const totalRegleCommande = getPaiementsCommande(c).reduce((s,pmt)=>s+(Number(pmt.montant)||0), 0);
+      auto[m].montantRegleTotalCommandes += totalRegleCommande;
     }
     getPaiementsCommande(c).forEach(pmt => {
       if(!pmt.date || pmt.date.slice(0,4) !== String(annee)) return;
@@ -10461,10 +10748,25 @@ function calculerDonneesMensuellesEmploye(site, annee, employeId){
     }
   });
   (site.paiementsHorsCommande||[]).forEach(p => {
-    if(!p.date || p.date.slice(0,4) !== String(annee) || p.employeId !== employeId) return;
-    const m = Number(p.date.slice(5,7)) - 1;
+    if(p.employeId !== employeId) return;
+    const datePaiement = dateEncaissementHorsCommande(p);
+    if(!datePaiement || datePaiement.slice(0,4) !== String(annee)) return;
+    const m = Number(datePaiement.slice(5,7)) - 1;
     if(p.mode === 'Orange Money') auto[m].orangeMoney += Number(p.montant)||0;
     else auto[m].especes += Number(p.montant)||0;
+  });
+  // Voir le commentaire équivalent dans calculerDonneesMensuellesSite : l'impayé du mois de la commande
+  // d'origine baisse dynamiquement dès qu'un règlement la solde, même si l'argent est compté dans le mois
+  // où il a été réellement reçu.
+  const reglementsAnciensParMois = Array(12).fill(0);
+  (site.paiementsHorsCommande||[]).forEach(p => {
+    if(p.employeId !== employeId) return;
+    const dateOrigine = dateCommandeOrigineHorsCommande(p);
+    const datePaiement = dateEncaissementHorsCommande(p);
+    if(!dateOrigine || dateOrigine.slice(0,4) !== String(annee)) return;
+    if(dateOrigine.slice(0,7) === (datePaiement||'').slice(0,7)) return; // même mois : déjà compté normalement, pas de double déduction
+    const m = Number(dateOrigine.slice(5,7)) - 1;
+    reglementsAnciensParMois[m] += Number(p.montant)||0;
   });
   const manuel = (site.detailMensuelManuel||{})[annee] || {};
   return auto.map(a => {
@@ -10474,15 +10776,16 @@ function calculerDonneesMensuellesEmploye(site, annee, employeId){
     const depensesPropres = Number(mesValeurs?.depensesPropres)||0;
     const montantRecuEspeces = mesValeurs ? (Number(mesValeurs.montantRecuEspeces)||0) : a.especes;
     const montantRecuOrangeMoney = mesValeurs ? (Number(mesValeurs.montantRecuOrangeMoney)||0) : a.orangeMoney;
+    const reglementsAnciens = reglementsAnciensParMois[a.mois-1];
     if(mesValeurs){
       const rb = Number(mesValeurs.recetteBrute)||0;
       const dep = Number(mesValeurs.depenses)||0;
       const imp = Number(mesValeurs.impayes)||0;
-      const impayesReel = Math.max(0, rb - (montantRecuEspeces + montantRecuOrangeMoney));
+      const impayesReel = Math.max(0, rb - (montantRecuEspeces + montantRecuOrangeMoney) - reglementsAnciens);
       const netPercu = (montantRecuEspeces + montantRecuOrangeMoney) - dep;
       return { mois:a.mois, label:a.label, avantSeuil, recetteBrute: rb, impayes: imp, depenses: dep, depensesPropres, manuel: true, parEmploye, net: rb - imp - dep, montantRecuEspeces, montantRecuOrangeMoney, impayesReel, netPercu };
     }
-    const impayesReel = Math.max(0, a.recetteBrute - (montantRecuEspeces + montantRecuOrangeMoney));
+    const impayesReel = Math.max(0, a.recetteBrute - a.montantRegleTotalCommandes - reglementsAnciens);
     const netPercu = (montantRecuEspeces + montantRecuOrangeMoney) - a.depenses;
     return { mois:a.mois, label:a.label, avantSeuil, recetteBrute: a.recetteBrute, impayes: impayesReel, depenses: a.depenses, depensesPropres, manuel: false, parEmploye, net: a.recetteBrute - impayesReel - a.depenses, montantRecuEspeces, montantRecuOrangeMoney, impayesReel, netPercu };
   });
@@ -10537,7 +10840,7 @@ function calculerDonneesPeriodeMultiSites(sites, dateDebut, dateFin){
     });
     (site.depenses||[]).forEach(d => { if(dansRange(d.date)) depenses += Number(d.montant)||0; });
     (site.paiementsHorsCommande||[]).forEach(p => {
-      if(!dansRange(p.date)) return;
+      if(!dansRange(dateEncaissementHorsCommande(p))) return;
       if(p.mode === 'Orange Money') orangeMoney += Number(p.montant)||0;
       else especes += Number(p.montant)||0;
     });
@@ -10557,7 +10860,8 @@ function getEmpNomMultiSites(sites, empId){
   return 'Employé supprimé';
 }
 
-function DetailMensuelSiteView({ site, updateSite, employeId }){
+function DetailMensuelSiteView({ site, updateSite, employeId, db }){
+  const acteursBeneficiaires = useMemo(() => partsActuelles(db).filter(p => p.nom !== 'Conservation du Capital Fixe'), [db]);
   const currentYear = Number(todayISO().slice(0,4));
   const anneesDisponibles = useMemo(() => {
     const arr = [];
@@ -10655,7 +10959,7 @@ function DetailMensuelSiteView({ site, updateSite, employeId }){
           </thead>
           <tbody>
             {donneesParMois.map(m => (
-              <MoisRowCaissier key={m.mois} valeurs={m} avantSeuil={m.avantSeuil} employeId={employeId} monNom={monNom} onSave={saveMois} montantRecu={montantRecuParMois[m.mois] || {especes:0, orangeMoney:0}} />
+              <MoisRowCaissier key={m.mois} valeurs={m} avantSeuil={m.avantSeuil} employeId={employeId} monNom={monNom} onSave={saveMois} montantRecu={montantRecuParMois[m.mois] || {especes:0, orangeMoney:0}} acteurs={acteursBeneficiaires} annee={annee} />
             ))}
             <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
               <td style={{...td, fontWeight:700}}>Total {annee}</td>
@@ -10675,7 +10979,8 @@ function DetailMensuelSiteView({ site, updateSite, employeId }){
   );
 }
 
-function DetailMensuelGerantView({ site, updateSite }){
+function DetailMensuelGerantView({ site, updateSite, db }){
+  const acteursBeneficiaires = useMemo(() => partsActuelles(db).filter(p => p.nom !== 'Conservation du Capital Fixe'), [db]);
   const currentYear = Number(todayISO().slice(0,4));
   const anneesDisponibles = useMemo(() => {
     const arr = [];
@@ -10830,19 +11135,28 @@ function DetailMensuelGerantView({ site, updateSite }){
           valeursExistantes={(donneesParMois.find(m=>m.mois===empSaisieMois.mois)||{}).parEmploye || {}}
           onSave={(employeId, valeurs)=>saveMoisPourEmploye(empSaisieMois.mois, employeId, valeurs)}
           onClose={()=>setEmpSaisieMois(null)}
+          acteurs={acteursBeneficiaires}
+          annee={annee}
         />
       )}
     </div>
   );
 }
 
-function SaisieEmployeMoisModal({ site, mois, employeIdInitial, valeursExistantes, onSave, onClose }){
+function SaisieEmployeMoisModal({ site, mois, employeIdInitial, valeursExistantes, onSave, onClose, acteurs, annee }){
   const [employeId, setEmployeId] = useState(employeIdInitial);
   const existant = employeId ? (valeursExistantes[employeId] || {}) : {};
+  const empActuel = site.employes.find(e=>e.id===employeId);
+  const acteurAutoMatch = (id) => { const emp = site.employes.find(e=>e.id===id); return emp && (acteurs||[]).find(p=>nomsCorrespondent(emp.nom, p.nom)); };
+  const moisStr = String(mois).padStart(2,'0');
+  const minDateMois = `${annee}-${moisStr}-01`;
+  const maxDateMois = new Date(annee, mois, 0).toISOString().slice(0,10);
   const [recetteBrute, setRecetteBrute] = useState(String(existant.recetteBrute || ''));
   const [depenses, setDepenses] = useState(String(existant.depenses || ''));
   const [depensesPropres, setDepensesPropres] = useState(String(existant.depensesPropres || ''));
   const [depensesPropresDescription, setDepensesPropresDescription] = useState(existant.depensesPropresDescription || '');
+  const [depensesPropresBeneficiaire, setDepensesPropresBeneficiaire] = useState(existant.depensesPropresBeneficiaire || (acteurAutoMatch(employeId)||{}).nom || '');
+  const [depensesPropresDate, setDepensesPropresDate] = useState(existant.depensesPropresDate || '');
   const [montantRecuEspeces, setMontantRecuEspeces] = useState(String(existant.montantRecuEspeces || ''));
   const [montantRecuOrangeMoney, setMontantRecuOrangeMoney] = useState(String(existant.montantRecuOrangeMoney || ''));
 
@@ -10853,6 +11167,8 @@ function SaisieEmployeMoisModal({ site, mois, employeIdInitial, valeursExistante
     setDepenses(String(v.depenses || ''));
     setDepensesPropres(String(v.depensesPropres || ''));
     setDepensesPropresDescription(v.depensesPropresDescription || '');
+    setDepensesPropresBeneficiaire(v.depensesPropresBeneficiaire || (acteurAutoMatch(id)||{}).nom || '');
+    setDepensesPropresDate(v.depensesPropresDate || '');
     setMontantRecuEspeces(String(v.montantRecuEspeces || ''));
     setMontantRecuOrangeMoney(String(v.montantRecuOrangeMoney || ''));
   }
@@ -10867,6 +11183,8 @@ function SaisieEmployeMoisModal({ site, mois, employeIdInitial, valeursExistante
       depenses: Number(depenses)||0,
       depensesPropres: Number(depensesPropres)||0,
       depensesPropresDescription: depensesPropresDescription.trim(),
+      depensesPropresBeneficiaire: depensesPropresBeneficiaire || '',
+      depensesPropresDate: depensesPropresDate || '',
       montantRecuEspeces: Number(montantRecuEspeces)||0,
       montantRecuOrangeMoney: Number(montantRecuOrangeMoney)||0,
     });
@@ -10887,6 +11205,17 @@ function SaisieEmployeMoisModal({ site, mois, employeIdInitial, valeursExistante
           <div><label>Dépenses entreprise</label><input type="number" value={depenses} onChange={e=>setDepenses(e.target.value)} /></div>
           <div><label>Dépenses propres</label><input type="number" value={depensesPropres} onChange={e=>setDepensesPropres(e.target.value)} /></div>
           <div><label>Description (pour situer)</label><input type="text" placeholder="Ex: avance sur salaire" value={depensesPropresDescription} onChange={e=>setDepensesPropresDescription(e.target.value)} /></div>
+          <div>
+            <label>Bénéficiaire (dépenses propres)</label>
+            <select value={depensesPropresBeneficiaire} onChange={e=>setDepensesPropresBeneficiaire(e.target.value)}>
+              <option value="">— Choisir —</option>
+              {(acteurs||[]).map(p => <option key={p.nom} value={p.nom}>{p.nom}</option>)}
+            </select>
+          </div>
+          <div>
+            <label>Date du décaissement</label>
+            <input type="date" value={depensesPropresDate} min={minDateMois} max={maxDateMois} onChange={e=>setDepensesPropresDate(e.target.value)} />
+          </div>
           <div>
             <label>Impayés (calculé)</label>
             <div className="mono" style={{padding:'8px 10px', background:'var(--paper-2)', borderRadius:8, fontSize:13, fontWeight:600}}>{fmtGNF(impayesCalcule)}</div>
@@ -10976,7 +11305,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
       {page === 'clients' && <ClientsView site={site} updateSite={updateSite} db={db} />}
       {page === 'stock' && <StockView site={site} updateSite={updateSite} db={db} />}
       {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} db={db} employeId={employeId} />}
-      {page === 'detailMensuel' && <DetailMensuelSiteView site={site} updateSite={updateSite} employeId={employeId} />}
+      {page === 'detailMensuel' && <DetailMensuelSiteView site={site} updateSite={updateSite} employeId={employeId} db={db} />}
       {page === 'encaissements' && <MesEncaissementsView site={site} updateSite={updateSite} db={db} employeId={employeId} />}
       {page === 'encaisserSansCommande' && <BilanEncaisserSansCommandeSiteView site={site} employeId={employeId} />}
       {page === 'performanceCaissiers' && <PerformanceCaissiersView site={site} />}
