@@ -7,7 +7,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-19-6">
+<meta name="app-version" content="2026-09-19-9">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -22,7 +22,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-19-6';
+  const APP_VERSION_ACTUELLE = '2026-09-19-9';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -1166,6 +1166,59 @@ function App(){
         return { ...site, paiementsHorsCommande };
       });
       return { ...prevDb, sites, migrationEncaisserSansCommandeClamp18Sept2026: true };
+    });
+  }, [db, loading, persist]);
+
+  // Correction ponctuelle (une seule fois, tous appareils confondus) : avant le correctif du 19/09/2026 sur
+  // « Paiement repasseur », la dépense était créée dès que la commande passait au statut « Prêt », attribuée
+  // à qui faisait avancer ce statut — pas à qui payait réellement le repasseur plus tard. On corrige ici les
+  // dépenses déjà enregistrées AVANT ce correctif :
+  //  - si la prestation liée est déjà marquée payée (statutPaiement === 'paye'), on réaligne la date de la
+  //    dépense sur la date réelle du paiement (datePaiement) et on réattribue le décaissement à qui était
+  //    responsable de la caisse ce jour-là (même planning que pour le salaire journalier) — on ne peut pas
+  //    savoir avec certitude qui a physiquement cliqué « Marquer payé » à l'époque, donc c'est la meilleure
+  //    reconstitution possible, pas une certitude absolue ;
+  //  - si la prestation liée n'est PAS encore marquée payée aujourd'hui, la dépense est retirée : elle avait
+  //    été comptée trop tôt (avant tout décaissement réel) sous l'ancien système, et la laisser en place
+  //    créerait un double comptage le jour où ce paiement sera réellement marqué payé (une nouvelle dépense,
+  //    correctement datée et attribuée, sera alors créée automatiquement par Suivi repassage).
+  useEffect(() => {
+    if(!db || loading) return;
+    if(db.migrationAttributionPaiementRepasseurSept2026) return;
+    persist(prevDb => {
+      if(!prevDb || prevDb.migrationAttributionPaiementRepasseurSept2026) return prevDb;
+      const sites = prevDb.sites.map(site => {
+        const depenses = (site.depenses||[]).reduce((acc, d) => {
+          if(d.categorie !== 'Paiement repasseur' || !d.autoPrestationId){
+            acc.push(d);
+            return acc;
+          }
+          const r = (site.remunerations||[]).find(rem => rem.id === d.autoPrestationId);
+          if(!r){
+            acc.push(d); // rémunération introuvable (supprimée ?) : on ne touche pas, faute d'information
+            return acc;
+          }
+          if(r.statutPaiement !== 'paye'){
+            // Pas encore payé aujourd'hui : on retire cette dépense créée trop tôt, pour éviter un double
+            // comptage quand ce paiement sera réellement marqué payé.
+            return acc;
+          }
+          const jourPaiement = (r.datePaiement || '').slice(0,10);
+          if(!jourPaiement || d.date === jourPaiement){
+            acc.push(d); // déjà cohérent (créé par le nouveau système, ou coïncidence de date)
+            return acc;
+          }
+          const responsable = employeResponsableCaisse(site, jourPaiement);
+          acc.push({
+            ...d,
+            date: jourPaiement,
+            saisiPar: responsable ? responsable.id : d.saisiPar,
+          });
+          return acc;
+        }, []);
+        return { ...site, depenses };
+      });
+      return { ...prevDb, sites, migrationAttributionPaiementRepasseurSept2026: true };
     });
   }, [db, loading, persist]);
 
@@ -4763,6 +4816,11 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
           const detailRepasseur = articlesRepasses.map(a=>`${a.qte}x ${a.nom} (${fmtGNF(a.prix)})`).join(', ');
           const clientNomRem = client ? client.nom : 'Client inconnu';
           const ticketSuffixRem = cmd.numero.slice(-4);
+          // Seule la rémunération du repasseur (montant dû, non payé) est créée ici. La dépense
+          // « Paiement repasseur » correspondante n'est créée que plus tard, quand ce montant est
+          // effectivement décaissé (bouton « Marquer payé » dans Suivi repassage) — voir marquerPayeGroupe.
+          // Ainsi la dépense est attribuée au caissier qui a réellement payé le repasseur, pas à celui
+          // qui a simplement fait avancer le statut de la commande.
           const rem = {
             id: uid('rem_'),
             date: todayISO(),
@@ -4776,19 +4834,7 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
             employeId: employeId || null,
             auto: true,
           };
-          const empNomRem = (site.employes.find(e=>e.id===employeId)||{}).nom || 'Employé';
-          const depRem = {
-            id: uid('dep_'),
-            date: rem.date,
-            description: `Prestation repassage — ${clientNomRem} (#${ticketSuffixRem}) — ${empNomRem}`,
-            montant: montantRepasseur,
-            categorie: 'Paiement repasseur',
-            modePaiement: 'Espèces',
-            autoPrestationId: rem.id,
-            saisiPar: employeId || null,
-          };
           nextSite.remunerations = [rem, ...(nextSite.remunerations||[])];
-          nextSite.depenses = [depRem, ...(nextSite.depenses||[])];
         }
       }
     }
@@ -7001,7 +7047,10 @@ function DepensesView({ site, updateSite, db, employeId }){
   // à inclure quand même dans la charge réelle de l'entreprise pour ne rien sous-estimer
   const remunerationsOrphelines = useMemo(() => {
     const idsAvecDepense = new Set(depenses.filter(d=>d.autoPrestationId).map(d=>d.autoPrestationId));
-    return remunerations.filter(r => (r.type==='repassage' || r.type==='livraison') && !idsAvecDepense.has(r.id) && estDansPeriode(r.date) && (!employeId || r.employeId === employeId));
+    // Ne compte que les prestations déjà PAYÉES (statutPaiement === 'paye') mais orphelines d'une dépense —
+    // un vrai reliquat historique (avant la mise en place de la dépense au moment du décaissement). Une
+    // prestation pas encore payée ne doit jamais apparaître ici comme dépense : l'argent n'est pas encore sorti.
+    return remunerations.filter(r => (r.type==='repassage' || r.type==='livraison') && r.statutPaiement === 'paye' && !idsAvecDepense.has(r.id) && estDansPeriode(r.date) && (!employeId || r.employeId === employeId));
   }, [remunerations, depenses, typePeriode, filterJour, filterMois, filterAnnee, employeId]);
   const totalOrphelines = remunerationsOrphelines.reduce((s,r)=>s+Number(r.montant),0);
 
@@ -7442,6 +7491,21 @@ function DepensesView({ site, updateSite, db, employeId }){
                 <option>Orange Money</option>
               </select>
             </div>
+            {!employeId && (
+              <div>
+                <label>Décaissé par (qui a payé)</label>
+                <select value={editDep.saisiPar||''} onChange={e=>setEditDep({...editDep, saisiPar:e.target.value||null})}>
+                  <option value="">Gérant</option>
+                  {(site.employes||[]).map(e => <option key={e.id} value={e.id}>{e.nom}</option>)}
+                </select>
+                {editDep.categorie === 'Paiement repasseur' && (
+                  <button type="button" className="btn btn-ghost btn-sm" style={{marginTop:6, padding:'2px 8px', fontSize:11.5}}
+                    onClick={()=>{ const r = employeResponsableCaisse(site, editDep.date); if(r) setEditDep({...editDep, saisiPar:r.id}); }}>
+                    ↺ Employé du jour ({employeResponsableCaisse(site, editDep.date) ? employeResponsableCaisse(site, editDep.date).nom : '—'})
+                  </button>
+                )}
+              </div>
+            )}
             <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
               <button className="btn" onClick={()=>setEditDep(null)}>Annuler</button>
               <button className="btn btn-rust" onClick={()=>saveEditDepense(editDep)} disabled={!editDep.description||!editDep.montant}>Enregistrer</button>
@@ -7632,6 +7696,20 @@ function NewDepenseModal({ site, updateSite, onClose, employeId }){
   const [montant, setMontant] = useState('');
   const [categorie, setCategorie] = useState('Salaires');
   const [modePaiement, setModePaiement] = useState('Espèces');
+  const [saisiParId, setSaisiParId] = useState('');
+  const [saisiParTouche, setSaisiParTouche] = useState(false);
+
+  // Pour le gérant uniquement : quand la catégorie choisie est « Paiement repasseur » (cas typique d'un
+  // décaissement oublié par le caissier), on pré-remplit « Décaissé par » avec l'employé responsable de la
+  // caisse ce jour-là (même planning que pour le salaire journalier) — modifiable si ce n'était pas lui.
+  useEffect(() => {
+    if(employeId || saisiParTouche) return;
+    if(categorie === 'Paiement repasseur'){
+      const responsable = employeResponsableCaisse(site, date);
+      if(responsable) setSaisiParId(responsable.id);
+    }
+    // eslint-disable-next-line
+  }, [categorie, date, employeId]);
 
   function submit(){
     if(!description.trim() || !montant || !date) return;
@@ -7642,7 +7720,7 @@ function NewDepenseModal({ site, updateSite, onClose, employeId }){
       montant: Number(montant),
       categorie,
       modePaiement,
-      saisiPar: employeId || null,
+      saisiPar: employeId || saisiParId || null,
     };
     updateSite({ ...site, depenses: [dep, ...(site.depenses||[])] });
     onClose();
@@ -7655,7 +7733,7 @@ function NewDepenseModal({ site, updateSite, onClose, employeId }){
         <div>
           <label>Catégorie</label>
           <select value={categorie} onChange={e=>setCategorie(e.target.value)}>
-            {CATEGORIES_DEPENSES.map(c => <option key={c}>{c}</option>)}
+            {CATEGORIES_DEPENSES_AFFICHAGE.map(c => <option key={c}>{c}</option>)}
           </select>
         </div>
         <div><label>Description</label><input type="text" placeholder="Ex : Salaire Mamadou Alpha, Facture électricité…" value={description} onChange={e=>setDescription(e.target.value)} autoFocus/></div>
@@ -7667,6 +7745,18 @@ function NewDepenseModal({ site, updateSite, onClose, employeId }){
             <option>Orange Money</option>
           </select>
         </div>
+        {!employeId && (
+          <div>
+            <label>Décaissé par (qui a payé)</label>
+            <select value={saisiParId} onChange={e=>{ setSaisiParId(e.target.value); setSaisiParTouche(true); }}>
+              <option value="">Gérant</option>
+              {(site.employes||[]).map(e => <option key={e.id} value={e.id}>{e.nom}</option>)}
+            </select>
+            {categorie === 'Paiement repasseur' && (
+              <p style={{fontSize:11.5, color:'var(--steam)', margin:'4px 0 0'}}>Si un caissier a oublié d'enregistrer un paiement au repasseur, choisissez ici qui a réellement décaissé (pré-rempli avec l'employé responsable de la caisse ce jour-là).</p>
+            )}
+          </div>
+        )}
         <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
           <button className="btn" onClick={onClose}>Annuler</button>
           <button className="btn btn-rust" disabled={!description.trim()||!montant||!date} onClick={submit}>Enregistrer</button>
@@ -9030,7 +9120,7 @@ function PaiementsAValiderView({ site, updateSite, employeId }){
   );
 }
 
-function RepassageApercuView({ site, updateSite }){
+function RepassageApercuView({ site, updateSite, employeId }){
   const [periode, setPeriode] = useState('jour');
   const [moisChoisi, setMoisChoisi] = useState(todayISO().slice(0,7));
   const [anneeChoisie, setAnneeChoisie] = useState(Number(todayISO().slice(0,4)));
@@ -9113,10 +9203,25 @@ function RepassageApercuView({ site, updateSite }){
     if(!p || p.nonPayees.length === 0) return;
     const idsAPayer = new Set(p.nonPayees.map(r=>r.id));
     const nowISO = new Date().toISOString();
+    const nowDate = todayISO();
     const nextRemunerations = (site.remunerations||[]).map(r => idsAPayer.has(r.id)
       ? { ...r, statutPaiement: 'paye', modePaiementRepasseur: mode, datePaiement: nowISO }
       : r);
-    updateSite({ ...site, remunerations: nextRemunerations });
+    // La dépense « Paiement repasseur » n'est créée qu'ici, au moment réel du décaissement — attribuée
+    // à celui qui décaisse (employeId de la personne qui clique ce bouton, gérant = non attribué),
+    // pas à celui qui a confirmé la commande prête plus tôt (voir advanceStatut/marquerPret).
+    const nomRepasseur = p.nom;
+    const nouvellesDepenses = p.nonPayees.map(r => ({
+      id: uid('dep_'),
+      date: nowDate,
+      description: `Prestation repassage — ${nomRepasseur}${r.clientNom ? ` — ${r.clientNom} (#${r.ticketSuffix||''})` : ''}`,
+      montant: Number(r.montant)||0,
+      categorie: 'Paiement repasseur',
+      modePaiement: mode,
+      autoPrestationId: r.id,
+      saisiPar: employeId || null,
+    }));
+    updateSite({ ...site, remunerations: nextRemunerations, depenses: [...nouvellesDepenses, ...(site.depenses||[])] });
   }
 
   const totalGeneral = filtres.reduce((s,r)=>s+Number(r.montant),0);
@@ -10389,20 +10494,11 @@ function RepasseurView({ site, updateSite, employeId }){
         const client = site.clients.find(c => c.id === cmd.clientId);
         const clientNomRem = client ? client.nom : 'Client inconnu';
         const ticketSuffixRem = cmd.numero.slice(-4);
+        // Seule la rémunération (montant dû, non payé) est créée ici — la dépense « Paiement repasseur »
+        // n'est créée que quand ce montant est réellement décaissé (Suivi repassage > Marquer payé), et
+        // attribuée à celui qui décaisse à ce moment-là, pas au repasseur qui confirme juste que c'est prêt.
         const rem = { id: uid('rem_'), date: todayISO(), type:'repassage', montant, detail, commandeId: cmd.id, commandeNumero: cmd.numero, clientNom: clientNomRem, ticketSuffix: ticketSuffixRem, employeId, auto: true };
-        const empNomRem = (site.employes.find(e=>e.id===employeId)||{}).nom || 'Employé';
-        const depRem = {
-          id: uid('dep_'),
-          date: rem.date,
-          description: `Prestation repassage — ${clientNomRem} (#${ticketSuffixRem}) — ${empNomRem}`,
-          montant,
-          categorie: 'Paiement repasseur',
-          modePaiement: 'Espèces',
-          autoPrestationId: rem.id,
-          saisiPar: employeId || null,
-        };
         nextSite.remunerations = [rem, ...(nextSite.remunerations||[])];
-        nextSite.depenses = [depRem, ...(nextSite.depenses||[])];
       }
     }
     updateSite(nextSite);
@@ -11309,7 +11405,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
       {page === 'encaissements' && <MesEncaissementsView site={site} updateSite={updateSite} db={db} employeId={employeId} />}
       {page === 'encaisserSansCommande' && <BilanEncaisserSansCommandeSiteView site={site} employeId={employeId} />}
       {page === 'performanceCaissiers' && <PerformanceCaissiersView site={site} />}
-      {page === 'suiviRepassage' && <RepassageApercuView site={site} updateSite={updateSite} />}
+      {page === 'suiviRepassage' && <RepassageApercuView site={site} updateSite={updateSite} employeId={employeId} />}
       {page === 'moncompte' && <MonCompteView site={site} updateSite={updateSite} employeId={employeId} />}
     </Shell>
   );
