@@ -7,7 +7,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-19-10">
+<meta name="app-version" content="2026-09-21-3">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -22,7 +22,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-19-10';
+  const APP_VERSION_ACTUELLE = '2026-09-21-3';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -1904,61 +1904,47 @@ function calculerDepensesPropresEmployesParActeur(db, moisCouverts){
   return resultat;
 }
 
-const ANNEE_DEBUT_APP = 2026; // année de mise en place de l'application
+const ANNEE_DEBUT_APP = 2026; // ancienne référence, conservée pour compat mais plus utilisée pour exclure des données réelles
 
+// Calcule les données d'une année à partir des vraies données saisies dans l'app (commandes/dépenses/Détail
+// mensuel manuel), pour N'IMPORTE QUELLE année — pas seulement à partir de ANNEE_DEBUT_APP. Le pressing a pu
+// utiliser l'app dès la fin d'une année antérieure (ex: décembre 2025) ; se limiter à ANNEE_DEBUT_APP faisait
+// disparaître ces vraies données. On délègue à calculerDonneesMensuellesMultiSites (même logique, plus précise,
+// que le reste de l'app — impayés réels cross-mois inclus) et on ne se rabat sur l'ancienne saisie manuelle
+// historique globale (un seul total pour toute l'année, ex: 2018/2019, avant l'existence de l'app) que si
+// l'année n'a strictement aucune donnée réelle par ailleurs.
+//
+// « Recette nette » = Recette brute − Dépenses entreprise (n'inclut pas les impayés, affichés séparément).
+// « Net perçu » = Espèces + Orange Money réellement encaissés − Dépenses entreprise (le vrai argent en caisse,
+// même définition que partout ailleurs dans l'app).
 function calculerDonneesAnnee(db, annee){
-  if(annee >= ANNEE_DEBUT_APP){
-    const parMois = {};
-    for(let m=1; m<=12; m++) parMois[m] = { recetteBrute:0, depenses:0, impayes:0 };
-    db.sites.forEach(site => {
-      const siteManuelAnnee = (site.detailMensuelManuel||{})[annee] || {};
-      for(let m=1; m<=12; m++){
-        const parEmploye = normaliserMoisManuel(siteManuelAnnee[m]);
-        if(parEmploye && Object.keys(parEmploye).length > 0){
-          parMois[m].recetteBrute += Object.values(parEmploye).reduce((s,v)=>s+(Number(v.recetteBrute)||0),0);
-          parMois[m].depenses += Object.values(parEmploye).reduce((s,v)=>s+(Number(v.depenses)||0),0);
-          parMois[m].impayes += Object.values(parEmploye).reduce((s,v)=>s+(Number(v.impayes)||0),0);
-        } else {
-          let rb=0, encaisse=0, dep=0;
-          (site.commandes||[]).forEach(c => {
-            if(c.dateCreation && c.dateCreation.slice(0,4) === String(annee) && Number(c.dateCreation.slice(5,7)) === m){
-              const totalCmd = calcCommandeTotal(c, site.services);
-              rb += totalCmd;
-              encaisse += c.paiement === 'paye' ? totalCmd : (Number(c.acompte)||0);
-            }
-          });
-          (site.depenses||[]).forEach(d => {
-            if(d.date && d.date.slice(0,4) === String(annee) && Number(d.date.slice(5,7)) === m){
-              dep += Number(d.montant)||0;
-            }
-          });
-          parMois[m].recetteBrute += rb;
-          parMois[m].depenses += dep;
-          parMois[m].impayes += (rb - encaisse);
-        }
-      }
-    });
-    const moisManuel = (db.historiqueAnnuel?.[annee]?.mois) || {};
-    let recetteBrute = 0, depenses = 0, impayes = 0;
-    for(let m=1; m<=12; m++){
-      const override = moisManuel[m];
-      if(override){
-        recetteBrute += Number(override.recetteBrute)||0;
-        depenses += Number(override.depenses)||0;
-        impayes += Number(override.impayes)||0;
-      } else {
-        recetteBrute += parMois[m].recetteBrute;
-        depenses += parMois[m].depenses;
-        impayes += parMois[m].impayes;
-      }
-    }
-    return { recetteBrute, depenses, impayes, recetteNette: recetteBrute - impayes - depenses };
+  const parMois = calculerDonneesMensuellesMultiSites(db.sites, annee);
+  let recetteBrute = 0, depenses = 0, impayes = 0, netPercu = 0;
+  let auMoinsUneDonneeReelle = false;
+  parMois.forEach(m => {
+    recetteBrute += m.recetteBrute;
+    depenses += m.depenses;
+    impayes += m.impayesReel||0;
+    netPercu += m.netPercu||0;
+    if(m.recetteBrute || m.depenses || m.impayesReel || m.netPercu) auMoinsUneDonneeReelle = true;
+  });
+
+  const anneeHisto = (db.historiqueAnnuel||{})[annee] || {};
+  if(!auMoinsUneDonneeReelle && (anneeHisto.recetteBrute || anneeHisto.depenses || anneeHisto.impayes)){
+    recetteBrute = Number(anneeHisto.recetteBrute)||0;
+    depenses = Number(anneeHisto.depenses)||0;
+    impayes = Number(anneeHisto.impayes)||0;
+    const especes = Number(anneeHisto.especes)||0;
+    const orangeMoney = Number(anneeHisto.orangeMoney)||0;
+    // Ces vieilles saisies manuelles (avant l'app) n'ont souvent que Recette brute / Dépenses / Impayés, sans
+    // détail Espèces/Orange Money. Dans ce cas on ne peut pas savoir combien a été réellement encaissé en
+    // espèces vs Orange Money — mais on sait que ce qui N'est PAS impayé a forcément été encaissé d'une façon
+    // ou d'une autre. Donc : Net perçu = (Recette brute − Impayés) − Dépenses, comme avant l'ajout de cette
+    // colonne. Si Espèces/Orange Money ont été renseignés, on les utilise à la place (plus précis).
+    netPercu = (especes || orangeMoney) ? (especes + orangeMoney - depenses) : (recetteBrute - impayes - depenses);
   }
-  const d = (db.historiqueAnnuel||{})[annee] || {};
-  const recetteBrute = Number(d.recetteBrute)||0;
-  const depenses = Number(d.depenses)||0;
-  const impayes = Number(d.impayes)||0;
-  return { recetteBrute, depenses, impayes, recetteNette: recetteBrute - impayes - depenses };
+
+  return { recetteBrute, depenses, impayes, recetteNette: recetteBrute - depenses, netPercu };
 }
 
 function ComparaisonAnneesView({ db, onOpenAnnee }){
@@ -1971,12 +1957,12 @@ function ComparaisonAnneesView({ db, onOpenAnnee }){
   const comparaisonExportRows = lignes.map((l, i) => {
     const precedente = lignes[i+1];
     let evolution = null;
-    if(precedente && precedente.recetteNette !== 0){
-      evolution = ((l.recetteNette - precedente.recetteNette) / Math.abs(precedente.recetteNette)) * 100;
+    if(precedente && precedente.netPercu !== 0){
+      evolution = ((l.netPercu - precedente.netPercu) / Math.abs(precedente.netPercu)) * 100;
     }
-    return [l.annee, Math.round(l.recetteBrute), Math.round(l.impayes), Math.round(l.depenses), Math.round(l.recetteNette), evolution===null ? '—' : `${evolution>=0?'+':''}${evolution.toFixed(1)}%`];
+    return [l.annee, Math.round(l.recetteBrute), Math.round(l.impayes), Math.round(l.depenses), Math.round(l.recetteNette), Math.round(l.netPercu), evolution===null ? '—' : `${evolution>=0?'+':''}${evolution.toFixed(1)}%`];
   });
-  const COMPARAISON_HEADERS = ['Année', 'Recette brute', 'Impayés', 'Dépenses entreprise', 'Recette nette', 'Évolution'];
+  const COMPARAISON_HEADERS = ['Année', 'Recette brute', 'Impayés', 'Dépenses entreprise', 'Recette nette', 'Net perçu', 'Évolution'];
 
   return (
     <div>
@@ -1996,6 +1982,7 @@ function ComparaisonAnneesView({ db, onOpenAnnee }){
               <th style={th}>Impayés</th>
               <th style={th}>Dépenses entreprise</th>
               <th style={th}>Recette nette</th>
+              <th style={th}>Net perçu</th>
               <th style={th}>Évolution</th>
             </tr>
           </thead>
@@ -2003,8 +1990,8 @@ function ComparaisonAnneesView({ db, onOpenAnnee }){
             {lignes.map((l, i) => {
               const precedente = lignes[i+1];
               let evolution = null;
-              if(precedente && precedente.recetteNette !== 0){
-                evolution = ((l.recetteNette - precedente.recetteNette) / Math.abs(precedente.recetteNette)) * 100;
+              if(precedente && precedente.netPercu !== 0){
+                evolution = ((l.netPercu - precedente.netPercu) / Math.abs(precedente.netPercu)) * 100;
               }
               return (
                 <tr key={l.annee} style={{borderTop:'1px solid var(--line)', cursor:'pointer'}} onClick={()=>onOpenAnnee(l.annee)}>
@@ -2013,6 +2000,7 @@ function ComparaisonAnneesView({ db, onOpenAnnee }){
                   <td style={{...td, color: l.impayes>0?'var(--danger)':'var(--steam)'}} className="mono">{l.impayes>0?fmtGNF(l.impayes):'—'}</td>
                   <td style={{...td, color:'var(--danger)'}} className="mono">{fmtGNF(l.depenses)}</td>
                   <td style={{...td, fontWeight:700, color: l.recetteNette<0?'var(--danger)':'var(--pine)'}} className="mono">{fmtGNF(l.recetteNette)}</td>
+                  <td style={{...td, fontWeight:700, color: l.netPercu<0?'var(--danger)':'var(--pine)'}} className="mono">{fmtGNF(l.netPercu)}</td>
                   <td style={td}>
                     {evolution === null ? <span style={{color:'var(--steam)'}}>—</span> : (
                       <span style={{color: evolution>=0 ? 'var(--ok)' : 'var(--danger)', fontWeight:600}}>
