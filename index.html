@@ -1,4 +1,5 @@
 
+
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -7,7 +8,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-21-3">
+<meta name="app-version" content="2026-09-21-6">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -22,7 +23,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-21-3';
+  const APP_VERSION_ACTUELLE = '2026-09-21-6';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -4085,6 +4086,7 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
     { key:'employes', label:'Équipe', icon:'users' },
     { key:'notifications', label:'Notifications', icon:'bell' },
     { key:'depenses', label:'Dépenses', icon:'euro', children: [{ key:'encaissements', label:'Encaissements', icon:'euro' }] },
+    { key:'listePaiements', label:'Liste des paiements', icon:'euro' },
     { key:'detailMensuel', label:'Détail mensuel', icon:'chart' },
     { key:'performanceCaissiers', label:'Performance caissiers', icon:'chart' },
     { key:'remuneration', label:'Rémunérations', icon:'chart' },
@@ -4114,6 +4116,7 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
       {page === 'employes' && <EquipeView site={site} updateSite={updateSite} db={db} />}
       {page === 'notifications' && <NotificationsView site={site} />}
       {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} db={db} />}
+      {page === 'listePaiements' && <ListePaiementsView site={site} />}
       {page === 'detailMensuel' && <DetailMensuelGerantView site={site} updateSite={updateSite} db={db} />}
       {page === 'encaissements' && <EncaissementsGerantView site={site} />}
       {page === 'performanceCaissiers' && <PerformanceCaissiersView site={site} />}
@@ -10005,6 +10008,239 @@ function MesEncaissementsView({ site, updateSite, db, employeId }){
   );
 }
 
+/* ===================== LISTE DES PAIEMENTS CLIENTS (gérant : tous ; employé : les siens) ===================== */
+
+function ListePaiementsView({ site, employeId }){
+  const isGerant = employeId == null;
+  const today = todayISO();
+  const isoLocal = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; // sans décalage de fuseau horaire
+  const currentYear = Number(today.slice(0,4));
+
+  // Période affichée : jour | semaine | mois | annee | total (à ce jour) | date (un jour précis) | plage (intervalle)
+  const [periode, setPeriode] = useState('jour');
+  const [moisChoisi, setMoisChoisi] = useState(today.slice(0,7));
+  const [anneeChoisie, setAnneeChoisie] = useState(currentYear);
+  const [dateChoisie, setDateChoisie] = useState(today);
+  const [plageDebut, setPlageDebut] = useState(() => { const d = new Date(today+'T00:00:00'); d.setDate(d.getDate()-6); return isoLocal(d); });
+  const [plageFin, setPlageFin] = useState(today);
+  const [recherche, setRecherche] = useState('');
+  const [triCol, setTriCol] = useState('date');
+  const [triDir, setTriDir] = useState('desc');
+
+  // Bornes [debut, fin] (ISO AAAA-MM-JJ) de la période choisie — même logique que le Tableau de bord
+  const bornes = useMemo(() => {
+    const d = new Date(today + 'T00:00:00');
+    if(periode === 'jour') return { debut: today, fin: today };
+    if(periode === 'date') return { debut: dateChoisie, fin: dateChoisie };
+    if(periode === 'plage'){
+      const a = plageDebut || today, b = plageFin || today;
+      return a <= b ? { debut: a, fin: b } : { debut: b, fin: a };
+    }
+    if(periode === 'semaine'){
+      const day = d.getDay() || 7;
+      const monday = new Date(d); monday.setDate(d.getDate() - day + 1);
+      const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+      return { debut: isoLocal(monday), fin: isoLocal(sunday) };
+    }
+    if(periode === 'mois'){
+      const [an, mo] = moisChoisi.split('-').map(Number);
+      const fin = new Date(an, mo, 0);
+      return { debut: `${moisChoisi}-01`, fin: isoLocal(fin) };
+    }
+    if(periode === 'annee') return { debut: `${anneeChoisie}-01-01`, fin: `${anneeChoisie}-12-31` };
+    return { debut: '2000-01-01', fin: today }; // total = à ce jour, tout confondu
+  }, [periode, today, dateChoisie, plageDebut, plageFin, moisChoisi, anneeChoisie]);
+
+  function nomEmploye(empId){
+    if(empId == null) return 'Gérant';
+    const e = (site.employes||[]).find(x => x.id === empId);
+    return e ? e.nom : 'Employé supprimé';
+  }
+
+  // Un paiement client = une ligne, qu'il vienne d'une commande (ticket) ou d'un « Encaisser sans commande »
+  const paiements = useMemo(() => {
+    const liste = [];
+    (site.commandes||[]).forEach(c => {
+      const client = (site.clients||[]).find(cl => cl.id === c.clientId);
+      getPaiementsCommande(c).forEach(pmt => {
+        if(!pmt.date) return;
+        const employeAttribue = pmt.employeId != null ? pmt.employeId : (c.caissierEmpId || null);
+        if(!isGerant && employeAttribue !== employeId) return;
+        liste.push({
+          id: pmt.id || `${c.id}_${pmt.date}`,
+          date: pmt.date,
+          jour: pmt.date.slice(0,10),
+          mois: pmt.date.slice(0,7),
+          annee: Number(pmt.date.slice(0,4)),
+          ticket: c.numero || '—',
+          client: client ? client.nom : 'Client inconnu',
+          employeNom: nomEmploye(employeAttribue),
+          mode: pmt.mode || 'Espèces',
+          montant: Number(pmt.montant)||0
+        });
+      });
+    });
+    (site.paiementsHorsCommande||[]).forEach(p => {
+      if(!isGerant && p.employeId !== employeId) return;
+      const datePaiement = dateEncaissementHorsCommande(p);
+      if(!datePaiement) return;
+      liste.push({
+        id: p.id,
+        date: datePaiement,
+        jour: datePaiement.slice(0,10),
+        mois: datePaiement.slice(0,7),
+        annee: Number(datePaiement.slice(0,4)),
+        ticket: '—',
+        client: p.clientNom || 'Client non précisé',
+        employeNom: nomEmploye(p.employeId || null),
+        mode: p.mode || 'Espèces',
+        montant: Number(p.montant)||0
+      });
+    });
+    return liste;
+  }, [site, employeId, isGerant]);
+
+  const anneesDisponibles = useMemo(() => {
+    const set = new Set(paiements.map(p => p.annee));
+    for(let y = currentYear; y >= ANNEE_DEBUT_APP - 3; y--) set.add(y);
+    return Array.from(set).sort((a,b)=>b-a);
+  }, [paiements, currentYear]);
+
+  const paiementsPeriode = useMemo(() => {
+    return paiements.filter(p => p.jour >= bornes.debut && p.jour <= bornes.fin);
+  }, [paiements, bornes]);
+
+  // Recherche libre : nom du client, montant, 4 derniers chiffres (ou n'importe quels chiffres) du n° de reçu, ou date
+  const paiementsFiltres = useMemo(() => {
+    const q = recherche.trim().toLowerCase();
+    if(!q) return paiementsPeriode;
+    const qDigits = q.replace(/\D/g,'');
+    return paiementsPeriode.filter(p => {
+      if(p.client.toLowerCase().includes(q)) return true;
+      if(qDigits && String(p.montant).includes(qDigits)) return true;
+      if(qDigits && p.ticket !== '—'){
+        const ticketDigits = p.ticket.replace(/\D/g,'');
+        if(ticketDigits.slice(-4) === qDigits || ticketDigits.includes(qDigits)) return true;
+      }
+      const jourFmt = fmtDate(p.jour).toLowerCase(); // ex. "19 sept. 2026"
+      const jourFr = p.jour.split('-').reverse().join('/'); // jj/mm/aaaa
+      if(p.jour.includes(q) || jourFmt.includes(q) || jourFr.includes(q)) return true;
+      return false;
+    });
+  }, [paiementsPeriode, recherche]);
+
+  function trierPar(col){
+    if(triCol === col){ setTriDir(triDir === 'asc' ? 'desc' : 'asc'); }
+    else { setTriCol(col); setTriDir('asc'); }
+  }
+
+  const paiementsTries = useMemo(() => {
+    const copie = [...paiementsFiltres];
+    copie.sort((a,b) => {
+      let va = a[triCol], vb = b[triCol];
+      if(triCol === 'montant'){ va = Number(va); vb = Number(vb); }
+      if(va < vb) return triDir === 'asc' ? -1 : 1;
+      if(va > vb) return triDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return copie;
+  }, [paiementsFiltres, triCol, triDir]);
+
+  const totalPeriode = paiementsFiltres.reduce((s,p) => s + p.montant, 0);
+  const periodeLabel = periode === 'jour' ? "Aujourd'hui"
+    : periode === 'semaine' ? 'Cette semaine'
+    : periode === 'mois' ? 'Ce mois'
+    : periode === 'annee' ? (anneeChoisie === currentYear ? 'Cette année' : `Année ${anneeChoisie}`)
+    : periode === 'total' ? 'À ce jour (tout confondu)'
+    : periode === 'date' ? `Le ${fmtDate(bornes.debut)}`
+    : `Du ${fmtDate(bornes.debut)} au ${fmtDate(bornes.fin)}`;
+
+  // Total par mode de paiement (Espèces, Orange Money, et tout autre mode éventuel), sur la période filtrée
+  const totauxParMode = useMemo(() => {
+    const map = {};
+    paiementsFiltres.forEach(p => { map[p.mode] = (map[p.mode]||0) + p.montant; });
+    return Object.entries(map).sort((a,b)=>b[1]-a[1]).map(([mode,total])=>({mode,total}));
+  }, [paiementsFiltres]);
+
+  function flecheTri(col){ return triCol !== col ? '' : (triDir === 'asc' ? ' ▲' : ' ▼'); }
+  const thTri = { ...th, cursor:'pointer', userSelect:'none' };
+
+  return (
+    <div>
+      <PageHeader title="Liste des paiements" subtitle={isGerant ? "Tous les paiements clients — tri par colonne, période libre et recherche" : "Vos paiements clients encaissés — tri par colonne, période libre et recherche"} />
+
+      <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
+        {[['jour',"Aujourd'hui"],['semaine','Cette semaine'],['mois','Ce mois'],['annee','Cette année'],['total','À ce jour'],['date','Une date'],['plage','Intervalle']].map(([v,l]) => (
+          <button key={v} className="btn btn-sm" onClick={()=>setPeriode(v)}
+            style={{background:periode===v?'var(--pine)':'transparent', color:periode===v?'var(--white)':'var(--ink)', borderColor:periode===v?'var(--pine)':'var(--line-strong)'}}>
+            {l}
+          </button>
+        ))}
+        {periode === 'mois' && (
+          <input type="month" value={moisChoisi} onChange={e=>setMoisChoisi(e.target.value)} style={{width:'auto'}} />
+        )}
+        {periode === 'annee' && (
+          <select value={anneeChoisie} onChange={e=>setAnneeChoisie(Number(e.target.value))} style={{width:'auto', minWidth:100}}>
+            {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        )}
+        {periode === 'date' && (
+          <input type="date" value={dateChoisie} max={today} onChange={e=>setDateChoisie(e.target.value)} style={{width:'auto'}} />
+        )}
+        {periode === 'plage' && (
+          <span style={{display:'flex', gap:6, alignItems:'center', flexWrap:'wrap'}}>
+            <span style={{fontSize:12.5}}>du</span>
+            <input type="date" value={plageDebut} max={today} onChange={e=>setPlageDebut(e.target.value)} style={{width:'auto'}} />
+            <span style={{fontSize:12.5}}>au</span>
+            <input type="date" value={plageFin} max={today} onChange={e=>setPlageFin(e.target.value)} style={{width:'auto'}} />
+          </span>
+        )}
+        <input type="text" placeholder="Rechercher : nom, montant, 4 derniers chiffres du reçu, date…" value={recherche} onChange={e=>setRecherche(e.target.value)} style={{width:'auto', minWidth:280, marginLeft:'auto'}} />
+      </div>
+
+      <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(200px, 1fr))', gap:10, marginBottom:16}}>
+        <StatCard label={`${paiementsFiltres.length} paiement(s) — ${periodeLabel}${recherche.trim() ? ' · résultats de recherche' : ''}`} value={fmtGNF(totalPeriode)} icon="chart" />
+        {totauxParMode.map(({mode, total}) => (
+          <StatCard key={mode} label={`${mode} — ${periodeLabel}`} value={fmtGNF(total)} icon="euro" />
+        ))}
+      </div>
+
+      {paiementsTries.length === 0 ? (
+        <div className="card" style={{padding:'1.25rem', textAlign:'center', color:'var(--steam)', fontSize:13}}>
+          Aucun paiement sur cette période{recherche.trim() ? ' pour cette recherche' : ''}.
+        </div>
+      ) : (
+        <div className="card" style={{overflow:'auto'}}>
+          <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
+            <thead>
+              <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                <th style={thTri} onClick={()=>trierPar('date')}>Date{flecheTri('date')}</th>
+                <th style={thTri} onClick={()=>trierPar('client')}>Client{flecheTri('client')}</th>
+                <th style={thTri} onClick={()=>trierPar('mode')}>Mode de paiement{flecheTri('mode')}</th>
+                {isGerant && <th style={thTri} onClick={()=>trierPar('employeNom')}>Employé{flecheTri('employeNom')}</th>}
+                <th style={thTri} onClick={()=>trierPar('ticket')}>N° reçu{flecheTri('ticket')}</th>
+                <th style={{...thTri, textAlign:'right'}} onClick={()=>trierPar('montant')}>Montant{flecheTri('montant')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {paiementsTries.map(p => (
+                <tr key={p.id} style={{borderTop:'1px solid var(--line)'}}>
+                  <td style={td}>{fmtDate(p.jour)}</td>
+                  <td style={{...td, fontWeight:600}}>{p.client}</td>
+                  <td style={td}>{p.mode}</td>
+                  {isGerant && <td style={td}>{p.employeNom}</td>}
+                  <td style={td} className="mono">{p.ticket}</td>
+                  <td style={{...td, textAlign:'right', fontWeight:600}} className="mono">{fmtGNF(p.montant)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RemunerationView({ site, updateSite, db, siteId, employeId }){
   const [type, setType] = useState('repassage');
   const [date, setDate] = useState(todayISO());
@@ -11466,6 +11702,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
     { key:'marketing', label:'Promos & Relances', icon:'bell' },
     { key:'stock', label:'Stock', icon:'box' },
     { key:'encaissements', label:'Mes encaissements Et Décaissements', icon:'euro' },
+    { key:'listePaiements', label:'Liste des paiements', icon:'euro' },
     { key:'encaisserSansCommande', label:'Encaisser sans commande', icon:'euro' },
     { key:'detailMensuel', label:'Détail mensuel', icon:'chart' },
     { key:'performanceCaissiers', label:'Performance caissiers', icon:'chart' },
@@ -11481,6 +11718,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
       {page === 'clients' && <ClientsView site={site} updateSite={updateSite} db={db} />}
       {page === 'stock' && <StockView site={site} updateSite={updateSite} db={db} />}
       {page === 'depenses' && <DepensesView site={site} updateSite={updateSite} db={db} employeId={employeId} />}
+      {page === 'listePaiements' && <ListePaiementsView site={site} employeId={employeId} />}
       {page === 'detailMensuel' && <DetailMensuelSiteView site={site} updateSite={updateSite} employeId={employeId} db={db} />}
       {page === 'encaissements' && <MesEncaissementsView site={site} updateSite={updateSite} db={db} employeId={employeId} />}
       {page === 'encaisserSansCommande' && <BilanEncaisserSansCommandeSiteView site={site} employeId={employeId} />}
