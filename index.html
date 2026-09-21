@@ -8,7 +8,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-21-6">
+<meta name="app-version" content="2026-09-21-7">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -23,7 +23,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-21-6';
+  const APP_VERSION_ACTUELLE = '2026-09-21-7';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -10065,7 +10065,7 @@ function ListePaiementsView({ site, employeId }){
       getPaiementsCommande(c).forEach(pmt => {
         if(!pmt.date) return;
         const employeAttribue = pmt.employeId != null ? pmt.employeId : (c.caissierEmpId || null);
-        if(!isGerant && employeAttribue !== employeId) return;
+        // Page partagée : tout employé voit ici les paiements de toute l'équipe, comme le gérant
         liste.push({
           id: pmt.id || `${c.id}_${pmt.date}`,
           date: pmt.date,
@@ -10081,7 +10081,6 @@ function ListePaiementsView({ site, employeId }){
       });
     });
     (site.paiementsHorsCommande||[]).forEach(p => {
-      if(!isGerant && p.employeId !== employeId) return;
       const datePaiement = dateEncaissementHorsCommande(p);
       if(!datePaiement) return;
       liste.push({
@@ -10167,7 +10166,7 @@ function ListePaiementsView({ site, employeId }){
 
   return (
     <div>
-      <PageHeader title="Liste des paiements" subtitle={isGerant ? "Tous les paiements clients — tri par colonne, période libre et recherche" : "Vos paiements clients encaissés — tri par colonne, période libre et recherche"} />
+      <PageHeader title="Liste des paiements" subtitle="Tous les paiements clients de l'équipe — tri par colonne, période libre et recherche" />
 
       <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
         {[['jour',"Aujourd'hui"],['semaine','Cette semaine'],['mois','Ce mois'],['annee','Cette année'],['total','À ce jour'],['date','Une date'],['plage','Intervalle']].map(([v,l]) => (
@@ -10217,7 +10216,7 @@ function ListePaiementsView({ site, employeId }){
                 <th style={thTri} onClick={()=>trierPar('date')}>Date{flecheTri('date')}</th>
                 <th style={thTri} onClick={()=>trierPar('client')}>Client{flecheTri('client')}</th>
                 <th style={thTri} onClick={()=>trierPar('mode')}>Mode de paiement{flecheTri('mode')}</th>
-                {isGerant && <th style={thTri} onClick={()=>trierPar('employeNom')}>Employé{flecheTri('employeNom')}</th>}
+                <th style={thTri} onClick={()=>trierPar('employeNom')}>Employé{flecheTri('employeNom')}</th>
                 <th style={thTri} onClick={()=>trierPar('ticket')}>N° reçu{flecheTri('ticket')}</th>
                 <th style={{...thTri, textAlign:'right'}} onClick={()=>trierPar('montant')}>Montant{flecheTri('montant')}</th>
               </tr>
@@ -10228,7 +10227,7 @@ function ListePaiementsView({ site, employeId }){
                   <td style={td}>{fmtDate(p.jour)}</td>
                   <td style={{...td, fontWeight:600}}>{p.client}</td>
                   <td style={td}>{p.mode}</td>
-                  {isGerant && <td style={td}>{p.employeNom}</td>}
+                  <td style={td}>{p.employeNom}</td>
                   <td style={td} className="mono">{p.ticket}</td>
                   <td style={{...td, textAlign:'right', fontWeight:600}} className="mono">{fmtGNF(p.montant)}</td>
                 </tr>
