@@ -1,5 +1,6 @@
 
 
+
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -8,7 +9,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-21-7">
+<meta name="app-version" content="2026-09-23-1">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -23,7 +24,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-21-7';
+  const APP_VERSION_ACTUELLE = '2026-09-23-1';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -9453,6 +9454,51 @@ function PerformanceCaissiersView({ site }){
     return arr;
   }, []);
 
+  // Argent réellement encaissé (Espèces + Orange Money) par caissier sur la période, tous pressings de ce site confondu
+  const encaisseParCaissier = useMemo(() => {
+    const acc = {};
+    function ajouter(employeId, montant){
+      const key = employeId || '_gerant';
+      acc[key] = (acc[key]||0) + montant;
+    }
+    function dansPeriode(jour){
+      if(!jour) return false;
+      if(periode === 'jour') return jour === today;
+      if(periode === 'semaine') return jour >= week.start && jour <= week.end;
+      if(periode === 'mois') return jour.slice(0,7) === moisChoisi;
+      return jour.slice(0,4) === String(anneeChoisie);
+    }
+    (site.commandes||[]).forEach(c => {
+      getPaiementsCommande(c).forEach(pmt => {
+        if(!pmt.date || !dansPeriode(pmt.date.slice(0,10))) return;
+        const employeAttribue = pmt.employeId != null ? pmt.employeId : (c.caissierEmpId || null);
+        ajouter(employeAttribue, Number(pmt.montant)||0);
+      });
+    });
+    (site.paiementsHorsCommande||[]).forEach(p => {
+      const jour = dateEncaissementHorsCommande(p).slice(0,10);
+      if(!dansPeriode(jour)) return;
+      ajouter(p.employeId || null, Number(p.montant)||0);
+    });
+    return acc;
+  }, [site.commandes, site.paiementsHorsCommande, periode, today, week, moisChoisi, anneeChoisie]);
+
+  // Dépenses décaissées par chaque caissier sur la même période (Net perçu = encaissé − décaissé)
+  const depensesParCaissier = useMemo(() => {
+    const acc = {};
+    (site.depenses||[]).forEach(d => {
+      const jour = (d.date||'').slice(0,10);
+      const dansPeriode = periode === 'jour' ? jour === today
+        : periode === 'semaine' ? (jour >= week.start && jour <= week.end)
+        : periode === 'mois' ? jour.slice(0,7) === moisChoisi
+        : jour.slice(0,4) === String(anneeChoisie);
+      if(!jour || !dansPeriode) return;
+      const key = d.saisiPar || '_gerant';
+      acc[key] = (acc[key]||0) + (Number(d.montant)||0);
+    });
+    return acc;
+  }, [site.depenses, periode, today, week, moisChoisi, anneeChoisie]);
+
   const parCaissier = useMemo(() => {
     const acc = {};
     const caissiers = (site.employes||[]).filter(e => e.role !== 'Repasseur');
@@ -9466,10 +9512,10 @@ function PerformanceCaissiersView({ site }){
       if(c.clientId) acc[key].nbClients.add(c.clientId);
     });
     return Object.entries(acc)
-      .map(([id, v]) => ({ id, ...v, nbClients: v.nbClients.size }))
+      .map(([id, v]) => ({ id, ...v, nbClients: v.nbClients.size, netPercu: (encaisseParCaissier[id]||0) - (depensesParCaissier[id]||0) }))
       .filter(v => v.nbCommandes > 0)
       .sort((a,b) => b.totalCA - a.totalCA);
-  }, [commandesPeriode, site.employes, site.services]);
+  }, [commandesPeriode, site.employes, site.services, encaisseParCaissier, depensesParCaissier]);
 
   const totalCommandes = commandesPeriode.length;
   const totalCA = commandesPeriode.reduce((s,c)=>s+calcCommandeTotal(c, site.services),0);
@@ -9515,7 +9561,7 @@ function PerformanceCaissiersView({ site }){
                 <th style={th}>Articles traités</th>
                 <th style={th}>Clients servis</th>
                 <th style={th}>Chiffre d'affaires généré</th>
-                <th style={th}>Panier moyen</th>
+                <th style={th}>Net perçu</th>
               </tr>
             </thead>
             <tbody>
@@ -9526,7 +9572,7 @@ function PerformanceCaissiersView({ site }){
                   <td style={td} className="mono">{c.nbArticles}</td>
                   <td style={td} className="mono">{c.nbClients}</td>
                   <td style={{...td, fontWeight:700, color:'var(--pine)'}} className="mono">{fmtGNF(c.totalCA)}</td>
-                  <td style={td} className="mono">{fmtGNF(c.nbCommandes>0 ? c.totalCA/c.nbCommandes : 0)}</td>
+                  <td style={{...td, fontWeight:600, color: c.netPercu<0?'var(--danger)':'var(--ink)'}} className="mono">{fmtGNF(c.netPercu)}</td>
                 </tr>
               ))}
             </tbody>
