@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-24-2">
+<meta name="app-version" content="2026-09-25-3">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-24-2';
+  const APP_VERSION_ACTUELLE = '2026-09-25-3';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -1664,8 +1664,9 @@ function Shell({ title, role, navItems, active, onNav, onLogout, children }){
   return (
     <div className="app-shell" style={{display:'flex', minHeight:'100vh'}}>
       <aside className="app-sidebar" style={{
-        width:230, background:'var(--pine)', color:'var(--white)', padding:'1.5rem 1rem',
-        display:'flex', flexDirection:'column', position:'sticky', top:0, height:'100vh'
+        width:230, background:'var(--pine)', color:'var(--white)', padding:'1.5rem 1rem 2.75rem',
+        display:'flex', flexDirection:'column', position:'sticky', top:0, height:'100vh',
+        overflowY:'auto', overflowX:'hidden'
       }}>
         <div className="app-sidebar-brand" style={{display:'flex', alignItems:'center', gap:10, marginBottom:'2rem', padding:'0 0.5rem'}}>
           <LogoMark size={30} />
@@ -1674,7 +1675,7 @@ function Shell({ title, role, navItems, active, onNav, onLogout, children }){
             <div className="mono app-sidebar-role" style={{fontSize:11, opacity:0.65}}>{role}</div>
           </div>
         </div>
-        <nav className="app-sidebar-nav" style={{display:'flex', flexDirection:'column', gap:4, flex:1}}>
+        <nav className="app-sidebar-nav" style={{display:'flex', flexDirection:'column', gap:4, flex:1, minHeight:0}}>
           {navItems.map(item => (
             <React.Fragment key={item.key}>
               <button onClick={()=>onNav(item.key)}
@@ -5601,6 +5602,95 @@ function ConfirmDelete({ message, onConfirm, onCancel, db }){
   );
 }
 
+/* ===================== CONFIRMATION PAR MOT DE PASSE + JOURNAL D'AUDIT (Services & tarifs, Rémunérations) =====================
+   Utilisé pour valider un ajout/modification/suppression fait par le gérant OU par un employé (employeId=null → gérant).
+   Chaque confirmation réussie ajoute une entrée dans site.journalConfig (qui, quoi, section, date/heure) visible au gérant. */
+
+function ajouterAuJournalConfig(site, { section, description, auteurNom, auteurRole }){
+  const entree = {
+    id: uid('jrn_'),
+    date: new Date().toISOString(),
+    section,
+    description,
+    auteurNom,
+    auteurRole,
+  };
+  return [entree, ...(site.journalConfig||[])].slice(0, 300);
+}
+
+function ConfirmerModification({ db, site, employeId, message, actionLabel='Confirmer', danger=false, onConfirm, onCancel }){
+  const [pass, setPass] = useState('');
+  const [error, setError] = useState('');
+  const isGerant = employeId == null;
+  const monProfil = !isGerant ? (site.employes||[]).find(e => e.id === employeId) : null;
+
+  function handleConfirm(){
+    if(isGerant){
+      if(pass !== getPassGerant(db)){ setError('Mot de passe incorrect.'); setPass(''); return; }
+      onConfirm({ auteurNom: 'Gérant', auteurRole: 'Gérant' });
+      return;
+    }
+    if(!monProfil || pass !== monProfil.motdepasse){ setError('Mot de passe incorrect.'); setPass(''); return; }
+    onConfirm({ auteurNom: monProfil.nom, auteurRole: monProfil.role });
+  }
+
+  return (
+    <div style={{
+      position:'fixed', inset:0, background:'rgba(27,31,28,0.55)',
+      display:'flex', alignItems:'center', justifyContent:'center', zIndex:100, padding:20
+    }}>
+      <div className="card" style={{width:400, maxWidth:'92vw', padding:'1.5rem'}}>
+        <div style={{display:'flex', alignItems:'center', gap:10, marginBottom:14, color: danger?'var(--danger)':'var(--pine)'}}>
+          <Icon name={danger?'alert':'check'} size={22} />
+          <h2 style={{margin:0, fontSize:18, color: danger?'var(--danger)':'var(--pine)'}}>Confirmer le changement</h2>
+        </div>
+        <p style={{fontSize:14, color:'var(--ink)', marginBottom:16, lineHeight:1.5}}>{message}</p>
+        <div style={{marginBottom:14}}>
+          <label>{isGerant ? 'Mot de passe gérant pour confirmer' : 'Votre mot de passe pour confirmer'}</label>
+          <input
+            type="password"
+            placeholder="Entrez votre mot de passe…"
+            value={pass}
+            onChange={e=>{ setPass(e.target.value); setError(''); }}
+            onKeyDown={e=>{ if(e.key==='Enter') handleConfirm(); }}
+            autoFocus
+          />
+          {error && <p style={{color:'var(--danger)', fontSize:13, margin:'6px 0 0'}}>{error}</p>}
+          <p style={{fontSize:11.5, color:'var(--steam)', margin:'8px 0 0', lineHeight:1.4}}>
+            ℹ️ Ce changement sera enregistré avec votre nom, la date et l'heure, visible par le gérant.
+          </p>
+        </div>
+        <div style={{display:'flex', gap:10, justifyContent:'flex-end'}}>
+          <button className="btn" onClick={onCancel}>Annuler</button>
+          <button className="btn" style={danger ? {background:'var(--danger)', borderColor:'var(--danger)', color:'var(--white)'} : {background:'var(--pine)', borderColor:'var(--pine)', color:'var(--white)'}} onClick={handleConfirm}>
+            {actionLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function JournalModificationsCard({ site, sections }){
+  const entries = (site.journalConfig||[]).filter(e => !sections || sections.includes(e.section)).slice(0, 8);
+  if(entries.length === 0) return null;
+  return (
+    <div className="card" style={{padding:'1.1rem 1.25rem', marginTop:14, background:'var(--paper-2)'}}>
+      <h4 style={{margin:'0 0 10px', fontSize:13, color:'var(--steam)', textTransform:'uppercase', letterSpacing:'0.03em'}}>
+        🕒 Dernières modifications
+      </h4>
+      <div style={{display:'grid', gap:8}}>
+        {entries.map(e => (
+          <div key={e.id} style={{fontSize:12.5, lineHeight:1.5, borderLeft:'3px solid var(--pine)', paddingLeft:10}}>
+            <div><strong>{e.auteurNom}</strong> <span style={{color:'var(--steam)'}}>({e.auteurRole})</span> — {e.description}</div>
+            <div style={{color:'var(--steam)', fontSize:11.5}}>{fmtDateTime(e.date)}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ModalShell({ title, children, onClose, width=520 }){
   return (
     <div style={{
@@ -8149,7 +8239,21 @@ function RemunerationGerantView({ site }){
   );
 }
 
-function ConfigRemunerationEditor({ site, updateSite }){
+// Décrit ce qui a changé entre deux listes (par id) pour le journal d'audit
+function diffListePourJournal(avant, apres, labelFn){
+  const avantMap = Object.fromEntries((avant||[]).map(x=>[x.id,x]));
+  const apresMap = Object.fromEntries((apres||[]).map(x=>[x.id,x]));
+  const ajouts = (apres||[]).filter(x=>!avantMap[x.id]);
+  const suppressions = (avant||[]).filter(x=>!apresMap[x.id]);
+  const modifs = (apres||[]).filter(x=>avantMap[x.id] && JSON.stringify(avantMap[x.id])!==JSON.stringify(x));
+  const parts = [];
+  if(ajouts.length) parts.push(`${ajouts.length} ajouté(s) [${ajouts.map(labelFn).join(', ')}]`);
+  if(suppressions.length) parts.push(`${suppressions.length} supprimé(s) [${suppressions.map(labelFn).join(', ')}]`);
+  if(modifs.length) parts.push(`${modifs.length} modifié(s) [${modifs.map(labelFn).join(', ')}]`);
+  return parts.length ? parts.join(', ') : null;
+}
+
+function ConfigRemunerationEditor({ site, updateSite, db, employeId }){
   const config = site.configRemuneration || { tarifsRepassage: [], zones: [] };
   const [tarifsRepassage, setTarifsRepassage] = useState(config.tarifsRepassage || []);
   const [zones, setZones] = useState(config.zones || []);
@@ -8160,9 +8264,32 @@ function ConfigRemunerationEditor({ site, updateSite }){
   const [newZoneMontant, setNewZoneMontant] = useState('');
   const [editingZoneId, setEditingZoneId] = useState(null);
   const [flash, setFlash] = useState(false);
+  const [pendingSave, setPendingSave] = useState(false);
+  const [aucunChangement, setAucunChangement] = useState(false);
 
-  function save(){
-    updateSite({ ...site, configRemuneration: { tarifsRepassage, zones } });
+  function demanderSauvegarde(){
+    const descRep = diffListePourJournal(config.tarifsRepassage, tarifsRepassage, t=>t.nom);
+    const descZones = diffListePourJournal(config.zones, zones, z=>z.nom);
+    if(!descRep && !descZones){
+      setAucunChangement(true);
+      setTimeout(()=>setAucunChangement(false), 2000);
+      return;
+    }
+    setPendingSave(true);
+  }
+  function confirmerSauvegarde({ auteurNom, auteurRole }){
+    const descRep = diffListePourJournal(config.tarifsRepassage, tarifsRepassage, t=>t.nom);
+    const descZones = diffListePourJournal(config.zones, zones, z=>z.nom);
+    const description = [
+      descRep ? `Tarifs repassage : ${descRep}` : null,
+      descZones ? `Zones de livraison : ${descZones}` : null,
+    ].filter(Boolean).join(' — ');
+    updateSite({
+      ...site,
+      configRemuneration: { tarifsRepassage, zones },
+      journalConfig: ajouterAuJournalConfig(site, { section: 'Rémunérations', description, auteurNom, auteurRole })
+    });
+    setPendingSave(false);
     setFlash(true);
     setTimeout(()=>setFlash(false), 1800);
   }
@@ -8260,9 +8387,19 @@ function ConfigRemunerationEditor({ site, updateSite }){
         </div>
       </div>
 
-      <button className="btn btn-rust" style={{marginTop:16}} onClick={save}>
+      <button className="btn btn-rust" style={{marginTop:16}} onClick={demanderSauvegarde}>
         {flash ? <><Icon name="check" size={14}/> Enregistré !</> : 'Enregistrer la configuration'}
       </button>
+      {aucunChangement && <p style={{fontSize:12.5, color:'var(--steam)', margin:'8px 0 0'}}>Aucun changement à enregistrer.</p>}
+
+      {pendingSave && <ConfirmerModification db={db} site={site} employeId={employeId}
+        message="Confirmer l'enregistrement de la configuration des rémunérations (tarifs de repassage et/ou zones de livraison) ?"
+        actionLabel="Enregistrer"
+        onConfirm={confirmerSauvegarde}
+        onCancel={()=>setPendingSave(false)}
+      />}
+
+      <JournalModificationsCard site={site} sections={['Rémunérations']} />
     </div>
   );
 }
@@ -9041,7 +9178,7 @@ function ParametresView({ site, updateSite, db, setDb }){
       <RegenererRecusSection site={site} />
 
       {/* Section Rémunération */}
-      <ConfigRemunerationEditor site={site} updateSite={updateSite} />
+      <ConfigRemunerationEditor site={site} updateSite={updateSite} db={db} />
 
       {/* Section SMS */}
       <div className="card" style={{padding:'1.5rem'}}>
@@ -9116,7 +9253,7 @@ function ParametresView({ site, updateSite, db, setDb }){
   );
 }
 
-function ServicesEditor({ site, updateSite, db }){
+function ServicesEditor({ site, updateSite, db, employeId }){
   const [nom, setNom] = useState('');
   const [prix, setPrix] = useState('');
   const [categorie, setCategorie] = useState('Nettoyage');
@@ -9124,18 +9261,59 @@ function ServicesEditor({ site, updateSite, db }){
   const [editNom, setEditNom] = useState('');
   const [editPrix, setEditPrix] = useState('');
   const [editCategorie, setEditCategorie] = useState('Nettoyage');
-  const [confirmSvc, setConfirmSvc] = useState(null);
+  const [confirmSvc, setConfirmSvc] = useState(null); // suppression en attente
+  const [pendingAdd, setPendingAdd] = useState(false); // ajout en attente de mot de passe
+  const [pendingEdit, setPendingEdit] = useState(null); // { avant, apres } édition en attente de mot de passe
 
-  function addService(){
-    if(!nom.trim() || !prix) return;
-    updateSite({ ...site, services: [...site.services, { id: uid('svc_'), nom: nom.trim(), prix: Number(prix), categorie }] });
-    setNom(''); setPrix('');
+  function confirmerAjout({ auteurNom, auteurRole }){
+    const nouveauService = { id: uid('svc_'), nom: nom.trim(), prix: Number(prix), categorie };
+    updateSite({
+      ...site,
+      services: [...site.services, nouveauService],
+      journalConfig: ajouterAuJournalConfig(site, {
+        section: 'Services & tarifs',
+        description: `a ajouté le service « ${nouveauService.nom} » (${categorie}) à ${fmtGNF(nouveauService.prix)}`,
+        auteurNom, auteurRole
+      })
+    });
+    setNom(''); setPrix(''); setPendingAdd(false);
   }
-  function removeService(id){
-    const svc = site.services.find(s=>s.id===id);
+
+  function confirmerEdit({ auteurNom, auteurRole }){
+    const avant = site.services.find(s=>s.id===editingId);
+    const apres = { ...avant, nom: editNom.trim(), prix: Number(editPrix), categorie: editCategorie };
+    const changements = [];
+    if(avant.nom !== apres.nom) changements.push(`nom « ${avant.nom} » → « ${apres.nom} »`);
+    if(avant.prix !== apres.prix) changements.push(`prix ${fmtGNF(avant.prix)} → ${fmtGNF(apres.prix)}`);
+    if(avant.categorie !== apres.categorie) changements.push(`catégorie « ${avant.categorie} » → « ${apres.categorie} »`);
+    updateSite({
+      ...site,
+      services: site.services.map(s => s.id === editingId ? apres : s),
+      journalConfig: ajouterAuJournalConfig(site, {
+        section: 'Services & tarifs',
+        description: `a modifié le service « ${avant.nom} » : ${changements.join(', ') || 'aucun changement de valeur'}`,
+        auteurNom, auteurRole
+      })
+    });
+    setEditingId(null); setPendingEdit(null);
+  }
+
+  function confirmerSuppression({ auteurNom, auteurRole }){
+    const svc = confirmSvc;
     const entry = { id: uid('trash_'), type:'service', label: svc ? `Service : ${svc.nom}` : 'Service', data: svc, dateSuppression: new Date().toISOString() };
-    updateSite({ ...site, services: site.services.filter(s=>s.id!==id), corbeille: [entry, ...(site.corbeille||[])] });
+    updateSite({
+      ...site,
+      services: site.services.filter(s=>s.id!==svc.id),
+      corbeille: [entry, ...(site.corbeille||[])],
+      journalConfig: ajouterAuJournalConfig(site, {
+        section: 'Services & tarifs',
+        description: `a supprimé le service « ${svc.nom} » (${fmtGNF(svc.prix)})`,
+        auteurNom, auteurRole
+      })
+    });
+    setConfirmSvc(null);
   }
+
   function startEdit(s){
     setEditingId(s.id);
     setEditNom(s.nom);
@@ -9143,14 +9321,6 @@ function ServicesEditor({ site, updateSite, db }){
     setEditCategorie(s.categorie);
   }
   function cancelEdit(){
-    setEditingId(null);
-  }
-  function saveEdit(){
-    if(!editNom.trim() || editPrix === '') return;
-    updateSite({
-      ...site,
-      services: site.services.map(s => s.id === editingId ? { ...s, nom: editNom.trim(), prix: Number(editPrix), categorie: editCategorie } : s)
-    });
     setEditingId(null);
   }
 
@@ -9171,7 +9341,7 @@ function ServicesEditor({ site, updateSite, db }){
                 <option>Maison</option>
                 <option>Autres</option>
               </select>
-              <button className="btn btn-sm" style={{padding:'5px 9px'}} onClick={saveEdit}><Icon name="check" size={13}/></button>
+              <button className="btn btn-sm" style={{padding:'5px 9px'}} onClick={()=>{ if(!editNom.trim()||editPrix==='') return; setPendingEdit(true); }}><Icon name="check" size={13}/></button>
               <button className="btn btn-ghost btn-sm" style={{padding:'5px 9px'}} onClick={cancelEdit}><Icon name="x" size={13}/></button>
             </div>
           ) : (
@@ -9198,14 +9368,44 @@ function ServicesEditor({ site, updateSite, db }){
           <option>Autres</option>
         </select>
       </div>
-      <button className="btn btn-rust btn-sm" style={{marginTop:10}} onClick={addService} disabled={!nom.trim()||!prix}>
+      <button className="btn btn-rust btn-sm" style={{marginTop:10}} onClick={()=>{ if(!nom.trim()||!prix) return; setPendingAdd(true); }} disabled={!nom.trim()||!prix}>
         <Icon name="plus" size={13}/> Ajouter
       </button>
-      {confirmSvc && <ConfirmDelete db={db}
+
+      {pendingAdd && <ConfirmerModification db={db} site={site} employeId={employeId}
+        message={`Ajouter le service « ${nom.trim()} » (${categorie}) à ${fmtGNF(Number(prix)||0)} ?`}
+        actionLabel="Ajouter"
+        onConfirm={confirmerAjout}
+        onCancel={()=>setPendingAdd(false)}
+      />}
+      {pendingEdit && <ConfirmerModification db={db} site={site} employeId={employeId}
+        message={`Confirmer la modification du service « ${editNom.trim()} » (${editCategorie}) à ${fmtGNF(Number(editPrix)||0)} ?`}
+        actionLabel="Confirmer"
+        onConfirm={confirmerEdit}
+        onCancel={()=>setPendingEdit(null)}
+      />}
+      {confirmSvc && <ConfirmerModification db={db} site={site} employeId={employeId} danger={true}
         message={`Supprimer le service « ${confirmSvc.nom} » (${fmtGNF(confirmSvc.prix)}) ?`}
-        onConfirm={()=>{ removeService(confirmSvc.id); setConfirmSvc(null); }}
+        actionLabel="Supprimer"
+        onConfirm={confirmerSuppression}
         onCancel={()=>setConfirmSvc(null)}
       />}
+
+      <JournalModificationsCard site={site} sections={['Services & tarifs']} />
+    </div>
+  );
+}
+
+/* ===================== SERVICES & RÉMUNÉRATIONS — ACCÈS EMPLOYÉ (mêmes éditeurs que le gérant, avec mot de passe + journal) ===================== */
+
+function ServicesRemunerationEmployeView({ site, updateSite, db, employeId }){
+  return (
+    <div>
+      <PageHeader title="Services & rémunérations" subtitle="Toute modification est enregistrée avec votre nom, la date et l'heure — visible par le gérant" />
+      <div style={{display:'grid', gap:18}}>
+        <ServicesEditor site={site} updateSite={updateSite} db={db} employeId={employeId} />
+        <ConfigRemunerationEditor site={site} updateSite={updateSite} db={db} employeId={employeId} />
+      </div>
     </div>
   );
 }
@@ -11835,6 +12035,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
     { key:'encaisserSansCommande', label:'Encaisser sans commande', icon:'euro' },
     { key:'detailMensuel', label:'Détail mensuel', icon:'chart' },
     { key:'performanceCaissiers', label:'Performance caissiers', icon:'chart' },
+    { key:'servicesRemuneration', label:'Services & rémunérations', icon:'edit' },
     { key:'suiviRepassage', label:'Suivi repassage', icon:'euro' },
     { key:'moncompte', label:'Mon mot de passe', icon:'edit' },
   ];
@@ -11852,6 +12053,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
       {page === 'encaissements' && <MesEncaissementsView site={site} updateSite={updateSite} db={db} employeId={employeId} />}
       {page === 'encaisserSansCommande' && <BilanEncaisserSansCommandeSiteView site={site} employeId={employeId} />}
       {page === 'performanceCaissiers' && <PerformanceCaissiersView site={site} />}
+      {page === 'servicesRemuneration' && <ServicesRemunerationEmployeView site={site} updateSite={updateSite} db={db} employeId={employeId} />}
       {page === 'suiviRepassage' && <RepassageApercuView site={site} updateSite={updateSite} employeId={employeId} />}
       {page === 'moncompte' && <MonCompteView site={site} updateSite={updateSite} employeId={employeId} />}
     </Shell>
