@@ -2,6 +2,7 @@
 
 
 
+
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -10,7 +11,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-25-4">
+<meta name="app-version" content="2026-09-27-1">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +26,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-25-4';
+  const APP_VERSION_ACTUELLE = '2026-09-27-1';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -8266,6 +8267,13 @@ function ConfigRemunerationEditor({ site, updateSite, db, employeId }){
   const [flash, setFlash] = useState(false);
   const [pendingSave, setPendingSave] = useState(false);
   const [aucunChangement, setAucunChangement] = useState(false);
+  const [rechercheRep, setRechercheRep] = useState('');
+
+  const tarifsRepassageAffiches = useMemo(() => {
+    const q = rechercheRep.trim().toLowerCase();
+    const liste = q ? tarifsRepassage.filter(t => t.nom.toLowerCase().includes(q)) : tarifsRepassage;
+    return [...liste].sort((a,b) => a.nom.localeCompare(b.nom, 'fr', { sensitivity:'base' }));
+  }, [tarifsRepassage, rechercheRep]);
 
   function demanderSauvegarde(){
     const descRep = diffListePourJournal(config.tarifsRepassage, tarifsRepassage, t=>t.nom);
@@ -8330,8 +8338,9 @@ function ConfigRemunerationEditor({ site, updateSite, db, employeId }){
         <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 10px', lineHeight:1.5}}>
           Ajoutez chaque type d'article avec son prix de repassage. Le repasseur choisira dans cette liste.
         </p>
+        <input type="text" placeholder="🔎 Rechercher un article par nom…" value={rechercheRep} onChange={e=>setRechercheRep(e.target.value)} style={{marginBottom:8}} />
         <div style={{marginBottom:10, maxHeight:200, overflowY:'auto'}}>
-          {tarifsRepassage.map(t => (
+          {tarifsRepassageAffiches.map(t => (
             <div key={t.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'7px 0', borderBottom:'1px solid var(--line)', fontSize:13.5}}>
               <span>👔 {t.nom}</span>
               <div style={{display:'flex', gap:6, alignItems:'center'}}>
@@ -8341,7 +8350,7 @@ function ConfigRemunerationEditor({ site, updateSite, db, employeId }){
               </div>
             </div>
           ))}
-          {tarifsRepassage.length === 0 && <p style={{fontSize:13, color:'var(--steam)'}}>Aucun tarif configuré.</p>}
+          {tarifsRepassageAffiches.length === 0 && <p style={{fontSize:13, color:'var(--steam)'}}>Aucun tarif trouvé.</p>}
         </div>
         <div style={{display:'grid', gridTemplateColumns:'2fr 1fr auto auto', gap:8}}>
           <input type="text" placeholder="Article (ex: Chemise, Pantalon, Robe…)" value={newRepNom} onChange={e=>setNewRepNom(e.target.value)} />
@@ -9264,6 +9273,13 @@ function ServicesEditor({ site, updateSite, db, employeId }){
   const [confirmSvc, setConfirmSvc] = useState(null); // suppression en attente
   const [pendingAdd, setPendingAdd] = useState(false); // ajout en attente de mot de passe
   const [pendingEdit, setPendingEdit] = useState(null); // { avant, apres } édition en attente de mot de passe
+  const [rechercheSvc, setRechercheSvc] = useState('');
+
+  const servicesAffiches = useMemo(() => {
+    const q = rechercheSvc.trim().toLowerCase();
+    const liste = q ? site.services.filter(s => s.nom.toLowerCase().includes(q)) : site.services;
+    return [...liste].sort((a,b) => a.nom.localeCompare(b.nom, 'fr', { sensitivity:'base' }));
+  }, [site.services, rechercheSvc]);
 
   function confirmerAjout({ auteurNom, auteurRole }){
     const nouveauService = { id: uid('svc_'), nom: nom.trim(), prix: Number(prix), categorie };
@@ -9327,8 +9343,9 @@ function ServicesEditor({ site, updateSite, db, employeId }){
   return (
     <div className="card" style={{padding:'1.5rem'}}>
       <h3 style={{margin:'0 0 16px', fontSize:15}}>Services & tarifs</h3>
+      <input type="text" placeholder="🔎 Rechercher un service par nom…" value={rechercheSvc} onChange={e=>setRechercheSvc(e.target.value)} style={{marginBottom:10}} />
       <div style={{maxHeight:320, overflowY:'auto', marginBottom:14}}>
-        {site.services.map(s => (
+        {servicesAffiches.map(s => (
           editingId === s.id ? (
             <div key={s.id} style={{display:'grid', gridTemplateColumns:'1.3fr 0.9fr 1fr auto auto', gap:6, alignItems:'center', padding:'8px 0', borderBottom:'1px solid var(--line)'}}>
               <input type="text" value={editNom} onChange={e=>setEditNom(e.target.value)} style={{padding:'6px 8px', fontSize:13}} />
@@ -9355,6 +9372,7 @@ function ServicesEditor({ site, updateSite, db, employeId }){
             </div>
           )
         ))}
+        {servicesAffiches.length === 0 && <p style={{fontSize:13, color:'var(--steam)'}}>Aucun service trouvé.</p>}
       </div>
       <div style={{display:'grid', gridTemplateColumns:'1.4fr 0.8fr 1fr', gap:8}}>
         <input type="text" placeholder="Nom du service" value={nom} onChange={e=>setNom(e.target.value)} />
