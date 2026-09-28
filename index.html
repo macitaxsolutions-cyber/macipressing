@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-28-2">
+<meta name="app-version" content="2026-09-28-4">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,8 +25,22 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-28-2';
+  const APP_VERSION_ACTUELLE = '2026-09-28-4';
   let dejaRecharge = false;
+  // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
+  // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
+  // base), un rechargement immédiat les ferait disparaître sans aucun avertissement ni possibilité de
+  // les récupérer. On mémorise seulement qu'une mise à jour est disponible (majEnAttente), et on ne
+  // recharge que quand la page N'EST PAS au premier plan — c'est-à-dire soit tout de suite si elle est
+  // déjà en arrière-plan au moment de la détection, soit dès que l'utilisateur la quitte des yeux
+  // (bascule d'onglet, verrouillage, mise en veille) : à ce moment-là, il n'y a par définition rien en
+  // cours de saisie à perdre.
+  let majEnAttente = false;
+  function appliquerRechargement(){
+    if(dejaRecharge) return;
+    dejaRecharge = true;
+    window.location.reload();
+  }
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
     fetch('index.html', { cache: 'no-store' })
@@ -34,14 +48,20 @@
       .then(html => {
         const m = html.match(/<meta name="app-version" content="([^"]+)"/);
         if(m && m[1] !== APP_VERSION_ACTUELLE){
-          dejaRecharge = true;
-          window.location.reload();
+          majEnAttente = true;
+          if(document.visibilityState !== 'visible') appliquerRechargement();
         }
       })
       .catch(() => {}); // hors ligne ou erreur réseau : pas grave, on retentera plus tard
   }
   setInterval(verifierNouvelleVersion, 3 * 60 * 1000); // toutes les 3 minutes
-  document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') verifierNouvelleVersion(); });
+  document.addEventListener('visibilitychange', () => {
+    if(document.visibilityState === 'hidden' && majEnAttente){
+      appliquerRechargement();
+    } else if(document.visibilityState === 'visible'){
+      verifierNouvelleVersion();
+    }
+  });
 
   if('serviceWorker' in navigator){
     window.addEventListener('load', () => {
@@ -51,8 +71,8 @@
     });
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       if(dejaRecharge) return;
-      dejaRecharge = true;
-      window.location.reload();
+      majEnAttente = true;
+      if(document.visibilityState !== 'visible') appliquerRechargement();
     });
   }
 </script>
@@ -3170,6 +3190,10 @@ function EncaissementsDecaissementsGlobalView({ db, updateSite }){
     return d.slice(0,4) === String(anneeChoisie);
   }
 
+  // Utilisé uniquement pour le détail par pressing/employé ci-dessous (saisies manuelles antérieures à
+  // septembre 2026, ajoutées aux transactions réelles) — PAS pour les totaux généraux ci-dessous, qui
+  // utilisent désormais calculerDonneesMensuellesSite (voir totaux) pour rester cohérents avec le Détail
+  // mensuel même quand une saisie manuelle existe pour un mois plus récent.
   function estAvantSeuilMois(anneeNum, moisNum){
     return anneeNum < 2026 || (anneeNum === 2026 && moisNum < 9);
   }
@@ -3188,41 +3212,55 @@ function EncaissementsDecaissementsGlobalView({ db, updateSite }){
     return liste;
   }, [periode, moisChoisi, anneeChoisie, today]);
 
-  const moisManuelsCles = useMemo(() => new Set(moisManuelsDansPeriode.map(({annee,mois}) => `${annee}-${mois}`)), [moisManuelsDansPeriode]);
-
+  // Pour les périodes de granularité mensuelle (mois/année/à ce jour), on réutilise EXACTEMENT le même
+  // calcul mois par mois que le Détail mensuel (calculerDonneesMensuellesSite) — y compris sa règle
+  // « une saisie manuelle remplace entièrement les données automatiques de ce mois-là », quel que soit
+  // le mois concerné (pas seulement avant septembre 2026). Un mois peut avoir une saisie manuelle même
+  // en pleine période « automatique » (correction du gérant) — l'ancienne version de cette page ignorait
+  // ce cas et additionnait les deux, d'où l'écart avec le Détail mensuel. Pour jour/semaine, une saisie
+  // manuelle (mensuelle par nature) ne peut de toute façon pas être découpée à ce niveau : on reste sur
+  // les transactions réelles de la période, comme avant.
   const totaux = useMemo(() => {
     let especes = 0, orangeMoney = 0, depenses = 0, impayes = 0;
-    db.sites.forEach(site => {
-      (site.commandes||[]).forEach(c => {
-        getPaiementsCommande(c).forEach(pmt => {
-          if(!pmt.date || !dansPeriode(pmt.date)) return;
-          if(pmt.mode === 'Orange Money') orangeMoney += Number(pmt.montant);
-          else especes += Number(pmt.montant);
+
+    if(periode === 'mois' || periode === 'annee' || periode === 'total'){
+      const annees = periode === 'mois' ? [Number(moisChoisi.slice(0,4))]
+        : periode === 'annee' ? [anneeChoisie]
+        : (() => { const arr=[]; for(let a=ANNEE_DEBUT_APP-3; a<=Number(today.slice(0,4)); a++) arr.push(a); return arr; })();
+      db.sites.forEach(site => {
+        annees.forEach(annee => {
+          calculerDonneesMensuellesSite(site, annee).forEach(m => {
+            if(periode === 'mois' && `${annee}-${String(m.mois).padStart(2,'0')}` !== moisChoisi) return;
+            especes += m.montantRecuEspeces||0;
+            orangeMoney += m.montantRecuOrangeMoney||0;
+            depenses += m.depenses||0;
+            impayes += m.impayesReel||0;
+          });
         });
       });
-      // Impayé réel réconcilié (même logique que le Détail mensuel) plutôt qu'une simple lecture du
-      // statut « impayé » de la commande — voir calculerImpayesReelSurPeriode.
-      impayes += calculerImpayesReelSurPeriode(site, dansPeriode, moisManuelsCles);
-      (site.depenses||[]).forEach(d => {
-        if(d.date && dansPeriode(d.date)) depenses += Number(d.montant)||0;
-      });
-      (site.paiementsHorsCommande||[]).forEach(p => {
-        if(!dateEncaissementHorsCommande(p) || !dansPeriode(dateEncaissementHorsCommande(p))) return;
-        if(p.mode === 'Orange Money') orangeMoney += Number(p.montant)||0;
-        else especes += Number(p.montant)||0;
-      });
-      moisManuelsDansPeriode.forEach(({annee, mois}) => {
-        const parEmploye = normaliserMoisManuel(((site.detailMensuelManuel||{})[annee]||{})[String(mois)]) || {};
-        Object.values(parEmploye).forEach(v => {
-          especes += Number(v.montantRecuEspeces)||0;
-          orangeMoney += Number(v.montantRecuOrangeMoney)||0;
-          depenses += Number(v.depenses)||0;
-          impayes += Number(v.impayes)||0;
+    } else {
+      db.sites.forEach(site => {
+        (site.commandes||[]).forEach(c => {
+          getPaiementsCommande(c).forEach(pmt => {
+            if(!pmt.date || !dansPeriode(pmt.date)) return;
+            if(pmt.mode === 'Orange Money') orangeMoney += Number(pmt.montant);
+            else especes += Number(pmt.montant);
+          });
+        });
+        impayes += calculerImpayesReelSurPeriode(site, dansPeriode, null);
+        (site.depenses||[]).forEach(d => {
+          if(d.date && dansPeriode(d.date)) depenses += Number(d.montant)||0;
+        });
+        (site.paiementsHorsCommande||[]).forEach(p => {
+          if(!dateEncaissementHorsCommande(p) || !dansPeriode(dateEncaissementHorsCommande(p))) return;
+          if(p.mode === 'Orange Money') orangeMoney += Number(p.montant)||0;
+          else especes += Number(p.montant)||0;
         });
       });
-    });
+    }
+
     return { especes, orangeMoney, depenses, impayes };
-  }, [db.sites, periode, moisChoisi, anneeChoisie, moisManuelsDansPeriode, moisManuelsCles]);
+  }, [db.sites, periode, moisChoisi, anneeChoisie, today]);
 
   const anneesDisponibles = useMemo(() => {
     const arr = [];
@@ -3745,62 +3783,55 @@ function GlobalDashboard({ db, onOpenSite }){
     return true; // 'total' = à ce jour, tout confondu
   }
 
-  function estAvantSeuilMois(anneeNum, moisNum){
-    return anneeNum < 2026 || (anneeNum === 2026 && moisNum < 9);
-  }
-  // Mois avant-seuil (saisie manuelle uniquement) compris dans la période choisie, pour ajouter les montants manuels
-  const moisManuelsDansPeriode = useMemo(() => {
-    const liste = [];
-    if(periodeGlobale === 'mois'){
-      const [a,m] = moisGlobal.split('-').map(Number);
-      if(estAvantSeuilMois(a,m)) liste.push({ annee:a, mois:m });
-    } else if(periodeGlobale === 'annee'){
-      for(let m=1; m<=12; m++) if(estAvantSeuilMois(anneeGlobale, m)) liste.push({ annee:anneeGlobale, mois:m });
-    } else if(periodeGlobale === 'total'){
-      for(let a=ANNEE_DEBUT_APP-3; a<=Number(today.slice(0,4)); a++){
-        for(let m=1; m<=12; m++) if(estAvantSeuilMois(a,m)) liste.push({ annee:a, mois:m });
-      }
-    }
-    return liste;
-  }, [periodeGlobale, moisGlobal, anneeGlobale, today]);
-
+  // Même principe que dans « Mes encaissements et décaissements » : pour les périodes de granularité
+  // mensuelle, on réutilise calculerDonneesMensuellesSite (comme le Détail mensuel) pour que « Vue
+  // globale » affiche toujours le même montant d'impayés — y compris quand un mois a une saisie
+  // manuelle qui remplace les données automatiques, peu importe le mois concerné.
   const globalEspecesOrangeDepenses = useMemo(() => {
     let especes = 0, orangeMoney = 0, depenses = 0, impayes = 0, revenuFacture = 0;
-    db.sites.forEach(site => {
-      (site.commandes||[]).forEach(c => {
-        getPaiementsCommande(c).forEach(pmt => {
-          if(!pmt.date || !dansPeriode(pmt.date)) return;
-          if(pmt.mode === 'Orange Money') orangeMoney += Number(pmt.montant);
-          else especes += Number(pmt.montant);
-        });
-        if(c.dateCreation && dansPeriode(c.dateCreation)){
-          revenuFacture += calcCommandeTotal(c, site.services);
-        }
-        if(c.paiement === 'impaye' && c.dateCreation && dansPeriode(c.dateCreation)){
-          impayes += calcCommandeTotal(c, site.services) - (Number(c.acompte)||0);
-        }
-      });
-      (site.depenses||[]).forEach(d => {
-        if(d.date && dansPeriode(d.date)) depenses += Number(d.montant)||0;
-      });
-      (site.paiementsHorsCommande||[]).forEach(p => {
-        if(!dateEncaissementHorsCommande(p) || !dansPeriode(dateEncaissementHorsCommande(p))) return;
-        if(p.mode === 'Orange Money') orangeMoney += Number(p.montant)||0;
-        else especes += Number(p.montant)||0;
-      });
-      moisManuelsDansPeriode.forEach(({annee, mois}) => {
-        const parEmploye = normaliserMoisManuel(((site.detailMensuelManuel||{})[annee]||{})[String(mois)]) || {};
-        Object.values(parEmploye).forEach(v => {
-          especes += Number(v.montantRecuEspeces)||0;
-          orangeMoney += Number(v.montantRecuOrangeMoney)||0;
-          depenses += Number(v.depenses)||0;
-          impayes += Number(v.impayes)||0;
-          revenuFacture += Number(v.recetteBrute)||0;
+
+    if(periodeGlobale === 'mois' || periodeGlobale === 'annee' || periodeGlobale === 'total'){
+      const annees = periodeGlobale === 'mois' ? [Number(moisGlobal.slice(0,4))]
+        : periodeGlobale === 'annee' ? [anneeGlobale]
+        : (() => { const arr=[]; for(let a=ANNEE_DEBUT_APP-3; a<=Number(today.slice(0,4)); a++) arr.push(a); return arr; })();
+      db.sites.forEach(site => {
+        annees.forEach(annee => {
+          calculerDonneesMensuellesSite(site, annee).forEach(m => {
+            if(periodeGlobale === 'mois' && `${annee}-${String(m.mois).padStart(2,'0')}` !== moisGlobal) return;
+            especes += m.montantRecuEspeces||0;
+            orangeMoney += m.montantRecuOrangeMoney||0;
+            depenses += m.depenses||0;
+            impayes += m.impayesReel||0;
+            revenuFacture += m.recetteBrute||0;
+          });
         });
       });
-    });
+    } else {
+      db.sites.forEach(site => {
+        (site.commandes||[]).forEach(c => {
+          getPaiementsCommande(c).forEach(pmt => {
+            if(!pmt.date || !dansPeriode(pmt.date)) return;
+            if(pmt.mode === 'Orange Money') orangeMoney += Number(pmt.montant);
+            else especes += Number(pmt.montant);
+          });
+          if(c.dateCreation && dansPeriode(c.dateCreation)){
+            revenuFacture += calcCommandeTotal(c, site.services);
+          }
+        });
+        impayes += calculerImpayesReelSurPeriode(site, dansPeriode, null);
+        (site.depenses||[]).forEach(d => {
+          if(d.date && dansPeriode(d.date)) depenses += Number(d.montant)||0;
+        });
+        (site.paiementsHorsCommande||[]).forEach(p => {
+          if(!dateEncaissementHorsCommande(p) || !dansPeriode(dateEncaissementHorsCommande(p))) return;
+          if(p.mode === 'Orange Money') orangeMoney += Number(p.montant)||0;
+          else especes += Number(p.montant)||0;
+        });
+      });
+    }
+
     return { especes, orangeMoney, depenses, impayes, revenuFacture };
-  }, [db.sites, periodeGlobale, moisGlobal, anneeGlobale, moisManuelsDansPeriode]);
+  }, [db.sites, periodeGlobale, moisGlobal, anneeGlobale, today]);
 
   const anneesGlobalesDisponibles = useMemo(() => {
     const arr = [];
