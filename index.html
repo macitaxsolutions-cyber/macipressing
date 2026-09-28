@@ -2,7 +2,6 @@
 
 
 
-
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -11,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-27-1">
+<meta name="app-version" content="2026-09-28-2">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -26,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-27-1';
+  const APP_VERSION_ACTUELLE = '2026-09-28-2';
   let dejaRecharge = false;
   function verifierNouvelleVersion(){
     if(dejaRecharge || !navigator.onLine) return;
@@ -1443,6 +1442,7 @@ function RoleSelect({ db, setDb, onSelect }){
   function handleLogin(){
     if(loginRole === 'gerant'){
       if(password === getPassGerant(db)){
+        setDb(prevDb => ({ ...prevDb, journalConnexions: enregistrerConnexion(prevDb, { role: 'Gérant', nom: 'Gérant' }) }));
         onSelect('gerant');
       } else {
         setError('Mot de passe incorrect. Réessayez.');
@@ -1453,6 +1453,7 @@ function RoleSelect({ db, setDb, onSelect }){
         if(estEmployeSalaireJournalier(selectedEmp.emp)){
           recordDailyCaissierExpense(selectedEmp.site.id, selectedEmp.emp);
         }
+        setDb(prevDb => ({ ...prevDb, journalConnexions: enregistrerConnexion(prevDb, { role: 'Employé', nom: selectedEmp.emp.nom, siteNom: selectedEmp.site.nom }) }));
         onSelect('employe', selectedEmp.site.id, null, selectedEmp.emp.id);
         setLoginRole(null); setSelectedEmp(null); setPassword(''); setError('');
       } else {
@@ -1766,6 +1767,45 @@ function calcCommandeTotal(commande, services){
   return totalBrut - rabais + montantExpress;
 }
 
+// Impayé « réel » (réconcilié) sur une période quelconque (jour/semaine/mois/année/à ce jour) — même
+// logique que calculerDonneesMensuellesSite (Détail mensuel) : recette brute des commandes créées dans
+// la période, moins TOUT ce qui a été réellement réglé dessus (quelle que soit la date du règlement),
+// moins les vieux soldes (commandes papier) soldés via « Encaisser sans commande » dont l'origine tombe
+// dans la période. Regroupé par mois d'origine et plafonné à 0 mois par mois (pas sur le total global)
+// pour qu'un mois sur-réglé ne puisse pas artificiellement annuler l'impayé d'un autre mois — exactement
+// comme dans le Détail mensuel, pour que les deux pages affichent toujours le même montant.
+// `moisManuelsCles` (Set de 'AAAA-M', mois SANS zéro initial) exclut les mois à saisie manuelle
+// (avant septembre 2026), déjà comptés séparément via detailMensuelManuel.
+function calculerImpayesReelSurPeriode(site, dansPeriode, moisManuelsCles){
+  const buckets = {};
+  function bucket(cle){
+    if(!buckets[cle]) buckets[cle] = { recetteBrute: 0, montantRegle: 0, reglementsAnciens: 0 };
+    return buckets[cle];
+  }
+  function cleMois(dateStr){
+    const [a,m] = dateStr.slice(0,7).split('-');
+    return `${a}-${Number(m)}`;
+  }
+  (site.commandes||[]).forEach(c => {
+    if(!c.dateCreation || !dansPeriode(c.dateCreation)) return;
+    const cle = cleMois(c.dateCreation);
+    if(moisManuelsCles && moisManuelsCles.has(cle)) return;
+    const b = bucket(cle);
+    b.recetteBrute += calcCommandeTotal(c, site.services);
+    b.montantRegle += getPaiementsCommande(c).reduce((s,pmt)=>s+(Number(pmt.montant)||0), 0);
+  });
+  (site.paiementsHorsCommande||[]).forEach(p => {
+    const dateOrigine = dateCommandeOrigineHorsCommande(p);
+    const datePaiement = dateEncaissementHorsCommande(p);
+    if(!dateOrigine || !dansPeriode(dateOrigine)) return;
+    if(dateOrigine.slice(0,7) === (datePaiement||'').slice(0,7)) return;
+    const cle = cleMois(dateOrigine);
+    if(moisManuelsCles && moisManuelsCles.has(cle)) return;
+    bucket(cle).reglementsAnciens += Number(p.montant)||0;
+  });
+  return Object.values(buckets).reduce((s,b) => s + Math.max(0, b.recetteBrute - b.montantRegle - b.reglementsAnciens), 0);
+}
+
 function pushNotification(site, updateSite, { clientId, message, canal }){
   const notif = { id: uid('notif_'), clientId, message, canal, date: new Date().toISOString() };
   updateSite({ ...site, notifications: [notif, ...site.notifications].slice(0, 300) });
@@ -1808,6 +1848,7 @@ function GerantApp({ db, setDb, onLogout }){
     { key:'encaisserSansCommandeBilan', label:'Encaisser sans commande', icon:'euro' },
     { key:'distribution', label:'Distribution des recettes', icon:'euro' },
     { key:'comparaison', label:'Comparaison annuelle', icon:'chart' },
+    { key:'historiqueConnexions', label:'Historique de connexion', icon:'clock' },
   ];
 
   const activeSite = db.sites.find(s => s.id === activeSiteId);
@@ -1827,6 +1868,7 @@ function GerantApp({ db, setDb, onLogout }){
           {page === 'encaisserSansCommandeBilan' && <BilanEncaisserSansCommandeGlobalView db={db} updateSite={updateSite} />}
           {page === 'distribution' && <DistributionView db={db} setDb={setDb} anneeInitiale={anneeDistribution} />}
           {page === 'comparaison' && <ComparaisonAnneesView db={db} onOpenAnnee={ouvrirAnneeDansDistribution} />}
+          {page === 'historiqueConnexions' && <HistoriqueConnexionsView db={db} />}
         </>
       )}
     </Shell>
@@ -3146,6 +3188,8 @@ function EncaissementsDecaissementsGlobalView({ db, updateSite }){
     return liste;
   }, [periode, moisChoisi, anneeChoisie, today]);
 
+  const moisManuelsCles = useMemo(() => new Set(moisManuelsDansPeriode.map(({annee,mois}) => `${annee}-${mois}`)), [moisManuelsDansPeriode]);
+
   const totaux = useMemo(() => {
     let especes = 0, orangeMoney = 0, depenses = 0, impayes = 0;
     db.sites.forEach(site => {
@@ -3155,10 +3199,10 @@ function EncaissementsDecaissementsGlobalView({ db, updateSite }){
           if(pmt.mode === 'Orange Money') orangeMoney += Number(pmt.montant);
           else especes += Number(pmt.montant);
         });
-        if(c.paiement === 'impaye' && c.dateCreation && dansPeriode(c.dateCreation)){
-          impayes += calcCommandeTotal(c, site.services) - (Number(c.acompte)||0);
-        }
       });
+      // Impayé réel réconcilié (même logique que le Détail mensuel) plutôt qu'une simple lecture du
+      // statut « impayé » de la commande — voir calculerImpayesReelSurPeriode.
+      impayes += calculerImpayesReelSurPeriode(site, dansPeriode, moisManuelsCles);
       (site.depenses||[]).forEach(d => {
         if(d.date && dansPeriode(d.date)) depenses += Number(d.montant)||0;
       });
@@ -3178,7 +3222,7 @@ function EncaissementsDecaissementsGlobalView({ db, updateSite }){
       });
     });
     return { especes, orangeMoney, depenses, impayes };
-  }, [db.sites, periode, moisChoisi, anneeChoisie, moisManuelsDansPeriode]);
+  }, [db.sites, periode, moisChoisi, anneeChoisie, moisManuelsDansPeriode, moisManuelsCles]);
 
   const anneesDisponibles = useMemo(() => {
     const arr = [];
@@ -5617,6 +5661,99 @@ function ajouterAuJournalConfig(site, { section, description, auteurNom, auteurR
     auteurRole,
   };
   return [entree, ...(site.journalConfig||[])].slice(0, 300);
+}
+
+/* ===================== HISTORIQUE DES CONNEXIONS (visible par le gérant) =====================
+   Une entrée est ajoutée à db.journalConnexions à chaque connexion réussie (gérant ou employé,
+   quel que soit le site). Stocké au niveau de db (pas d'un site précis) car le gérant n'est
+   rattaché à aucun pressing en particulier. */
+
+function enregistrerConnexion(db, { role, nom, siteNom }){
+  const entree = {
+    id: uid('conn_'),
+    date: new Date().toISOString(),
+    role,
+    nom,
+    siteNom: siteNom || null,
+  };
+  return [entree, ...(db.journalConnexions||[])].slice(0, 500);
+}
+
+function HistoriqueConnexionsView({ db }){
+  const [recherche, setRecherche] = useState('');
+  const [periode, setPeriode] = useState('total');
+
+  const today = todayISO();
+  const getWeekDates = () => {
+    const d = new Date(today + 'T00:00:00');
+    const day = d.getDay() || 7;
+    const monday = new Date(d); monday.setDate(d.getDate() - day + 1);
+    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+    const toISO = (dt) => dt.toISOString().slice(0,10);
+    return { start: toISO(monday), end: toISO(sunday) };
+  };
+  const week = getWeekDates();
+
+  const connexions = db.journalConnexions || [];
+
+  const connexionsFiltrees = useMemo(() => {
+    const q = recherche.trim().toLowerCase();
+    return connexions.filter(c => {
+      const d = (c.date||'').slice(0,10);
+      let dansPeriode = true;
+      if(periode === 'jour') dansPeriode = d === today;
+      else if(periode === 'semaine') dansPeriode = d >= week.start && d <= week.end;
+      else if(periode === 'mois') dansPeriode = d.slice(0,7) === today.slice(0,7);
+      else if(periode === 'annee') dansPeriode = d.slice(0,4) === today.slice(0,4);
+      if(!dansPeriode) return false;
+      if(!q) return true;
+      return (c.nom||'').toLowerCase().includes(q) || (c.siteNom||'').toLowerCase().includes(q);
+    });
+  }, [connexions, recherche, periode, today, week.start, week.end]);
+
+  return (
+    <div>
+      <PageHeader title="Historique des connexions" subtitle="Chaque connexion au gérant ou à un espace employé, tous pressings confondus" />
+      <div style={{display:'flex', gap:8, flexWrap:'wrap', marginBottom:14}}>
+        {[
+          ['jour','Aujourd’hui'], ['semaine','Cette semaine'], ['mois','Ce mois'], ['annee','Cette année'], ['total','À ce jour']
+        ].map(([val,label]) => (
+          <button key={val} className={periode===val ? 'btn btn-sm' : 'btn btn-ghost btn-sm'} onClick={()=>setPeriode(val)}>{label}</button>
+        ))}
+      </div>
+      <input type="text" placeholder="🔎 Rechercher par nom ou pressing…" value={recherche} onChange={e=>setRecherche(e.target.value)} style={{marginBottom:14, maxWidth:360}} />
+      <div className="card" style={{overflow:'hidden'}}>
+        <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+          <thead>
+            <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+              <th style={th}>Date</th>
+              <th style={th}>Heure</th>
+              <th style={th}>Nom</th>
+              <th style={th}>Rôle</th>
+              <th style={th}>Pressing</th>
+            </tr>
+          </thead>
+          <tbody>
+            {connexionsFiltrees.map(c => {
+              const dt = new Date(c.date);
+              return (
+                <tr key={c.id} style={{borderTop:'1px solid var(--line)'}}>
+                  <td style={td}>{dt.toLocaleDateString('fr-FR')}</td>
+                  <td style={td} className="mono">{dt.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'})}</td>
+                  <td style={{...td, fontWeight:600}}>{c.nom}</td>
+                  <td style={td}>{c.role}</td>
+                  <td style={td}>{c.siteNom || '—'}</td>
+                </tr>
+              );
+            })}
+            {connexionsFiltrees.length === 0 && (
+              <tr><td colSpan={5} style={{...td, textAlign:'center', color:'var(--steam)'}}>Aucune connexion trouvée.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
 function ConfirmerModification({ db, site, employeId, message, actionLabel='Confirmer', danger=false, onConfirm, onCancel }){
