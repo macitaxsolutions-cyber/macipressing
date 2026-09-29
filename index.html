@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-28-4">
+<meta name="app-version" content="2026-09-29-3">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-28-4';
+  const APP_VERSION_ACTUELLE = '2026-09-29-3';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -1867,6 +1867,7 @@ function GerantApp({ db, setDb, onLogout }){
     { key:'encaissementsDecaissements', label:'Mes encaissements Et Décaissements', icon:'euro' },
     { key:'encaisserSansCommandeBilan', label:'Encaisser sans commande', icon:'euro' },
     { key:'distribution', label:'Distribution des recettes', icon:'euro' },
+    { key:'suiviDistribution', label:'Suivi distribution', icon:'euro' },
     { key:'comparaison', label:'Comparaison annuelle', icon:'chart' },
     { key:'historiqueConnexions', label:'Historique de connexion', icon:'clock' },
   ];
@@ -1887,6 +1888,7 @@ function GerantApp({ db, setDb, onLogout }){
           {page === 'encaissementsDecaissements' && <EncaissementsDecaissementsGlobalView db={db} updateSite={updateSite} />}
           {page === 'encaisserSansCommandeBilan' && <BilanEncaisserSansCommandeGlobalView db={db} updateSite={updateSite} />}
           {page === 'distribution' && <DistributionView db={db} setDb={setDb} anneeInitiale={anneeDistribution} />}
+          {page === 'suiviDistribution' && <SuiviDistributionView db={db} setDb={setDb} />}
           {page === 'comparaison' && <ComparaisonAnneesView db={db} onOpenAnnee={ouvrirAnneeDansDistribution} />}
           {page === 'historiqueConnexions' && <HistoriqueConnexionsView db={db} />}
         </>
@@ -1969,6 +1971,116 @@ function calculerDepensesPropresEmployesParActeur(db, moisCouverts){
     });
   });
   return resultat;
+}
+
+// Calcule, pour un mois précis OU une année entière (moisCouverts = un seul mois, ou les 12 mois de
+// l'année), le montant réellement distribué à chaque acteur — EXACTEMENT le même calcul que la colonne
+// « Montant à verser » de Distribution des recettes (parts mois par mois, impayés déduits, dépenses
+// propres déduites, remboursement d'investissement le cas échéant). Utilisé à la fois par Distribution
+// des recettes (gérant, avec édition) et par la page de suivi en lecture seule (gérant + caissiers) —
+// pour que les deux affichent toujours le même montant, comme pour les Impayés.
+// `moisChoisi` (« AAAA-MM ») n'est nécessaire que pour filtrer les dépenses propres saisies à la date
+// exacte quand moisCouverts ne contient qu'un seul mois ; ignoré (toutes les dépenses de l'année comptent)
+// quand moisCouverts couvre les 12 mois d'une année.
+function calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi){
+  const dernierMoisCouvert = moisCouverts[moisCouverts.length-1];
+  const parts = partsPourMois(db, dernierMoisCouvert.annee, dernierMoisCouvert.mois);
+  const anneesCouvertes = Array.from(new Set(moisCouverts.map(mc=>mc.annee)));
+  const donneesParAnneeMap = {};
+  anneesCouvertes.forEach(a => { donneesParAnneeMap[a] = calculerDonneesMensuellesMultiSites(db.sites, a); });
+  const surUnSeulMois = moisCouverts.length === 1;
+  const remboursementActif = db.remboursementActif !== false;
+
+  function partActeur(nom, champ){
+    const cle = champ === 'recetteBrute' ? 'recetteBrute' : champ === 'impayes' ? 'impayesReel' : 'netPercu';
+    return moisCouverts.reduce((s,{annee:a, mois:m}) => {
+      const dm = (donneesParAnneeMap[a]||[]).find(x=>x.mois===m);
+      if(!dm) return s;
+      return s + (Number(dm[cle])||0) * pctActeurMois(db, nom, a, m) / 100;
+    }, 0);
+  }
+
+  function depensesActeurPourPeriode(nomActeur){
+    let entries = [];
+    anneesCouvertes.forEach(a => {
+      const liste = (((db.historiqueAnnuel||{})[a]||{}).depensesActeurs||{})[nomActeur] || [];
+      entries = entries.concat(liste);
+    });
+    if(!surUnSeulMois) return entries; // toute l'année : pas de filtrage supplémentaire par date
+    return entries.filter(e => e.date && e.date.slice(0,7) === moisChoisi);
+  }
+
+  const depensesActeursPeriode = {};
+  parts.forEach(p => { depensesActeursPeriode[p.nom] = depensesActeurPourPeriode(p.nom); });
+  const depensesPropresEmployes = calculerDepensesPropresEmployesParActeur(db, moisCouverts);
+
+  const totalRedirigeVersCapitalFixe = remboursementActif ? parts.reduce((s,p) => {
+    if(!ACTEURS_REMBOURSEMENT_INVESTISSEMENT.includes(p.nom)) return s;
+    const montantBrutP = partActeur(p.nom, 'recetteNette');
+    const depensePropreP = (depensesActeursPeriode[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
+    const montantNetP = montantBrutP - depensePropreP;
+    return s + montantNetP * 0.2;
+  }, 0) : 0;
+
+  return parts.map(p => {
+    const impayesPart = partActeur(p.nom, 'impayes');
+    const montantBrut = partActeur(p.nom, 'recetteNette');
+    const montantBrutAvantImpayes = partActeur(p.nom, 'recetteBrute');
+    const depensePropre = (depensesActeursPeriode[p.nom]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
+    const montantNet = montantBrut - depensePropre;
+    const estConcerne = remboursementActif && ACTEURS_REMBOURSEMENT_INVESTISSEMENT.includes(p.nom);
+    // Montant que CET acteur verse en plus vers la Conservation du Capital Fixe (20% de son net perçu,
+    // uniquement pour les 4 acteurs concernés par le remboursement d'investissement) — 0 sinon.
+    const extraCapitalFixe = estConcerne ? montantNet * 0.2 : 0;
+    const montantAVerser = p.nom === 'Conservation du Capital Fixe'
+      ? montantNet + totalRedirigeVersCapitalFixe
+      : (estConcerne ? montantNet * 0.8 : montantNet);
+    return {
+      nom: p.nom, pct: p.pct, montantBrutAvantImpayes, impayesPart, montantBrut, depensePropre, montantNet, montantAVerser,
+      extraCapitalFixe,
+      // Uniquement rempli sur la ligne « Conservation du Capital Fixe » : total reçu en plus des 4 acteurs concernés.
+      recuDesAutresActeurs: p.nom === 'Conservation du Capital Fixe' ? totalRedirigeVersCapitalFixe : 0,
+    };
+  });
+}
+
+// ---- Suivi du paiement réel de la distribution, acteur par acteur, période par période ----
+// db.distributionPaiements = { [clePeriode]: { [nomActeur]: { paye, montant, modePaiement, datePaiement,
+//   payeParNom, valide, dateValidation, valideParNom } } }
+// clePeriode = 'M-AAAA-MM' pour un mois précis, 'A-AAAA' pour une année entière — préfixées pour ne
+// jamais confondre un suivi mensuel et un suivi annuel de la même période.
+function clePeriodeDistribution(periode, moisChoisi, anneeChoisie){
+  return periode === 'mois' ? `M-${moisChoisi}` : `A-${anneeChoisie}`;
+}
+function marquerDistributionPayee(db, cle, nomActeur, montant, mode, payeParNom){
+  const existant = (db.distributionPaiements||{})[cle] || {};
+  const entree = {
+    paye: true,
+    montant,
+    modePaiement: mode,
+    datePaiement: new Date().toISOString(),
+    payeParNom: payeParNom || 'Gérant',
+    valide: false,
+    dateValidation: null,
+    valideParNom: null,
+  };
+  return { ...db, distributionPaiements: { ...(db.distributionPaiements||{}), [cle]: { ...existant, [nomActeur]: entree } } };
+}
+function validerReceptionDistribution(db, cle, nomActeur, valideParNom){
+  const existant = (db.distributionPaiements||{})[cle] || {};
+  const entreeActuelle = existant[nomActeur];
+  if(!entreeActuelle || !entreeActuelle.paye) return db;
+  return { ...db, distributionPaiements: { ...(db.distributionPaiements||{}), [cle]: { ...existant, [nomActeur]: { ...entreeActuelle, valide: true, dateValidation: new Date().toISOString(), valideParNom } } } };
+}
+// Nom de l'employé (n'importe quel site) correspondant à cet identifiant — utilisé pour savoir si la
+// personne connectée est elle-même l'un des acteurs de la distribution (et peut donc valider sa réception).
+function nomEmployeGlobal(db, employeId){
+  if(!employeId) return null;
+  for(const site of (db.sites||[])){
+    const e = (site.employes||[]).find(x => x.id === employeId);
+    if(e) return e.nom;
+  }
+  return null;
 }
 
 const ANNEE_DEBUT_APP = 2026; // ancienne référence, conservée pour compat mais plus utilisée pour exclure des données réelles
@@ -2679,6 +2791,179 @@ function DistributionView({ db, setDb, anneeInitiale }){
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+/* ===================== SUIVI DISTRIBUTION (lecture seule, gérant + caissiers) =====================
+   Permet à tout le monde (gérant et employés) de suivre le montant distribué à chaque acteur, mois par
+   mois ou année par année — même principe d'affichage que Suivi repassage (sélecteur de période, une
+   carte par personne), mais calculé par calculerRepartitionActeursPourPeriode pour rester TOUJOURS
+   identique à la colonne « Montant à verser » de Distribution des recettes. Aucune édition ici : les
+   pourcentages et dépenses propres se modifient uniquement depuis les pages du gérant prévues à cet effet. */
+
+function SuiviDistributionView({ db, setDb, employeId }){
+  const currentYear = Number(todayISO().slice(0,4));
+  const currentMonth = Number(todayISO().slice(5,7));
+  const [periode, setPeriode] = useState('mois'); // 'mois' | 'annee' | 'cumul'
+  const [moisChoisi, setMoisChoisi] = useState(todayISO().slice(0,7));
+  const [anneeChoisie, setAnneeChoisie] = useState(currentYear);
+  const [modeChoisi, setModeChoisi] = useState({});
+
+  const anneesDisponibles = useMemo(() => {
+    const arr = [];
+    for(let y = currentYear; y >= ANNEE_DEBUT_APP - 10; y--) arr.push(y);
+    return arr;
+  }, [currentYear]);
+
+  const moisCouverts = useMemo(() => {
+    if(periode === 'mois'){
+      const [a,m] = moisChoisi.split('-').map(Number);
+      return [{ annee:a, mois:m }];
+    }
+    if(periode === 'cumul'){
+      // Depuis le tout premier mois d'existence de l'app jusqu'au mois en cours inclus (cumul « à ce jour »).
+      const arr = [];
+      for(let a = ANNEE_DEBUT_APP; a <= currentYear; a++){
+        const dernierMois = a === currentYear ? currentMonth : 12;
+        for(let m = 1; m <= dernierMois; m++) arr.push({ annee:a, mois:m });
+      }
+      return arr;
+    }
+    return Array.from({length:12}, (_,i) => ({ annee: anneeChoisie, mois:i+1 }));
+  }, [periode, moisChoisi, anneeChoisie, currentYear, currentMonth]);
+
+  const lignes = useMemo(
+    () => calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi),
+    [db, moisCouverts, moisChoisi]
+  );
+
+  const nomMoisLabel = useMemo(() => {
+    const [a,m] = moisChoisi.split('-').map(Number);
+    return new Date(a, m-1, 1).toLocaleDateString('fr-FR', {month:'long', year:'numeric'});
+  }, [moisChoisi]);
+  const periodeLabel = periode === 'mois' ? nomMoisLabel : periode === 'cumul' ? 'À ce jour (depuis le début)' : `Année ${anneeChoisie}`;
+  const suiviPaiementDisponible = periode !== 'cumul'; // le suivi payé/validé se fait par mois ou par année, pas sur un cumul glissant
+
+  const totalAVerser = lignes.reduce((s,l)=>s+l.montantAVerser, 0);
+
+  const cle = suiviPaiementDisponible ? clePeriodeDistribution(periode, moisChoisi, anneeChoisie) : null;
+  const paiementsPeriode = cle ? ((db.distributionPaiements||{})[cle] || {}) : {};
+  // Le gérant (employeId absent) peut toujours valider n'importe quel acteur (beaucoup n'ont pas de compte
+  // dans l'app) ; un employé connecté ne peut valider que SA PROPRE part, si son nom correspond à l'acteur.
+  const monNom = employeId ? nomEmployeGlobal(db, employeId) : null;
+  const estGerant = !employeId;
+
+  function marquerPaye(nomActeur, montant, mode){
+    if(!cle) return;
+    setDb(marquerDistributionPayee(db, cle, nomActeur, montant, mode, estGerant ? 'Gérant' : (monNom || 'Employé')));
+  }
+  function validerReception(nomActeur){
+    if(!cle) return;
+    const valideParNom = estGerant ? 'Gérant' : (monNom || 'Employé');
+    setDb(validerReceptionDistribution(db, cle, nomActeur, valideParNom));
+  }
+
+  return (
+    <div>
+      <PageHeader title="Suivi de la distribution" subtitle="Montant distribué à chaque acteur, par mois, par année ou à ce jour" />
+
+      <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
+        {['mois','annee','cumul'].map(v => (
+          <button key={v} className="btn btn-sm" onClick={()=>setPeriode(v)}
+            style={{background:periode===v?'var(--pine)':'transparent', color:periode===v?'var(--white)':'var(--ink)', borderColor:periode===v?'var(--pine)':'var(--line-strong)'}}>
+            {v === 'mois' ? 'Par mois' : v === 'annee' ? 'Par année' : 'À ce jour'}
+          </button>
+        ))}
+        {periode === 'mois' && (
+          <input type="month" value={moisChoisi} onChange={e=>setMoisChoisi(e.target.value)} style={{width:'auto'}} />
+        )}
+        {periode === 'annee' && (
+          <select value={anneeChoisie} onChange={e=>setAnneeChoisie(Number(e.target.value))} style={{width:'auto', minWidth:100}}>
+            {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        )}
+      </div>
+
+      <div style={{marginBottom:20}}>
+        <StatCard label={`Total distribué — ${periodeLabel}`} value={fmtGNF(totalAVerser)} icon="euro" />
+      </div>
+
+      {lignes.map(l => {
+        const paiement = paiementsPeriode[l.nom];
+        const peutValider = paiement && paiement.paye && !paiement.valide && (estGerant || nomsCorrespondent(monNom||'', l.nom));
+        const modeSel = modeChoisi[l.nom] || 'Espèces';
+        return (
+          <div key={l.nom} className="card" style={{padding:'1.25rem', marginBottom:14}}>
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10, flexWrap:'wrap', gap:8}}>
+              <h3 style={{margin:0, fontSize:15}}>👤 {l.nom} <span style={{fontSize:12, color:'var(--steam)', fontWeight:400}}>({l.pct}%)</span></h3>
+              <span className="mono" style={{fontWeight:700, fontSize:16, color:'var(--pine)'}}>{fmtGNF(l.montantAVerser)}</span>
+            </div>
+            <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(160px, 1fr))', gap:8, marginBottom:12}}>
+              <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                <span style={{fontSize:12.5, color:'var(--steam)'}}>Montant brut</span>
+                <span className="mono" style={{fontSize:13, fontWeight:600}}>{fmtGNF(l.montantBrutAvantImpayes)}</span>
+              </div>
+              <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                <span style={{fontSize:12.5, color:'var(--steam)'}}>Impayés (part)</span>
+                <span className="mono" style={{fontSize:13, fontWeight:600, color: l.impayesPart>0?'var(--danger)':'var(--ink)'}}>{l.impayesPart>0?fmtGNF(l.impayesPart):'—'}</span>
+              </div>
+              <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                <span style={{fontSize:12.5, color:'var(--steam)'}}>Dépenses propres</span>
+                <span className="mono" style={{fontSize:13, fontWeight:600, color: l.depensePropre>0?'var(--rust)':'var(--ink)'}}>{l.depensePropre>0?fmtGNF(l.depensePropre):'—'}</span>
+              </div>
+              <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                <span style={{fontSize:12.5, color:'var(--steam)'}}>Net perçu</span>
+                <span className="mono" style={{fontSize:13, fontWeight:600}}>{fmtGNF(l.montantNet)}</span>
+              </div>
+              {l.extraCapitalFixe > 0 && (
+                <div style={{background:'var(--warn-light)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                  <span style={{fontSize:12.5, color:'#7a5c00'}}>Extra versé — Capital Fixe</span>
+                  <span className="mono" style={{fontSize:13, fontWeight:600, color:'#7a5c00'}}>{fmtGNF(l.extraCapitalFixe)}</span>
+                </div>
+              )}
+              {l.recuDesAutresActeurs > 0 && (
+                <div style={{background:'var(--pine-light)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                  <span style={{fontSize:12.5, color:'var(--pine)'}}>Reçu en extra des acteurs</span>
+                  <span className="mono" style={{fontSize:13, fontWeight:600, color:'var(--pine)'}}>{fmtGNF(l.recuDesAutresActeurs)}</span>
+                </div>
+              )}
+            </div>
+
+            <div style={{fontSize:12, color:'var(--steam)', marginBottom:6, fontWeight:600, textTransform:'uppercase'}}>Paiement — {periodeLabel}</div>
+
+            {!suiviPaiementDisponible ? (
+              <div style={{padding:'10px 12px', background:'var(--paper-2)', borderRadius:8, fontSize:12.5, color:'var(--steam)'}}>
+                Le suivi payé / confirmé se fait mois par mois ou année par année — choisissez « Par mois » ou « Par année » pour marquer un paiement.
+              </div>
+            ) : !paiement || !paiement.paye ? (
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, padding:'10px 12px', background:'var(--warn-light)', borderRadius:8, flexWrap:'wrap'}}>
+                <div style={{fontSize:13}}>Pas encore marqué payé pour cette période.</div>
+                <div style={{display:'flex', alignItems:'center', gap:6}}>
+                  <select value={modeSel} onChange={e=>setModeChoisi(prev=>({...prev, [l.nom]: e.target.value}))} style={{width:'auto', fontSize:12.5, padding:'4px 8px'}}>
+                    <option value="Espèces">Espèces</option>
+                    <option value="Orange Money">Orange Money</option>
+                  </select>
+                  <button className="btn btn-rust btn-sm" onClick={()=>marquerPaye(l.nom, l.montantAVerser, modeSel)}>Marquer payé</button>
+                </div>
+              </div>
+            ) : paiement.valide ? (
+              <div style={{display:'flex', alignItems:'center', gap:8, flexWrap:'wrap'}}>
+                <span className="tag" style={{background:'var(--pine-light)', color:'var(--pine)'}}>✓✓ Reçu et confirmé par {paiement.valideParNom}</span>
+                <span style={{fontSize:12, color:'var(--steam)'}}>Payé {fmtGNF(paiement.montant)} ({paiement.modePaiement}) le {fmtDate(paiement.datePaiement.slice(0,10))}</span>
+              </div>
+            ) : (
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, padding:'10px 12px', background:'var(--paper-2)', borderRadius:8, flexWrap:'wrap'}}>
+                <div style={{fontSize:13}}>
+                  <span className="tag" style={{background:'var(--pine-light)', color:'var(--pine)', marginRight:8}}>✓ Payé</span>
+                  {fmtGNF(paiement.montant)} ({paiement.modePaiement}) par {paiement.payeParNom} le {fmtDate(paiement.datePaiement.slice(0,10))}
+                </div>
+                {peutValider && <button className="btn btn-sm" onClick={()=>validerReception(l.nom)}>J'ai bien reçu</button>}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -12223,6 +12508,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
     { key:'performanceCaissiers', label:'Performance caissiers', icon:'chart' },
     { key:'servicesRemuneration', label:'Services & rémunérations', icon:'edit' },
     { key:'suiviRepassage', label:'Suivi repassage', icon:'euro' },
+    { key:'suiviDistribution', label:'Suivi distribution', icon:'euro' },
     { key:'moncompte', label:'Mon mot de passe', icon:'edit' },
   ];
   return (
@@ -12241,6 +12527,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
       {page === 'performanceCaissiers' && <PerformanceCaissiersView site={site} />}
       {page === 'servicesRemuneration' && <ServicesRemunerationEmployeView site={site} updateSite={updateSite} db={db} employeId={employeId} />}
       {page === 'suiviRepassage' && <RepassageApercuView site={site} updateSite={updateSite} employeId={employeId} />}
+      {page === 'suiviDistribution' && <SuiviDistributionView db={db} setDb={setDb} employeId={employeId} />}
       {page === 'moncompte' && <MonCompteView site={site} updateSite={updateSite} employeId={employeId} />}
     </Shell>
   );
