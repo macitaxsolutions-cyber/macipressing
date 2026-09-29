@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-29-3">
+<meta name="app-version" content="2026-09-29-4">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-29-3';
+  const APP_VERSION_ACTUELLE = '2026-09-29-4';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -393,6 +393,24 @@ function ticketNumber(siteCode, seq){
   const yy = String(d.getFullYear()).slice(2);
   const mm = String(d.getMonth()+1).padStart(2,'0');
   return `${siteCode}-${yy}${mm}-${String(seq).padStart(4,'0')}`;
+}
+
+// Pour la ressaisie d'une commande papier/PDF déjà remise au client (date de dépôt antérieure à aujourd'hui) :
+// permet à l'employé de saisir le numéro déjà imprimé sur l'ancien reçu plutôt que de laisser l'app en
+// générer un nouveau. Si ce numéro est déjà pris par une autre commande, on ajoute _1, _2, ... jusqu'à en
+// trouver un libre — ce suffixe rend visible d'un coup d'œil qu'une commande a été ressaisie manuellement.
+function numeroCommandeLibre(commandes, numeroSaisi){
+  const base = (numeroSaisi||'').trim();
+  if(!base) return base;
+  const dejaUtilise = (n) => (commandes||[]).some(c => c.numero === n);
+  if(!dejaUtilise(base)) return base;
+  let i = 1;
+  let candidat = `${base}_${i}`;
+  while(dejaUtilise(candidat)){
+    i++;
+    candidat = `${base}_${i}`;
+  }
+  return candidat;
 }
 
 function siteCodeFromName(nom){
@@ -5478,6 +5496,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
   const doublonNewClientTel = useMemo(() => newClientMode ? trouverClientMemeTelAutreNom(site.clients, newClientTelComplet, newClientNom) : null, [newClientMode, site.clients, newClientTelComplet, newClientNom]);
   const [lignes, setLignes] = useState([]);
   const [dateDepot, setDateDepot] = useState(todayISO());
+  const [numeroManuel, setNumeroManuel] = useState('');
   const [dateRetrait, setDateRetrait] = useState('');
   const [notes, setNotes] = useState('');
   const [dateRdv, setDateRdv] = useState('');
@@ -5547,9 +5566,15 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
     const now = new Date();
     const heureActuelle = now.toTimeString().slice(0,8);
     const dateCreationFinale = `${dateDepot || todayISO()}T${heureActuelle}`;
+    // Ressaisie d'un reçu papier/PDF (date antérieure) : si un numéro a été saisi manuellement, on l'utilise
+    // (en évitant tout doublon — voir numeroCommandeLibre) au lieu du numéro auto-généré, et on ne consomme
+    // pas la séquence auto (site.seq) puisqu'elle ne sert que pour les numéros générés par l'app.
+    const numeroSaisi = (numeroManuel||'').trim();
+    const numeroFinal = numeroSaisi ? numeroCommandeLibre(site.commandes, numeroSaisi) : ticketNumber(site.code, seq);
     const cmd = {
       id: uid('cmd_'),
-      numero: ticketNumber(site.code, seq),
+      numero: numeroFinal,
+      numeroSaisiManuellement: !!numeroSaisi,
       clientId: finalClientId,
       caissierEmpId: employeId || null,
       lignes,
@@ -5594,7 +5619,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
 
     updateSite({
       ...site,
-      seq: seq+1,
+      seq: numeroSaisi ? seq : seq+1,
       clients: workingClients,
       commandes: [cmd, ...site.commandes],
       notifications: [notif, ...site.notifications].slice(0,300),
@@ -5651,9 +5676,18 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
 
         <div>
           <label>Date de dépôt</label>
-          <input type="date" value={dateDepot} onChange={e=>setDateDepot(e.target.value)} max={todayISO()} style={{maxWidth:200}} />
+          <input type="date" value={dateDepot} onChange={e=>{ setDateDepot(e.target.value); if(e.target.value === todayISO()) setNumeroManuel(''); }} max={todayISO()} style={{maxWidth:200}} />
           {dateDepot !== todayISO() && (
-            <p style={{fontSize:11.5, color:'var(--warn)', margin:'4px 0 0'}}>⚠️ Date antérieure à aujourd'hui — utile pour rattraper une commande papier prise avant le lancement de l'app.</p>
+            <>
+              <p style={{fontSize:11.5, color:'var(--warn)', margin:'4px 0 0'}}>⚠️ Date antérieure à aujourd'hui — utile pour rattraper une commande papier prise avant le lancement de l'app.</p>
+              <div style={{marginTop:10}}>
+                <label>Numéro de reçu déjà remis au client (optionnel)</label>
+                <input type="text" value={numeroManuel} onChange={e=>setNumeroManuel(e.target.value.toUpperCase())} placeholder="Ex : KIPE-2609-0042" style={{maxWidth:280}} />
+                <p style={{fontSize:11.5, color:'var(--steam)', margin:'4px 0 0', lineHeight:1.5}}>
+                  Laissez vide pour laisser l'app générer un numéro automatiquement. Si vous saisissez le numéro déjà imprimé sur un ancien reçu papier ou PDF et qu'il est déjà pris, l'app ajoutera _1, _2… à la fin pour éviter tout doublon — un numéro avec ce suffixe indique donc toujours une commande ressaisie manuellement.
+                </p>
+              </div>
+            </>
           )}
         </div>
 
