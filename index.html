@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-30-1">
+<meta name="app-version" content="2026-09-30-2">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-30-1';
+  const APP_VERSION_ACTUELLE = '2026-09-30-2';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -2925,9 +2925,12 @@ function SuiviDistributionView({ db, setDb, employeId }){
       return [{ annee:a, mois:m }];
     }
     if(periode === 'cumul'){
-      // Depuis le tout premier mois d'existence de l'app jusqu'au mois en cours inclus (cumul « à ce jour »).
+      // Depuis ANNEE_DEBUT_APP - 3 jusqu'au mois en cours inclus — exactement la même portée que « À ce
+      // jour » dans Distribution des recettes (periodeRepartition === 'total'), pour que les deux pages
+      // couvrent les mêmes années. Partir de ANNEE_DEBUT_APP seul (comme avant) oubliait les années
+      // antérieures déjà couvertes là-bas, d'où l'écart signalé.
       const arr = [];
-      for(let a = ANNEE_DEBUT_APP; a <= currentYear; a++){
+      for(let a = ANNEE_DEBUT_APP - 3; a <= currentYear; a++){
         const dernierMois = a === currentYear ? currentMonth : 12;
         for(let m = 1; m <= dernierMois; m++) arr.push({ annee:a, mois:m });
       }
