@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-29-4">
+<meta name="app-version" content="2026-09-30-1">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-29-4';
+  const APP_VERSION_ACTUELLE = '2026-09-30-1';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -1947,6 +1947,30 @@ function pctActeurMois(db, nom, annee, mois){
   return p ? (Number(p.pct)||0) : 0;
 }
 
+// ---- Historique du bouton « Remboursement de l'investissement en cours » ----
+// db.remboursementActif      = état actuel (lu par le bouton Activer/Désactiver)
+// db.remboursementHistorique = [{ depuis:'AAAA-MM', actif:true/false }] : même principe que partsHistorique
+// ci-dessus — chaque entrée fixe l'état valable À PARTIR de ce mois-là, pour que « Par année » / « À ce jour »
+// appliquent à CHAQUE mois l'état qui était réellement le sien, plutôt que l'état actuel du bouton à tous les
+// mois de la période (c'était le bug : activer/désactiver ce bouton en cours d'année faussait les totaux
+// annuels et « à ce jour », même si le mois en cours restait correct).
+function remboursementHistoriqueTrie(db){
+  return [...((db && db.remboursementHistorique) || [])].filter(h => h && h.depuis).sort((a,b) => a.depuis.localeCompare(b.depuis));
+}
+function remboursementActifPourMois(db, annee, mois){
+  const cle = `${annee}-${String(mois).padStart(2,'0')}`;
+  const historique = remboursementHistoriqueTrie(db);
+  // Pas d'historique du tout : comportement d'avant cette fonctionnalité, l'état actuel du bouton
+  // s'applique à tous les mois (rétrocompatible avec les données existantes, sans historique enregistré).
+  if(historique.length === 0) return (db && db.remboursementActif) !== false;
+  // Avant le tout premier changement daté enregistré, on suppose l'état inverse de ce changement (le plus
+  // raisonnable par défaut : si l'historique dit « désactivé depuis juillet », c'est qu'avant juillet
+  // c'était activé) — modifiable en ajoutant une entrée plus ancienne dans l'historique si besoin.
+  let actif = !historique[0].actif;
+  historique.forEach(h => { if(h.depuis <= cle) actif = !!h.actif; });
+  return actif;
+}
+
 // Acteurs concernés par le remboursement d'investissement (80% versé, 20% vers Conservation du Capital Fixe)
 const ACTEURS_REMBOURSEMENT_INVESTISSEMENT = ['Mamadou Sanoussy Bah', 'Mamadou Alpha Bah', 'Nene Djiba Bah', 'Amadou Tidiane Bah'];
 
@@ -2007,7 +2031,6 @@ function calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi){
   const donneesParAnneeMap = {};
   anneesCouvertes.forEach(a => { donneesParAnneeMap[a] = calculerDonneesMensuellesMultiSites(db.sites, a); });
   const surUnSeulMois = moisCouverts.length === 1;
-  const remboursementActif = db.remboursementActif !== false;
 
   function partActeur(nom, champ){
     const cle = champ === 'recetteBrute' ? 'recetteBrute' : champ === 'impayes' ? 'impayesReel' : 'netPercu';
@@ -2015,6 +2038,17 @@ function calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi){
       const dm = (donneesParAnneeMap[a]||[]).find(x=>x.mois===m);
       if(!dm) return s;
       return s + (Number(dm[cle])||0) * pctActeurMois(db, nom, a, m) / 100;
+    }, 0);
+  }
+
+  // Part du net perçu de CE mois éligible au remboursement (0 pour les mois où le bouton était désactivé
+  // à l'époque, même s'il est réactivé aujourd'hui) — voir remboursementActifPourMois ci-dessus.
+  function partActeurEligibleRemboursement(nom){
+    return moisCouverts.reduce((s,{annee:a, mois:m}) => {
+      if(!remboursementActifPourMois(db, a, m)) return s;
+      const dm = (donneesParAnneeMap[a]||[]).find(x=>x.mois===m);
+      if(!dm) return s;
+      return s + (Number(dm.netPercu)||0) * pctActeurMois(db, nom, a, m) / 100;
     }, 0);
   }
 
@@ -2032,13 +2066,18 @@ function calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi){
   parts.forEach(p => { depensesActeursPeriode[p.nom] = depensesActeurPourPeriode(p.nom); });
   const depensesPropresEmployes = calculerDepensesPropresEmployesParActeur(db, moisCouverts);
 
-  const totalRedirigeVersCapitalFixe = remboursementActif ? parts.reduce((s,p) => {
-    if(!ACTEURS_REMBOURSEMENT_INVESTISSEMENT.includes(p.nom)) return s;
-    const montantBrutP = partActeur(p.nom, 'recetteNette');
+  // Montant que CET acteur verse en plus vers la Conservation du Capital Fixe (20% de la part de son net
+  // perçu gagnée pendant un mois où le remboursement était actif, uniquement pour les 4 acteurs concernés).
+  // Ses dépenses propres réduisent d'abord cette part éligible (ce sont des avances déjà prises) avant
+  // d'appliquer les 20% — jamais en dessous de 0.
+  function extraCapitalFixeActeur(p){
+    if(!ACTEURS_REMBOURSEMENT_INVESTISSEMENT.includes(p.nom)) return 0;
     const depensePropreP = (depensesActeursPeriode[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
-    const montantNetP = montantBrutP - depensePropreP;
-    return s + montantNetP * 0.2;
-  }, 0) : 0;
+    const eligibleApresDepense = Math.max(0, partActeurEligibleRemboursement(p.nom) - depensePropreP);
+    return eligibleApresDepense * 0.2;
+  }
+
+  const totalRedirigeVersCapitalFixe = parts.reduce((s,p) => s + extraCapitalFixeActeur(p), 0);
 
   return parts.map(p => {
     const impayesPart = partActeur(p.nom, 'impayes');
@@ -2046,13 +2085,12 @@ function calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi){
     const montantBrutAvantImpayes = partActeur(p.nom, 'recetteBrute');
     const depensePropre = (depensesActeursPeriode[p.nom]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
     const montantNet = montantBrut - depensePropre;
-    const estConcerne = remboursementActif && ACTEURS_REMBOURSEMENT_INVESTISSEMENT.includes(p.nom);
-    // Montant que CET acteur verse en plus vers la Conservation du Capital Fixe (20% de son net perçu,
-    // uniquement pour les 4 acteurs concernés par le remboursement d'investissement) — 0 sinon.
-    const extraCapitalFixe = estConcerne ? montantNet * 0.2 : 0;
+    // Montant que CET acteur verse en plus vers la Conservation du Capital Fixe (0 si non concerné, ou si
+    // aucun des mois de la période n'avait le remboursement actif à l'époque).
+    const extraCapitalFixe = extraCapitalFixeActeur(p);
     const montantAVerser = p.nom === 'Conservation du Capital Fixe'
       ? montantNet + totalRedirigeVersCapitalFixe
-      : (estConcerne ? montantNet * 0.8 : montantNet);
+      : montantNet - extraCapitalFixe;
     return {
       nom: p.nom, pct: p.pct, montantBrutAvantImpayes, impayesPart, montantBrut, depensePropre, montantNet, montantAVerser,
       extraCapitalFixe,
@@ -2226,8 +2264,19 @@ function DistributionView({ db, setDb, anneeInitiale }){
   const [annee, setAnnee] = useState(anneeInitiale || currentYear);
   const [moisOuvertConsolide, setMoisOuvertConsolide] = useState(null);
   const remboursementActif = db.remboursementActif !== false; // activé par défaut
+  const historiqueRemboursement = remboursementHistoriqueTrie(db);
+  const [remboursementDepuis, setRemboursementDepuis] = useState(todayISO().slice(0,7));
+  // Change l'état ET note la date du changement (à partir de quel mois il s'applique) — indispensable pour
+  // que « Par année » / « À ce jour » sachent que les mois AVANT ce changement avaient l'ancien état, au
+  // lieu d'appliquer l'état actuel du bouton à toute la période (c'était le bug signalé par l'utilisateur).
   function toggleRemboursement(){
-    setDb({ ...db, remboursementActif: !remboursementActif });
+    const nouvelEtat = !remboursementActif;
+    const cle = remboursementDepuis || todayISO().slice(0,7);
+    const autres = historiqueRemboursement.filter(h => h.depuis !== cle);
+    setDb({ ...db, remboursementActif: nouvelEtat, remboursementHistorique: [...autres, { depuis: cle, actif: nouvelEtat }] });
+  }
+  function supprimerHistoriqueRemboursement(depuis){
+    setDb({ ...db, remboursementHistorique: historiqueRemboursement.filter(h => h.depuis !== depuis) });
   }
   const estAnneeApp = annee >= ANNEE_DEBUT_APP;
 
@@ -2501,14 +2550,34 @@ function DistributionView({ db, setDb, anneeInitiale }){
   useEffect(() => { setHistoriquePage(1); }, [periodeRepartition, moisChoisi, annee]);
 
 
-  // Remboursement d'investissement : 20% du net perçu des 4 acteurs concernés est redirigé vers la Conservation du Capital Fixe
-  const totalRedirigeVersCapitalFixe = remboursementActif ? parts.reduce((s,p) => {
-    if(!ACTEURS_REMBOURSEMENT_INVESTISSEMENT.includes(p.nom)) return s;
-    const montantBrutP = partActeur(p.nom, 'recetteNette');
+  // Part du net perçu de CE mois (ou de la période jour/semaine en cours) éligible au remboursement — 0 pour
+  // les mois où le bouton était désactivé À L'ÉPOQUE, même s'il est réactivé aujourd'hui (voir
+  // remboursementActifPourMois) : c'est ce qui rend « Par année » / « À ce jour » exacts même après un
+  // changement de ce réglage en cours d'année.
+  function partActeurEligibleRemboursement(nom){
+    if(periodeDonneesBrutes){
+      const mc = moisCouverts[0];
+      if(!remboursementActifPourMois(db, mc.annee, mc.mois)) return 0;
+      return (Number(periodeDonneesBrutes.netPercu)||0) * pctActeurMois(db, nom, mc.annee, mc.mois) / 100;
+    }
+    return moisCouverts.reduce((s,{annee:a, mois:m}) => {
+      if(!remboursementActifPourMois(db, a, m)) return s;
+      const dm = (donneesParAnneeMap[a]||[]).find(x=>x.mois===m);
+      if(!dm) return s;
+      return s + (Number(dm.netPercu)||0) * pctActeurMois(db, nom, a, m) / 100;
+    }, 0);
+  }
+  // Montant que CET acteur verse en plus vers la Conservation du Capital Fixe (20% de sa part éligible,
+  // après déduction de ses dépenses propres déjà prises) — 0 si non concerné, ou si aucun mois de la
+  // période n'avait le remboursement actif à l'époque.
+  function extraCapitalFixeActeur(p){
+    if(!ACTEURS_REMBOURSEMENT_INVESTISSEMENT.includes(p.nom)) return 0;
     const depensePropreP = (depensesActeursPeriode[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
-    const montantNetP = montantBrutP - depensePropreP;
-    return s + montantNetP * 0.2;
-  }, 0) : 0;
+    const eligibleApresDepense = Math.max(0, partActeurEligibleRemboursement(p.nom) - depensePropreP);
+    return eligibleApresDepense * 0.2;
+  }
+  // Remboursement d'investissement : 20% du net perçu éligible des 4 acteurs concernés est redirigé vers la Conservation du Capital Fixe
+  const totalRedirigeVersCapitalFixe = parts.reduce((s,p) => s + extraCapitalFixeActeur(p), 0);
 
   // ---- Données du tableau "Répartition entre les acteurs", pour export CSV/PDF ----
   const lignesRepartitionExport = useMemo(() => {
@@ -2518,30 +2587,47 @@ function DistributionView({ db, setDb, anneeInitiale }){
       const montantBrutAvantImpayes = partActeur(p.nom, 'recetteBrute');
       const depensePropre = (depensesActeursPeriode[p.nom]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
       const montantNet = montantBrut - depensePropre;
-      const cumule = impayesPart + montantNet;
-      const estConcerne = remboursementActif && ACTEURS_REMBOURSEMENT_INVESTISSEMENT.includes(p.nom);
+      const extraCapitalFixe = extraCapitalFixeActeur(p);
       const montantAVerser = p.nom === 'Conservation du Capital Fixe'
         ? montantNet + totalRedirigeVersCapitalFixe
-        : (estConcerne ? montantNet * 0.8 : montantNet);
+        : montantNet - extraCapitalFixe;
       return [p.nom, `${p.pct}%`, Math.round(montantBrutAvantImpayes), Math.round(impayesPart), Math.round(montantBrut), Math.round(depensePropre), Math.round(montantNet), Math.round(montantAVerser)];
     });
-  }, [periodeDonnees, donneesParAnneeMap, moisCouverts, db.partsHistorique, db.partsDistribution, depensesActeursPeriode, depensesPropresEmployes, remboursementActif, totalRedirigeVersCapitalFixe]);
+  }, [periodeDonnees, donneesParAnneeMap, moisCouverts, db.partsHistorique, db.partsDistribution, db.remboursementHistorique, depensesActeursPeriode, depensesPropresEmployes, remboursementActif, totalRedirigeVersCapitalFixe]);
   const REPARTITION_HEADERS = ['Bénéficiaire', 'Part', "Montant brut avant impayés", 'Impayés (part)', 'Net perçu (avant dépenses propres)', 'Dépenses propres', 'Net perçu', 'Montant à verser'];
 
   return (
     <div>
       <PageHeader title="Distribution des recettes" subtitle="Répartition annuelle du bénéfice net entre les acteurs du pressing" />
 
-      <div className="card" style={{padding:'1.1rem 1.5rem', marginBottom:20, display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:12, background: remboursementActif ? 'var(--warn-light)' : 'var(--paper-2)'}}>
-        <div>
-          <div style={{fontWeight:700, fontSize:14, color: remboursementActif ? '#7a5c00' : 'var(--ink)'}}>💰 Remboursement de l'investissement en cours</div>
-          <div style={{fontSize:12.5, color: remboursementActif ? '#7a5c00' : 'var(--steam)', marginTop:2}}>
-            Quand actif, {ACTEURS_REMBOURSEMENT_INVESTISSEMENT.join(', ')} reçoivent 80% de leur net perçu — les 20% restants vont à la Conservation du Capital Fixe pour vous rembourser, sans les bloquer.
+      <div className="card" style={{padding:'1.1rem 1.5rem', marginBottom:20, background: remboursementActif ? 'var(--warn-light)' : 'var(--paper-2)'}}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:12}}>
+          <div>
+            <div style={{fontWeight:700, fontSize:14, color: remboursementActif ? '#7a5c00' : 'var(--ink)'}}>💰 Remboursement de l'investissement en cours</div>
+            <div style={{fontSize:12.5, color: remboursementActif ? '#7a5c00' : 'var(--steam)', marginTop:2}}>
+              Quand actif, {ACTEURS_REMBOURSEMENT_INVESTISSEMENT.join(', ')} reçoivent 80% de leur net perçu — les 20% restants vont à la Conservation du Capital Fixe pour vous rembourser, sans les bloquer.
+            </div>
+          </div>
+          <div style={{display:'flex', alignItems:'center', gap:8, flexShrink:0}}>
+            <input type="month" value={remboursementDepuis} onChange={e=>setRemboursementDepuis(e.target.value)} style={{width:'auto', fontSize:12.5}} title="À partir de quel mois ce changement s'applique" />
+            <button className="btn btn-sm" onClick={toggleRemboursement} style={{background: remboursementActif ? 'var(--warn)' : 'transparent', color: remboursementActif ? 'var(--white)' : 'var(--ink)', borderColor: remboursementActif ? 'var(--warn)' : 'var(--line-strong)'}}>
+              {remboursementActif ? 'Désactiver' : 'Activer'}
+            </button>
           </div>
         </div>
-        <button className="btn btn-sm" onClick={toggleRemboursement} style={{background: remboursementActif ? 'var(--warn)' : 'transparent', color: remboursementActif ? 'var(--white)' : 'var(--ink)', borderColor: remboursementActif ? 'var(--warn)' : 'var(--line-strong)', flexShrink:0}}>
-          {remboursementActif ? 'Désactiver' : 'Activer'}
-        </button>
+        <p style={{fontSize:11.5, color: remboursementActif ? '#7a5c00' : 'var(--steam)', margin:'8px 0 0', lineHeight:1.5}}>
+          Le mois choisi ci-dessus détermine à partir de quand ce nouvel état s'applique — les mois précédents gardent l'état qu'ils avaient déjà. Utile si vous changez ce réglage en cours d'année : « Par année » et « À ce jour » resteront exacts.
+        </p>
+        {historiqueRemboursement.length > 0 && (
+          <div style={{marginTop:10, display:'flex', flexWrap:'wrap', gap:8}}>
+            {historiqueRemboursement.map(h => (
+              <span key={h.depuis} className="tag" style={{background:'var(--paper)', display:'inline-flex', alignItems:'center', gap:6}}>
+                {libelleMoisCle(h.depuis)} : {h.actif ? 'activé' : 'désactivé'}
+                <button type="button" onClick={()=>supprimerHistoriqueRemboursement(h.depuis)} style={{background:'none', border:'none', cursor:'pointer', color:'var(--danger)', fontWeight:700, padding:0}}>✕</button>
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       <div style={{display:'flex', gap:14, marginBottom:20, alignItems:'center', flexWrap:'wrap'}}>
@@ -2770,11 +2856,10 @@ function DistributionView({ db, setDb, anneeInitiale }){
               const montantBrutAvantImpayes = partActeur(p.nom, 'recetteBrute');
               const depensePropre = (depensesActeursPeriode[p.nom]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
               const montantNet = montantBrut - depensePropre;
-              const cumule = impayesPart + montantNet;
-              const estConcerne = remboursementActif && ACTEURS_REMBOURSEMENT_INVESTISSEMENT.includes(p.nom);
+              const extraCapitalFixe = extraCapitalFixeActeur(p);
               const montantAVerser = p.nom === 'Conservation du Capital Fixe'
                 ? montantNet + totalRedirigeVersCapitalFixe
-                : (estConcerne ? montantNet * 0.8 : montantNet);
+                : montantNet - extraCapitalFixe;
               return (
                 <tr key={p.nom} style={{borderTop:'1px solid var(--line)'}}>
                   <td style={td}>{p.nom}</td>
@@ -2790,7 +2875,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
                   <td style={{...td, fontWeight:700, color: montantNet<0 ? 'var(--danger)' : 'var(--ink)'}} className="mono">{fmtGNF(montantNet)}</td>
                   <td style={{...td, fontWeight:700, color:'var(--ok)'}} className="mono">
                     {fmtGNF(montantAVerser)}
-                    {estConcerne && <div style={{fontSize:10.5, color:'var(--warn)', fontWeight:600}}>80% (20% → Capital Fixe)</div>}
+                    {extraCapitalFixe > 0 && <div style={{fontSize:10.5, color:'var(--warn)', fontWeight:600}}>− {fmtGNF(extraCapitalFixe)} (→ Capital Fixe)</div>}
                     {p.nom === 'Conservation du Capital Fixe' && totalRedirigeVersCapitalFixe > 0 && <div style={{fontSize:10.5, color:'var(--warn)', fontWeight:600}}>+ {fmtGNF(totalRedirigeVersCapitalFixe)} reçus</div>}
                   </td>
                 </tr>
