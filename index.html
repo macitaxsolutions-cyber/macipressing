@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-09-30-2">
+<meta name="app-version" content="2026-10-02-2">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-09-30-2';
+  const APP_VERSION_ACTUELLE = '2026-10-02-2';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -1701,6 +1701,24 @@ function RoleCard({ icon, title, desc, onClick }){
 /* ===================== SHELL COMMUN ===================== */
 
 function Shell({ title, role, navItems, active, onNav, onLogout, children }){
+  // Un item avec `children` est un sous-menu repliable (pour raccourcir la barre latérale) : cliquer dessus
+  // ouvre/ferme la liste au lieu de naviguer. Il s'ouvre aussi tout seul si la page active en fait partie
+  // (ex: on revient sur « Suivi distribution » directement — le groupe « Suivi » doit déjà être déplié).
+  const groupesParDefaut = () => {
+    const ouverts = {};
+    (navItems||[]).forEach(item => {
+      if(item.children && item.children.some(c => c.key === active)) ouverts[item.key] = true;
+    });
+    return ouverts;
+  };
+  const [groupesOuverts, setGroupesOuverts] = useState(groupesParDefaut);
+  useEffect(() => {
+    (navItems||[]).forEach(item => {
+      if(item.children && item.children.some(c => c.key === active)){
+        setGroupesOuverts(prev => prev[item.key] ? prev : { ...prev, [item.key]: true });
+      }
+    });
+  }, [active]);
   return (
     <div className="app-shell" style={{display:'flex', minHeight:'100vh'}}>
       <aside className="app-sidebar" style={{
@@ -1716,33 +1734,39 @@ function Shell({ title, role, navItems, active, onNav, onLogout, children }){
           </div>
         </div>
         <nav className="app-sidebar-nav" style={{display:'flex', flexDirection:'column', gap:4, flex:'1 1 auto', minHeight:0, overflowY:'auto', overflowX:'hidden'}}>
-          {navItems.map(item => (
-            <React.Fragment key={item.key}>
-              <button onClick={()=>onNav(item.key)}
-                style={{
-                  display:'flex', alignItems:'center', gap:10, padding:'10px 12px', borderRadius:8,
-                  background: active===item.key ? 'rgba(255,255,255,0.14)' : 'transparent',
-                  border:'none', color:'var(--white)', fontSize:14, fontWeight:active===item.key?600:400,
-                  textAlign:'left', cursor:'pointer', flexShrink:0
-                }}>
-                <Icon name={item.icon} size={17} />
-                <span className="app-sidebar-label">{item.label}</span>
-                {item.badge ? <span style={{marginLeft:'auto', background:'var(--rust)', borderRadius:100, fontSize:10.5, padding:'1px 7px', fontWeight:700}}>{item.badge}</span> : null}
-              </button>
-              {item.children && item.children.map(child => (
-                <button key={child.key} onClick={()=>onNav(child.key)}
+          {navItems.map(item => {
+            const estGroupe = !!(item.children && item.children.length);
+            const groupeContientActif = estGroupe && item.children.some(c => c.key === active);
+            const estOuvert = estGroupe && !!groupesOuverts[item.key];
+            return (
+              <React.Fragment key={item.key}>
+                <button onClick={()=> estGroupe ? setGroupesOuverts(prev=>({...prev, [item.key]: !prev[item.key]})) : onNav(item.key)}
                   style={{
-                    display:'flex', alignItems:'center', gap:9, padding:'8px 12px 8px 30px', borderRadius:8,
-                    background: active===child.key ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.04)',
-                    border:'none', color:'var(--white)', fontSize:13, fontWeight:active===child.key?600:400,
-                    textAlign:'left', cursor:'pointer', opacity:0.9, flexShrink:0
+                    display:'flex', alignItems:'center', gap:10, padding:'10px 12px', borderRadius:8,
+                    background: (active===item.key || groupeContientActif) ? 'rgba(255,255,255,0.14)' : 'transparent',
+                    border:'none', color:'var(--white)', fontSize:14, fontWeight:(active===item.key||groupeContientActif)?600:400,
+                    textAlign:'left', cursor:'pointer', flexShrink:0
                   }}>
-                  <Icon name={child.icon} size={14} />
-                  <span className="app-sidebar-label">{child.label}</span>
+                  <Icon name={item.icon} size={17} />
+                  <span className="app-sidebar-label">{item.label}</span>
+                  {item.badge ? <span style={{marginLeft:'auto', background:'var(--rust)', borderRadius:100, fontSize:10.5, padding:'1px 7px', fontWeight:700}}>{item.badge}</span> : null}
+                  {estGroupe && <span style={{marginLeft:'auto', fontSize:11, opacity:0.75}}>{estOuvert ? '▾' : '▸'}</span>}
                 </button>
-              ))}
-            </React.Fragment>
-          ))}
+                {estGroupe && estOuvert && item.children.map(child => (
+                  <button key={child.key} onClick={()=>onNav(child.key)}
+                    style={{
+                      display:'flex', alignItems:'center', gap:9, padding:'8px 12px 8px 30px', borderRadius:8,
+                      background: active===child.key ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.04)',
+                      border:'none', color:'var(--white)', fontSize:13, fontWeight:active===child.key?600:400,
+                      textAlign:'left', cursor:'pointer', opacity:0.9, flexShrink:0
+                    }}>
+                    <Icon name={child.icon} size={14} />
+                    <span className="app-sidebar-label">{child.label}</span>
+                  </button>
+                ))}
+              </React.Fragment>
+            );
+          })}
         </nav>
         <button className="app-logout-btn" onClick={onLogout} style={{
           display:'flex', alignItems:'center', gap:8, padding:'10px 12px', borderRadius:8,
@@ -2015,6 +2039,201 @@ function calculerDepensesPropresEmployesParActeur(db, moisCouverts){
   return resultat;
 }
 
+// ---- Remboursement des avances personnelles (« dépenses propres ») ----
+// db.historiqueAnnuel[annee].remboursementsActeurs = { [nomActeur]: [{id, montant, date, description}] }
+// Une avance personnelle est de l'argent qui appartenait au groupe des acteurs, pas à celui qui l'a prise :
+// quand il la rembourse, ce montant ne lui revient PAS (il l'a déjà reçu via l'avance) — il est reversé aux
+// AUTRES acteurs, au prorata de leur %, daté du jour réel du remboursement (même logique de datation que les
+// dépenses propres elles-mêmes).
+function remboursementsActeurPourPeriode(db, nomActeur, anneesCouvertes, surUnSeulMois, moisChoisi){
+  let entries = [];
+  anneesCouvertes.forEach(a => {
+    const liste = (((db.historiqueAnnuel||{})[a]||{}).remboursementsActeurs||{})[nomActeur] || [];
+    entries = entries.concat(liste);
+  });
+  if(!surUnSeulMois) return entries;
+  return entries.filter(e => e.date && e.date.slice(0,7) === moisChoisi);
+}
+function calculerCreditsRemboursementPourPeriode(db, parts, anneesCouvertes, surUnSeulMois, moisChoisi){
+  const credits = {};
+  parts.forEach(p => { credits[p.nom] = 0; });
+  parts.forEach(p => {
+    // Remboursements manuels pendant la période + prélèvements automatiques effectifs pendant la période
+    // (voir simulerAutoDeductionsActeur) — les deux sont reversés aux AUTRES acteurs de la même façon, le
+    // partage proportionnel étant linéaire, additionner les deux sources d'abord ne change rien au résultat.
+    const montantManuel = remboursementsActeurPourPeriode(db, p.nom, anneesCouvertes, surUnSeulMois, moisChoisi).reduce((s,r)=>s+(Number(r.montant)||0),0);
+    const montantAuto = autoDeductionTotalPourPeriode(db, p.nom, anneesCouvertes, surUnSeulMois, moisChoisi);
+    const montant = montantManuel + montantAuto;
+    if(montant <= 0) return;
+    const autres = parts.filter(x => x.nom !== p.nom);
+    const sommePct = autres.reduce((s,x)=>s+(Number(x.pct)||0),0);
+    if(sommePct <= 0) return;
+    autres.forEach(x => { credits[x.nom] += montant * (Number(x.pct)||0) / sommePct; });
+  });
+  return credits;
+}
+// Solde dû « à vie » d'un acteur (toutes années confondues, indépendant de la période consultée) : total de
+// ses avances personnelles (dépenses propres, des deux sources — saisie dédiée et Détail mensuel) moins ce
+// qu'il a déjà remboursé. Ne descend jamais sous 0.
+function totalDepensesPropresLifetime(db, nomActeur){
+  let total = 0;
+  Object.values(db.historiqueAnnuel||{}).forEach(anneeData => {
+    total += ((anneeData.depensesActeurs||{})[nomActeur]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0);
+  });
+  const parts = partsActuelles(db);
+  db.sites.forEach(site => {
+    Object.values(site.detailMensuelManuel||{}).forEach(anneeManuel => {
+      Object.values(anneeManuel).forEach(moisData => {
+        const parEmploye = normaliserMoisManuel(moisData) || {};
+        Object.entries(parEmploye).forEach(([empId, v]) => {
+          if(empId === '_legacy') return;
+          const emp = (site.employes||[]).find(e=>e.id===empId);
+          if(!emp) return;
+          const acteurCorrespondant = parts.find(p => nomsCorrespondent(emp.nom, p.nom));
+          const nomBeneficiaire = v.depensesPropresBeneficiaire || (acteurCorrespondant && acteurCorrespondant.nom);
+          if(nomBeneficiaire !== nomActeur) return;
+          total += Number(v.depensesPropres)||0;
+        });
+      });
+    });
+  });
+  return total;
+}
+function totalRemboursementsLifetime(db, nomActeur){
+  let total = 0;
+  Object.values(db.historiqueAnnuel||{}).forEach(anneeData => {
+    total += ((anneeData.remboursementsActeurs||{})[nomActeur]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0);
+  });
+  return total;
+}
+function soldeDuActeur(db, nomActeur){
+  return Math.max(0, totalDepensesPropresLifetime(db, nomActeur) - totalRemboursementsLifetime(db, nomActeur) - totalAutoDeductionsLifetime(db, nomActeur));
+}
+function ajouterRemboursementActeur(db, annee, nomActeur, montant, date, description){
+  const anneeActuelle = (db.historiqueAnnuel||{})[annee] || {};
+  const liste = (anneeActuelle.remboursementsActeurs||{})[nomActeur] || [];
+  const entry = { id: uid('remb_'), montant: Number(montant)||0, date: date || todayISO(), description: (description||'').trim() };
+  const remboursementsActeurs = { ...(anneeActuelle.remboursementsActeurs||{}), [nomActeur]: [...liste, entry] };
+  return { ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [annee]: { ...anneeActuelle, remboursementsActeurs } } };
+}
+function supprimerRemboursementActeur(db, annee, nomActeur, entryId){
+  const anneeActuelle = (db.historiqueAnnuel||{})[annee] || {};
+  const liste = (anneeActuelle.remboursementsActeurs||{})[nomActeur] || [];
+  const remboursementsActeurs = { ...(anneeActuelle.remboursementsActeurs||{}), [nomActeur]: liste.filter(e=>e.id!==entryId) };
+  return { ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [annee]: { ...anneeActuelle, remboursementsActeurs } } };
+}
+
+// ---- Prélèvement automatique mensuel (alternative au remboursement manuel) ----
+// db.remboursementAutoActeurs = { [nomActeur]: { historique: [{depuis:'AAAA-MM', actif:true/false, montantMensuel:number}] } }
+// Si l'acteur ne veut pas rembourser lui-même, on peut activer un prélèvement : chaque mois, tant que son
+// solde dû n'est pas à 0, on lui retire automatiquement jusqu'à montantMensuel de son net perçu et on le
+// reverse aux AUTRES acteurs (même logique que remboursementActifPourMois pour le datage, afin que « Par
+// année »/« À ce jour » restent exacts même si le prélèvement est activé/arrêté en cours de route).
+function autoDeductionHistoriqueTrie(db, nomActeur){
+  const plan = ((db.remboursementAutoActeurs||{})[nomActeur]) || {};
+  return [...(plan.historique||[])].filter(h => h && h.depuis).sort((a,b) => a.depuis.localeCompare(b.depuis));
+}
+function autoDeductionConfigPourMois(db, nomActeur, annee, mois){
+  const cle = `${annee}-${String(mois).padStart(2,'0')}`;
+  let config = { actif: false, montantMensuel: 0 };
+  autoDeductionHistoriqueTrie(db, nomActeur).forEach(h => {
+    if(h.depuis <= cle) config = { actif: !!h.actif, montantMensuel: Number(h.montantMensuel)||0 };
+  });
+  return config;
+}
+function moisSuivantCle(cle){
+  let [a, m] = cle.split('-').map(Number);
+  m += 1;
+  if(m > 12){ m = 1; a += 1; }
+  return `${a}-${String(m).padStart(2,'0')}`;
+}
+// Simule, mois par mois depuis le début de son historique jusqu'au mois actuel, le solde de l'acteur et le
+// montant effectivement prélevé chaque mois (plafonné à ce qu'il reste à devoir ce mois-là — le prélèvement
+// s'arrête donc naturellement une fois le crédit épongé). Retourne { 'AAAA-MM': montantPrélevé }.
+function simulerAutoDeductionsActeur(db, nomActeur){
+  const historiquePlan = autoDeductionHistoriqueTrie(db, nomActeur);
+  if(historiquePlan.length === 0) return {};
+  let evenements = []; // { cle:'AAAA-MM', delta } — positif pour une dépense propre, négatif pour un remboursement manuel
+  Object.values(db.historiqueAnnuel||{}).forEach(anneeData => {
+    ((anneeData.depensesActeurs||{})[nomActeur]||[]).forEach(e => {
+      if(e.date) evenements.push({ cle: e.date.slice(0,7), delta: Number(e.montant)||0 });
+    });
+    ((anneeData.remboursementsActeurs||{})[nomActeur]||[]).forEach(e => {
+      if(e.date) evenements.push({ cle: e.date.slice(0,7), delta: -(Number(e.montant)||0) });
+    });
+  });
+  const partsRef = partsActuelles(db);
+  db.sites.forEach(site => {
+    Object.values(site.detailMensuelManuel||{}).forEach(anneeManuel => {
+      Object.values(anneeManuel).forEach(moisData => {
+        const parEmploye = normaliserMoisManuel(moisData) || {};
+        Object.entries(parEmploye).forEach(([empId, v]) => {
+          if(empId === '_legacy') return;
+          const emp = (site.employes||[]).find(e=>e.id===empId);
+          if(!emp) return;
+          const acteurCorrespondant = partsRef.find(p => nomsCorrespondent(emp.nom, p.nom));
+          const nomBeneficiaire = v.depensesPropresBeneficiaire || (acteurCorrespondant && acteurCorrespondant.nom);
+          if(nomBeneficiaire !== nomActeur) return;
+          const montantDp = Number(v.depensesPropres)||0;
+          if(montantDp > 0 && v.depensesPropresDate) evenements.push({ cle: v.depensesPropresDate.slice(0,7), delta: montantDp });
+        });
+      });
+    });
+  });
+  const moisDebut = [historiquePlan[0].depuis, ...evenements.map(e=>e.cle)].sort()[0];
+  const moisActuel = todayISO().slice(0,7);
+  if(moisDebut > moisActuel) return {};
+  const resultat = {};
+  let solde = 0;
+  let cle = moisDebut;
+  // Sécurité anti-boucle infinie si les dates sont corrompues (ne devrait jamais arriver en pratique).
+  let garde = 0;
+  while(cle <= moisActuel && garde < 2400){
+    garde++;
+    evenements.forEach(e => { if(e.cle === cle) solde += e.delta; });
+    if(solde < 0) solde = 0;
+    const config = autoDeductionConfigPourMois(db, nomActeur, Number(cle.slice(0,4)), Number(cle.slice(5,7)));
+    let preleve = 0;
+    if(config.actif && config.montantMensuel > 0 && solde > 0){
+      preleve = Math.min(config.montantMensuel, solde);
+      solde -= preleve;
+    }
+    resultat[cle] = preleve;
+    cle = moisSuivantCle(cle);
+  }
+  return resultat;
+}
+function autoDeductionTotalPourPeriode(db, nomActeur, anneesCouvertes, surUnSeulMois, moisChoisi){
+  const map = simulerAutoDeductionsActeur(db, nomActeur);
+  if(surUnSeulMois) return map[moisChoisi] || 0;
+  return Object.entries(map).reduce((s,[cle, montant]) => anneesCouvertes.includes(Number(cle.slice(0,4))) ? s + montant : s, 0);
+}
+function totalAutoDeductionsLifetime(db, nomActeur){
+  return Object.values(simulerAutoDeductionsActeur(db, nomActeur)).reduce((s,v)=>s+v, 0);
+}
+// Démarre, modifie ou arrête (actif:false) le prélèvement automatique à partir du mois choisi — les mois
+// avant cette date gardent l'état précédent (voir simulerAutoDeductionsActeur).
+function definirAutoDeduction(db, nomActeur, depuis, actif, montantMensuel){
+  const historique = autoDeductionHistoriqueTrie(db, nomActeur).filter(h => h.depuis !== depuis);
+  const plan = { historique: [...historique, { depuis, actif, montantMensuel: Number(montantMensuel)||0 }] };
+  return { ...db, remboursementAutoActeurs: { ...(db.remboursementAutoActeurs||{}), [nomActeur]: plan } };
+}
+function supprimerHistoriqueAutoDeduction(db, nomActeur, depuis){
+  const historique = autoDeductionHistoriqueTrie(db, nomActeur).filter(h => h.depuis !== depuis);
+  return { ...db, remboursementAutoActeurs: { ...(db.remboursementAutoActeurs||{}), [nomActeur]: { historique } } };
+}
+
+// Ajoute une dépense propre dédiée (même structure que celle saisie par le gérant dans « Dépenses propres
+// de chaque acteur ») — utilisé aussi par la nouvelle page « Dépenses propres » accessible à tout employé
+// depuis son espace caissier, pour qu'il puisse déclarer lui-même une avance prise à la caisse.
+function ajouterDepensePropreActeur(db, annee, nomActeur, description, montant, date, decaissePar){
+  const anneeActuelle = (db.historiqueAnnuel||{})[annee] || {};
+  const liste = (anneeActuelle.depensesActeurs||{})[nomActeur] || [];
+  const entry = { id: uid('depact_'), description: (description||'').trim(), montant: Number(montant)||0, date: date || todayISO(), decaissePar: decaissePar || '' };
+  const depensesActeurs = { ...(anneeActuelle.depensesActeurs||{}), [nomActeur]: [...liste, entry] };
+  return { ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [annee]: { ...anneeActuelle, depensesActeurs } } };
+}
+
 // Calcule, pour un mois précis OU une année entière (moisCouverts = un seul mois, ou les 12 mois de
 // l'année), le montant réellement distribué à chaque acteur — EXACTEMENT le même calcul que la colonne
 // « Montant à verser » de Distribution des recettes (parts mois par mois, impayés déduits, dépenses
@@ -2065,6 +2284,9 @@ function calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi){
   const depensesActeursPeriode = {};
   parts.forEach(p => { depensesActeursPeriode[p.nom] = depensesActeurPourPeriode(p.nom); });
   const depensesPropresEmployes = calculerDepensesPropresEmployesParActeur(db, moisCouverts);
+  // Remboursements d'avances personnelles effectués PENDANT cette période : reversés aux AUTRES acteurs
+  // (jamais à celui qui rembourse, qui a déjà reçu son dû via l'avance) — voir calculerCreditsRemboursementPourPeriode.
+  const creditsRemboursement = calculerCreditsRemboursementPourPeriode(db, parts, anneesCouvertes, surUnSeulMois, moisChoisi);
 
   // Montant que CET acteur verse en plus vers la Conservation du Capital Fixe (20% de la part de son net
   // perçu gagnée pendant un mois où le remboursement était actif, uniquement pour les 4 acteurs concernés).
@@ -2084,7 +2306,8 @@ function calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi){
     const montantBrut = partActeur(p.nom, 'recetteNette');
     const montantBrutAvantImpayes = partActeur(p.nom, 'recetteBrute');
     const depensePropre = (depensesActeursPeriode[p.nom]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
-    const montantNet = montantBrut - depensePropre;
+    const creditRemboursement = creditsRemboursement[p.nom] || 0;
+    const montantNet = montantBrut - depensePropre + creditRemboursement;
     // Montant que CET acteur verse en plus vers la Conservation du Capital Fixe (0 si non concerné, ou si
     // aucun des mois de la période n'avait le remboursement actif à l'époque).
     const extraCapitalFixe = extraCapitalFixeActeur(p);
@@ -2092,10 +2315,11 @@ function calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi){
       ? montantNet + totalRedirigeVersCapitalFixe
       : montantNet - extraCapitalFixe;
     return {
-      nom: p.nom, pct: p.pct, montantBrutAvantImpayes, impayesPart, montantBrut, depensePropre, montantNet, montantAVerser,
+      nom: p.nom, pct: p.pct, montantBrutAvantImpayes, impayesPart, montantBrut, depensePropre, creditRemboursement, montantNet, montantAVerser,
       extraCapitalFixe,
       // Uniquement rempli sur la ligne « Conservation du Capital Fixe » : total reçu en plus des 4 acteurs concernés.
       recuDesAutresActeurs: p.nom === 'Conservation du Capital Fixe' ? totalRedirigeVersCapitalFixe : 0,
+      soldeDu: soldeDuActeur(db, p.nom),
     };
   });
 }
@@ -2516,6 +2740,12 @@ function DistributionView({ db, setDb, anneeInitiale }){
     [db, moisCouverts]
   );
   const totalDepensesActeursPeriode = parts.reduce((s,p)=> s + (depensesActeursPeriode[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0), 0);
+  // Remboursements d'avances personnelles effectués PENDANT cette période : reversés aux AUTRES acteurs
+  // (jamais à celui qui rembourse) — voir calculerCreditsRemboursementPourPeriode, identique à Suivi distribution.
+  const creditsRemboursement = useMemo(
+    () => calculerCreditsRemboursementPourPeriode(db, parts, anneesCouvertes, moisCouverts.length === 1, moisChoisi),
+    [db, parts, anneesCouvertes, moisCouverts, moisChoisi]
+  );
 
   // ---- Historique détaillé des paiements individuels (Espèces / Orange Money), pour traçabilité ----
   const [historiquePage, setHistoriquePage] = useState(1);
@@ -2586,15 +2816,16 @@ function DistributionView({ db, setDb, anneeInitiale }){
       const montantBrut = partActeur(p.nom, 'recetteNette');
       const montantBrutAvantImpayes = partActeur(p.nom, 'recetteBrute');
       const depensePropre = (depensesActeursPeriode[p.nom]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
-      const montantNet = montantBrut - depensePropre;
+      const creditRemboursement = creditsRemboursement[p.nom] || 0;
+      const montantNet = montantBrut - depensePropre + creditRemboursement;
       const extraCapitalFixe = extraCapitalFixeActeur(p);
       const montantAVerser = p.nom === 'Conservation du Capital Fixe'
         ? montantNet + totalRedirigeVersCapitalFixe
         : montantNet - extraCapitalFixe;
-      return [p.nom, `${p.pct}%`, Math.round(montantBrutAvantImpayes), Math.round(impayesPart), Math.round(montantBrut), Math.round(depensePropre), Math.round(montantNet), Math.round(montantAVerser)];
+      return [p.nom, `${p.pct}%`, Math.round(montantBrutAvantImpayes), Math.round(impayesPart), Math.round(montantBrut), Math.round(depensePropre), Math.round(creditRemboursement), Math.round(montantNet), Math.round(montantAVerser)];
     });
-  }, [periodeDonnees, donneesParAnneeMap, moisCouverts, db.partsHistorique, db.partsDistribution, db.remboursementHistorique, depensesActeursPeriode, depensesPropresEmployes, remboursementActif, totalRedirigeVersCapitalFixe]);
-  const REPARTITION_HEADERS = ['Bénéficiaire', 'Part', "Montant brut avant impayés", 'Impayés (part)', 'Net perçu (avant dépenses propres)', 'Dépenses propres', 'Net perçu', 'Montant à verser'];
+  }, [periodeDonnees, donneesParAnneeMap, moisCouverts, db.partsHistorique, db.partsDistribution, db.remboursementHistorique, depensesActeursPeriode, depensesPropresEmployes, remboursementActif, totalRedirigeVersCapitalFixe, creditsRemboursement]);
+  const REPARTITION_HEADERS = ['Bénéficiaire', 'Part', "Montant brut avant impayés", 'Impayés (part)', 'Net perçu (avant dépenses propres)', 'Dépenses propres', 'Crédit de remboursement', 'Net perçu', 'Montant à verser'];
 
   return (
     <div>
@@ -2845,6 +3076,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
               <th style={th}>Impayés (part de l'acteur)</th>
               <th style={th}>Net perçu (avant dépenses propres)</th>
               <th style={th}>Dépenses propres</th>
+              <th style={th}>Crédit de remboursement</th>
               <th style={th}>Net perçu</th>
               <th style={th}>Montant à verser</th>
             </tr>
@@ -2855,7 +3087,8 @@ function DistributionView({ db, setDb, anneeInitiale }){
               const montantBrut = partActeur(p.nom, 'recetteNette');
               const montantBrutAvantImpayes = partActeur(p.nom, 'recetteBrute');
               const depensePropre = (depensesActeursPeriode[p.nom]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
-              const montantNet = montantBrut - depensePropre;
+              const creditRemboursement = creditsRemboursement[p.nom] || 0;
+              const montantNet = montantBrut - depensePropre + creditRemboursement;
               const extraCapitalFixe = extraCapitalFixeActeur(p);
               const montantAVerser = p.nom === 'Conservation du Capital Fixe'
                 ? montantNet + totalRedirigeVersCapitalFixe
@@ -2872,6 +3105,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
                   <td style={{...td, color: impayesPart>0 ? 'var(--danger)' : 'var(--steam)'}} className="mono">{impayesPart>0 ? fmtGNF(impayesPart) : '—'}</td>
                   <td style={{...td, fontWeight:700, color: montantBrut<0 ? 'var(--danger)' : 'var(--ink)'}} className="mono">{fmtGNF(montantBrut)}</td>
                   <td style={{...td, color: depensePropre>0 ? 'var(--danger)' : 'var(--steam)'}} className="mono">{depensePropre>0 ? '− '+fmtGNF(depensePropre) : '—'}</td>
+                  <td style={{...td, color: creditRemboursement>0 ? 'var(--ok)' : 'var(--steam)'}} className="mono">{creditRemboursement>0 ? '+ '+fmtGNF(creditRemboursement) : '—'}</td>
                   <td style={{...td, fontWeight:700, color: montantNet<0 ? 'var(--danger)' : 'var(--ink)'}} className="mono">{fmtGNF(montantNet)}</td>
                   <td style={{...td, fontWeight:700, color:'var(--ok)'}} className="mono">
                     {fmtGNF(montantAVerser)}
@@ -2888,8 +3122,9 @@ function DistributionView({ db, setDb, anneeInitiale }){
               <td style={{...td, fontWeight:700, color: periodeDonnees.impayes>0?'var(--danger)':'var(--steam)'}} className="mono">{periodeDonnees.impayes>0?fmtGNF(periodeDonnees.impayes):'—'}</td>
               <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(periodeDonnees.recetteNette)}</td>
               <td style={{...td, fontWeight:700}} className="mono">{totalDepensesActeursPeriode>0 ? '− '+fmtGNF(totalDepensesActeursPeriode) : '—'}</td>
-              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(periodeDonnees.recetteNette - totalDepensesActeursPeriode)}</td>
-              <td style={{...td, fontWeight:700, color:'var(--ok)'}} className="mono">{fmtGNF(periodeDonnees.recetteNette - totalDepensesActeursPeriode)}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{(()=>{ const t = parts.reduce((s,p)=>s+(creditsRemboursement[p.nom]||0),0); return t>0 ? '+ '+fmtGNF(t) : '—'; })()}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(periodeDonnees.recetteNette - totalDepensesActeursPeriode + parts.reduce((s,p)=>s+(creditsRemboursement[p.nom]||0),0))}</td>
+              <td style={{...td, fontWeight:700, color:'var(--ok)'}} className="mono">{fmtGNF(periodeDonnees.recetteNette - totalDepensesActeursPeriode + parts.reduce((s,p)=>s+(creditsRemboursement[p.nom]||0),0))}</td>
             </tr>
           </tbody>
         </table>
@@ -3018,10 +3253,22 @@ function SuiviDistributionView({ db, setDb, employeId }){
                 <span style={{fontSize:12.5, color:'var(--steam)'}}>Dépenses propres</span>
                 <span className="mono" style={{fontSize:13, fontWeight:600, color: l.depensePropre>0?'var(--rust)':'var(--ink)'}}>{l.depensePropre>0?fmtGNF(l.depensePropre):'—'}</span>
               </div>
+              {l.creditRemboursement > 0 && (
+                <div style={{background:'var(--pine-light)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                  <span style={{fontSize:12.5, color:'var(--pine)'}}>Crédit de remboursement</span>
+                  <span className="mono" style={{fontSize:13, fontWeight:600, color:'var(--pine)'}}>+ {fmtGNF(l.creditRemboursement)}</span>
+                </div>
+              )}
               <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
                 <span style={{fontSize:12.5, color:'var(--steam)'}}>Net perçu</span>
                 <span className="mono" style={{fontSize:13, fontWeight:600}}>{fmtGNF(l.montantNet)}</span>
               </div>
+              {l.soldeDu > 0 && (
+                <div style={{background:'var(--warn-light)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                  <span style={{fontSize:12.5, color:'#7a5c00'}}>Solde dû (cumul)</span>
+                  <span className="mono" style={{fontSize:13, fontWeight:600, color:'#7a5c00'}}>{fmtGNF(l.soldeDu)}</span>
+                </div>
+              )}
               {l.extraCapitalFixe > 0 && (
                 <div style={{background:'var(--warn-light)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
                   <span style={{fontSize:12.5, color:'#7a5c00'}}>Extra versé — Capital Fixe</span>
@@ -3096,9 +3343,46 @@ function DepensesPropresActeursView({ db, setDb }){
   const [decaisseurAjout, setDecaisseurAjout] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [editDraft, setEditDraft] = useState(null);
+  const [rembActeur, setRembActeur] = useState('');
+  const [rembMontant, setRembMontant] = useState('');
+  const [rembDate, setRembDate] = useState(todayISO());
+  const [rembDesc, setRembDesc] = useState('');
+  const [autoMontant, setAutoMontant] = useState({});
+  const [autoDepuis, setAutoDepuis] = useState({});
 
   const dataHisto = (db.historiqueAnnuel || {})[annee] || {};
   const depensesActeursActuel = dataHisto.depensesActeurs || {};
+
+  // Remboursement : l'acteur rend une partie de ce qu'il a emprunté. Le montant remboursé ne lui revient
+  // pas — il repart vers les AUTRES acteurs, proportionnellement à leurs parts (c'est leur argent qu'il
+  // avait emprunté). Voir calculerCreditsRemboursementPourPeriode / soldeDuActeur.
+  function ajouterRemboursement(nomActeur){
+    const montant = Number(rembMontant)||0;
+    if(!nomActeur || montant<=0) return;
+    setDb(ajouterRemboursementActeur(db, annee, nomActeur, montant, rembDate || todayISO(), rembDesc));
+    setRembActeur('');
+    setRembMontant('');
+    setRembDesc('');
+    setRembDate(todayISO());
+  }
+
+  function supprimerRemboursement(nomActeur, entryId){
+    setDb(supprimerRemboursementActeur(db, annee, nomActeur, entryId));
+  }
+
+  // Prélèvement automatique : alternative pour l'acteur qui ne veut/peut pas rembourser en une fois — chaque
+  // mois, tant que son solde dû n'est pas à 0, le montant choisi est automatiquement retiré de son net perçu
+  // et reversé aux autres (voir simulerAutoDeductionsActeur / calculerCreditsRemboursementPourPeriode).
+  function demarrerAutoDeduction(nomActeur){
+    const montant = Number(autoMontant[nomActeur])||0;
+    const depuis = autoDepuis[nomActeur] || todayISO().slice(0,7);
+    if(!montant) return;
+    setDb(definirAutoDeduction(db, nomActeur, depuis, true, montant));
+  }
+  function arreterAutoDeduction(nomActeur){
+    const depuis = autoDepuis[nomActeur] || todayISO().slice(0,7);
+    setDb(definirAutoDeduction(db, nomActeur, depuis, false, 0));
+  }
 
   // « Décaissé par » : qui a physiquement sorti l'argent de la caisse pour cette dépense propre. Limité
   // aux deux employés qui manipulent réellement l'argent (EMPLOYES_SALAIRE_JOURNALIER, déjà utilisé pour
@@ -3348,17 +3632,148 @@ function DepensesPropresActeursView({ db, setDb }){
               </div>
 
               <h4 style={{fontSize:13, color:'var(--pine)', margin:'0 0 8px'}}>Cumulé toutes années (tous pressings confondus)</h4>
+              <p style={{fontSize:11.5, color:'var(--steam)', margin:'0 0 8px', lineHeight:1.5}}>
+                « Solde dû » = ce que l'acteur doit encore rendre (dépenses propres cumulées moins remboursements déjà faits). Quand il rembourse, le montant ne lui revient pas : il est redistribué aux AUTRES acteurs au prorata de leurs parts, puisque c'est leur argent qu'il avait emprunté.
+              </p>
               <div className="card" style={{overflow:'hidden', marginBottom:16}}>
                 <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
+                  <thead>
+                    <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                      <th style={th}>Acteur</th>
+                      <th style={th}>Dépenses propres (cumul)</th>
+                      <th style={th}>Remboursé (cumul)</th>
+                      <th style={th}>Solde dû</th>
+                    </tr>
+                  </thead>
                   <tbody>
-                    {acteursSansCapitalFixe.map(p => (
+                    {acteursSansCapitalFixe.map(p => {
+                      const totalRembP = totalRemboursementsLifetime(db, p.nom);
+                      const soldeP = soldeDuActeur(db, p.nom);
+                      return (
                       <tr key={p.nom} style={{borderTop:'1px solid var(--line)'}}>
                         <td style={{...td, fontWeight:600}}>{p.nom}</td>
                         <td style={{...td, textAlign:'right', color:'var(--danger)', fontWeight:600}} className="mono">
                           {cumuleToutesAnneesParActeur[p.nom]>0 ? '− '+fmtGNF(cumuleToutesAnneesParActeur[p.nom]) : '—'}
                         </td>
+                        <td style={{...td, textAlign:'right', color:'var(--ok)', fontWeight:600}} className="mono">
+                          {totalRembP>0 ? '+ '+fmtGNF(totalRembP) : '—'}
+                        </td>
+                        <td style={{...td, textAlign:'right', fontWeight:700, color: soldeP>0 ? 'var(--warn)' : 'var(--steam)'}} className="mono">
+                          {soldeP>0 ? fmtGNF(soldeP) : '— (à jour)'}
+                        </td>
                       </tr>
-                    ))}
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <h4 style={{fontSize:13, color:'var(--pine)', margin:'0 0 8px'}}>💰 Remboursements des acteurs</h4>
+              <p style={{fontSize:11.5, color:'var(--steam)', margin:'0 0 8px', lineHeight:1.5}}>
+                Enregistrez ici quand un acteur rembourse une partie de ses dépenses propres. Le montant sera automatiquement réparti entre les autres acteurs (visible comme « Crédit de remboursement » dans Distribution des recettes et Suivi distribution, au mois de la date choisie ici).
+              </p>
+              <div className="card" style={{overflow:'hidden', marginBottom:16}}>
+                <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
+                  <thead>
+                    <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                      <th style={th}>Date</th>
+                      <th style={th}>Acteur</th>
+                      <th style={th}>Description</th>
+                      <th style={th}>Montant</th>
+                      <th style={th}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(() => {
+                      const toutesRemb = [];
+                      acteursSansCapitalFixe.forEach(p => {
+                        (((db.historiqueAnnuel||{})[annee]||{}).remboursementsActeurs||{})[p.nom]?.forEach(e => toutesRemb.push({...e, nomActeur:p.nom}));
+                      });
+                      toutesRemb.sort((a,b)=> new Date(b.date||0) - new Date(a.date||0));
+                      if(toutesRemb.length === 0) return <tr><td colSpan={5} style={{...td, textAlign:'center', color:'var(--steam)', padding:'1rem'}}>Aucun remboursement enregistré pour {annee}.</td></tr>;
+                      return toutesRemb.map(e => (
+                        <tr key={e.id} style={{borderTop:'1px solid var(--line)'}}>
+                          <td style={td}>{fmtDate(e.date)}</td>
+                          <td style={{...td, fontWeight:600}}>{e.nomActeur}</td>
+                          <td style={td}>{e.description || '—'}</td>
+                          <td style={{...td, color:'var(--ok)', fontWeight:600}} className="mono">+ {fmtGNF(e.montant)}</td>
+                          <td style={{...td, textAlign:'right'}}>
+                            <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>supprimerRemboursement(e.nomActeur, e.id)}><Icon name="trash" size={13}/></button>
+                          </td>
+                        </tr>
+                      ));
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{fontSize:11.5, fontWeight:700, color:'var(--ink)', margin:'0 0 4px'}}>➕ Enregistrer un remboursement (paiement ponctuel, en une fois ou partiel) :</div>
+              <div style={{display:'grid', gridTemplateColumns:'1fr 1.3fr 0.9fr 0.9fr auto', gap:8, marginBottom:4}}>
+                <select value={rembActeur} onChange={e=>setRembActeur(e.target.value)}>
+                  <option value="">Acteur qui rembourse…</option>
+                  {acteursSansCapitalFixe.map(p => <option key={p.nom} value={p.nom}>{p.nom} {soldeDuActeur(db,p.nom)>0 ? `(doit ${fmtGNF(soldeDuActeur(db,p.nom))})` : ''}</option>)}
+                </select>
+                <input type="text" placeholder="Description (optionnel)" value={rembDesc} onChange={e=>setRembDesc(e.target.value)} />
+                <div>
+                  <label style={{fontSize:10, color:'var(--steam)', display:'block', marginBottom:2}}>Montant (GNF)</label>
+                  <input type="number" placeholder="Ex: 500000" value={rembMontant} onChange={e=>setRembMontant(e.target.value)} />
+                </div>
+                <input type="date" value={rembDate} onChange={e=>setRembDate(e.target.value)} />
+                <button className="btn btn-sm" disabled={!rembActeur || !(Number(rembMontant)>0)} onClick={()=>ajouterRemboursement(rembActeur)}>
+                  <Icon name="plus" size={13}/> Enregistrer
+                </button>
+              </div>
+              <p style={{fontSize:11, color:'var(--steam)', margin:'0 0 16px'}}>
+                Le champ « Montant (GNF) » est le 3ᵉ champ de la ligne ci-dessus — tapez-y le montant remboursé, choisissez l'acteur dans la liste déroulante à gauche, puis cliquez « Enregistrer ».
+              </p>
+
+              <h4 style={{fontSize:13, color:'var(--pine)', margin:'0 0 8px'}}>🔁 Prélèvement automatique mensuel (s'il ne veut pas rembourser lui-même)</h4>
+              <p style={{fontSize:11.5, color:'var(--steam)', margin:'0 0 8px', lineHeight:1.5}}>
+                Alternative au remboursement ci-dessus : activez un montant fixe prélevé automatiquement chaque mois sur le net perçu de l'acteur, reversé aux autres, jusqu'à ce que son solde dû atteigne 0 (le prélèvement du dernier mois est automatiquement réduit au solde restant, jamais plus).
+              </p>
+              <div className="card" style={{overflow:'hidden', marginBottom:16}}>
+                <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
+                  <thead>
+                    <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                      <th style={th}>Acteur</th>
+                      <th style={th}>Solde dû</th>
+                      <th style={th}>État</th>
+                      <th style={th}>Montant mensuel</th>
+                      <th style={th}>À partir de</th>
+                      <th style={th}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {acteursSansCapitalFixe.map(p => {
+                      const t = todayISO();
+                      const configActuelle = autoDeductionConfigPourMois(db, p.nom, Number(t.slice(0,4)), Number(t.slice(5,7)));
+                      const soldeP = soldeDuActeur(db, p.nom);
+                      const moisRestants = configActuelle.actif && configActuelle.montantMensuel>0 ? Math.ceil(soldeP / configActuelle.montantMensuel) : null;
+                      return (
+                        <tr key={p.nom} style={{borderTop:'1px solid var(--line)'}}>
+                          <td style={{...td, fontWeight:600}}>{p.nom}</td>
+                          <td style={{...td}} className="mono">{soldeP>0 ? fmtGNF(soldeP) : '— (à jour)'}</td>
+                          <td style={td}>
+                            {configActuelle.actif
+                              ? <span style={{color:'var(--ok)', fontWeight:600}}>Actif — {fmtGNF(configActuelle.montantMensuel)}/mois{moisRestants ? ` (≈ ${moisRestants} mois restants)` : ''}</span>
+                              : <span style={{color:'var(--steam)'}}>Inactif</span>}
+                          </td>
+                          <td style={td}>
+                            <input type="number" placeholder="Ex: 200000" value={autoMontant[p.nom]||''} onChange={e=>setAutoMontant({...autoMontant, [p.nom]: e.target.value})} style={{width:110, fontSize:12.5}} />
+                          </td>
+                          <td style={td}>
+                            <input type="month" value={autoDepuis[p.nom] || todayISO().slice(0,7)} onChange={e=>setAutoDepuis({...autoDepuis, [p.nom]: e.target.value})} style={{width:'auto', fontSize:12.5}} />
+                          </td>
+                          <td style={{...td, textAlign:'right', whiteSpace:'nowrap'}}>
+                            <button className="btn btn-sm" disabled={!(Number(autoMontant[p.nom])>0)} onClick={()=>demarrerAutoDeduction(p.nom)}>
+                              {configActuelle.actif ? 'Modifier' : 'Démarrer'}
+                            </button>
+                            {configActuelle.actif && (
+                              <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)', marginLeft:4}} onClick={()=>arreterAutoDeduction(p.nom)}>Arrêter</button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -12563,6 +12978,110 @@ function SaisieEmployeMoisModal({ site, mois, employeIdInitial, valeursExistante
   );
 }
 
+// ---- Dépenses propres, accessible à TOUT employé depuis son propre espace caissier (pas seulement au
+// gérant) — pour qu'il puisse déclarer lui-même une avance personnelle prise à la caisse, sans attendre que
+// le gérant la saisisse depuis « Dépenses propres de chaque acteur ». Mêmes données (db.historiqueAnnuel),
+// donc ça compte automatiquement dans la Distribution des recettes / Suivi distribution de l'acteur concerné.
+function DepensesPropresEmployeView({ db, setDb, monProfil }){
+  const parts = partsActuelles(db).filter(p => p.nom !== 'Conservation du Capital Fixe');
+  const acteurCorrespondant = monProfil ? parts.find(p => nomsCorrespondent(monProfil.nom, p.nom)) : null;
+  const [beneficiaire, setBeneficiaire] = useState(acteurCorrespondant ? acteurCorrespondant.nom : '');
+  const [montant, setMontant] = useState('');
+  const [date, setDate] = useState(todayISO());
+  const [description, setDescription] = useState('');
+  const [confirmation, setConfirmation] = useState(false);
+
+  function enregistrer(){
+    const m = Number(montant)||0;
+    if(!beneficiaire || m<=0) return;
+    const annee = Number((date||todayISO()).slice(0,4));
+    setDb(ajouterDepensePropreActeur(db, annee, beneficiaire, description, m, date, monProfil ? monProfil.nom : ''));
+    setMontant('');
+    setDescription('');
+    setDate(todayISO());
+    setConfirmation(true);
+    setTimeout(()=>setConfirmation(false), 2500);
+  }
+
+  // Historique des dépenses propres que CET employé a lui-même décaissées (toutes années), pour qu'il
+  // retrouve ce qu'il a déjà déclaré.
+  const mesEntrees = [];
+  Object.entries(db.historiqueAnnuel||{}).forEach(([annee, anneeData]) => {
+    Object.entries(anneeData.depensesActeurs||{}).forEach(([nomActeur, liste]) => {
+      (liste||[]).forEach(e => {
+        if(monProfil && e.decaissePar === monProfil.nom) mesEntrees.push({ ...e, nomActeur, annee });
+      });
+    });
+  });
+  mesEntrees.sort((a,b) => new Date(b.date||0) - new Date(a.date||0));
+
+  return (
+    <div>
+      <PageHeader title="Dépenses propres" subtitle="Déclarez une avance personnelle prise à la caisse, pour vous ou pour un autre associé" />
+      <div className="card" style={{padding:'1.5rem', marginBottom:20}}>
+        <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 16px', lineHeight:1.5}}>
+          Cette dépense sera déduite de la part de l'associé bénéficiaire dans la Distribution des recettes — elle ne touche pas la recette de l'entreprise. Si vous rendez cet argent plus tard, le gérant peut enregistrer le remboursement dans « Dépenses propres de chaque acteur ».
+        </p>
+        {confirmation && (
+          <div style={{padding:'8px 12px', background:'var(--pine-light)', color:'var(--pine)', borderRadius:8, fontSize:13, fontWeight:600, marginBottom:12}}>
+            ✓ Dépense propre enregistrée.
+          </div>
+        )}
+        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12}}>
+          <div>
+            <label style={{fontSize:11.5, color:'var(--steam)', display:'block', marginBottom:4}}>Pour qui (bénéficiaire)</label>
+            <select value={beneficiaire} onChange={e=>setBeneficiaire(e.target.value)}>
+              <option value="">— Choisir —</option>
+              {parts.map(p => <option key={p.nom} value={p.nom}>{p.nom}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{fontSize:11.5, color:'var(--steam)', display:'block', marginBottom:4}}>Montant (GNF)</label>
+            <input type="number" placeholder="Ex: 200000" value={montant} onChange={e=>setMontant(e.target.value)} />
+          </div>
+          <div>
+            <label style={{fontSize:11.5, color:'var(--steam)', display:'block', marginBottom:4}}>Date</label>
+            <input type="date" value={date} onChange={e=>setDate(e.target.value)} />
+          </div>
+          <div>
+            <label style={{fontSize:11.5, color:'var(--steam)', display:'block', marginBottom:4}}>Description (optionnel)</label>
+            <input type="text" placeholder="Ex: avance sur salaire" value={description} onChange={e=>setDescription(e.target.value)} />
+          </div>
+        </div>
+        <button className="btn btn-rust" disabled={!beneficiaire || !(Number(montant)>0)} onClick={enregistrer}>
+          <Icon name="plus" size={14}/> Enregistrer
+        </button>
+      </div>
+
+      <h4 style={{fontSize:13, color:'var(--pine)', margin:'0 0 8px'}}>Mes déclarations précédentes</h4>
+      <div className="card" style={{overflow:'hidden'}}>
+        <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+          <thead>
+            <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+              <th style={th}>Date</th>
+              <th style={th}>Bénéficiaire</th>
+              <th style={th}>Description</th>
+              <th style={th}>Montant</th>
+            </tr>
+          </thead>
+          <tbody>
+            {mesEntrees.length === 0 ? (
+              <tr><td colSpan={4} style={{...td, textAlign:'center', color:'var(--steam)', padding:'1.5rem'}}>Aucune dépense propre déclarée pour le moment.</td></tr>
+            ) : mesEntrees.map(e => (
+              <tr key={e.id} style={{borderTop:'1px solid var(--line)'}}>
+                <td style={td}>{fmtDate(e.date)}</td>
+                <td style={{...td, fontWeight:600}}>{e.nomActeur}</td>
+                <td style={td}>{e.description || '—'}</td>
+                <td style={{...td, color:'var(--danger)', fontWeight:600}} className="mono">{fmtGNF(e.montant)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
   const site = db.sites.find(s => s.id === siteId);
   const monProfil = (site && employeId) ? site.employes.find(e=>e.id===employeId) : null;
@@ -12619,18 +13138,23 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
   const navItems = [
     { key:'dashboard', label:'Tableau de bord', icon:'chart' },
     { key:'caisse', label:'Caisse', icon:'ticket' },
-    { key:'agenda', label:'Agenda du jour', icon:'clock' },
+    { key:'operations', label:'Agenda, Promos & Stock', icon:'clock', children: [
+      { key:'agenda', label:'Agenda du jour', icon:'clock' },
+      { key:'marketing', label:'Promos & Relances', icon:'bell' },
+      { key:'stock', label:'Stock', icon:'box' },
+    ] },
     { key:'clients', label:'Clients', icon:'users' },
-    { key:'marketing', label:'Promos & Relances', icon:'bell' },
-    { key:'stock', label:'Stock', icon:'box' },
     { key:'encaissements', label:'Mes encaissements Et Décaissements', icon:'euro' },
     { key:'listePaiements', label:'Liste des paiements', icon:'euro' },
     { key:'encaisserSansCommande', label:'Encaisser sans commande', icon:'euro' },
     { key:'detailMensuel', label:'Détail mensuel', icon:'chart' },
     { key:'performanceCaissiers', label:'Performance caissiers', icon:'chart' },
+    { key:'depensesPropres', label:'Dépenses propres', icon:'euro' },
     { key:'servicesRemuneration', label:'Services & rémunérations', icon:'edit' },
-    { key:'suiviRepassage', label:'Suivi repassage', icon:'euro' },
-    { key:'suiviDistribution', label:'Suivi distribution', icon:'euro' },
+    { key:'suivi', label:'Suivi repassage & distribution', icon:'euro', children: [
+      { key:'suiviRepassage', label:'Suivi repassage', icon:'euro' },
+      { key:'suiviDistribution', label:'Suivi distribution', icon:'euro' },
+    ] },
     { key:'moncompte', label:'Mon mot de passe', icon:'edit' },
   ];
   return (
@@ -12647,6 +13171,7 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
       {page === 'encaissements' && <MesEncaissementsView site={site} updateSite={updateSite} db={db} employeId={employeId} />}
       {page === 'encaisserSansCommande' && <BilanEncaisserSansCommandeSiteView site={site} employeId={employeId} />}
       {page === 'performanceCaissiers' && <PerformanceCaissiersView site={site} />}
+      {page === 'depensesPropres' && <DepensesPropresEmployeView db={db} setDb={setDb} monProfil={monProfil} />}
       {page === 'servicesRemuneration' && <ServicesRemunerationEmployeView site={site} updateSite={updateSite} db={db} employeId={employeId} />}
       {page === 'suiviRepassage' && <RepassageApercuView site={site} updateSite={updateSite} employeId={employeId} />}
       {page === 'suiviDistribution' && <SuiviDistributionView db={db} setDb={setDb} employeId={employeId} />}
