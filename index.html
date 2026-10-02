@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-02-2">
+<meta name="app-version" content="2026-10-02-5">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-02-2';
+  const APP_VERSION_ACTUELLE = '2026-10-02-5';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -9027,12 +9027,12 @@ function RemunerationGerantView({ site }){
     const parEmploye = {};
     filtered.forEach(r => {
       const empId = r.employeId || 'inconnu';
-      if(!parEmploye[empId]) parEmploye[empId] = { montant: 0, articles: {}, entrees: [] };
+      if(!parEmploye[empId]) parEmploye[empId] = { montant: 0, articles: {}, entrees: [], totalArticles: 0 };
       parEmploye[empId].montant += Number(r.montant);
       parEmploye[empId].entrees.push(r);
       if(r.detail) r.detail.split(', ').forEach(part => {
         const match = part.match(/(\d+)x (.+?) \(/);
-        if(match){ const nom=match[2]; const qte=Number(match[1]); parEmploye[empId].articles[nom]=(parEmploye[empId].articles[nom]||0)+qte; }
+        if(match){ const nom=match[2]; const qte=Number(match[1]); parEmploye[empId].articles[nom]=(parEmploye[empId].articles[nom]||0)+qte; parEmploye[empId].totalArticles += qte; }
       });
     });
     return parEmploye;
@@ -9063,6 +9063,7 @@ function RemunerationGerantView({ site }){
   }
 
   const totalRem = Object.values(bilanRepasseurs).reduce((s,b)=>s+b.montant,0);
+  const totalArticlesRepasseurs = Object.values(bilanRepasseurs).reduce((s,b)=>s+b.totalArticles,0);
 
   return (
     <div>
@@ -9124,9 +9125,15 @@ function RemunerationGerantView({ site }){
                       <div style={{fontWeight:700, fontSize:15}}>{getEmpNom(empId)}</div>
                       <div style={{fontSize:12.5, color:'var(--steam)'}}>{bilan.entrees.length} prestation(s)</div>
                     </div>
-                    <div style={{textAlign:'right'}}>
-                      <div className="mono" style={{fontSize:18, fontWeight:700, color:'var(--ok)'}}>{fmtGNF(bilan.montant)}</div>
-                      <div style={{fontSize:11.5, color:'var(--steam)'}}>à payer {surPeriode}</div>
+                    <div style={{display:'flex', gap:16, alignItems:'flex-start'}}>
+                      <div style={{textAlign:'right'}}>
+                        <div className="mono" style={{fontSize:18, fontWeight:700, color:'var(--ink)'}}>{bilan.totalArticles}</div>
+                        <div style={{fontSize:11.5, color:'var(--steam)'}}>articles {surPeriode}</div>
+                      </div>
+                      <div style={{textAlign:'right'}}>
+                        <div className="mono" style={{fontSize:18, fontWeight:700, color:'var(--ok)'}}>{fmtGNF(bilan.montant)}</div>
+                        <div style={{fontSize:11.5, color:'var(--steam)'}}>à payer {surPeriode}</div>
+                      </div>
                     </div>
                   </div>
                   {/* Articles repassés */}
@@ -9166,6 +9173,10 @@ function RemunerationGerantView({ site }){
                 </div>
               ))}
               <div className="card" style={{padding:'1rem 1.5rem', background:'var(--pine-light)', borderColor:'var(--pine)'}}>
+                <div style={{display:'flex', justifyContent:'space-between', fontWeight:700, marginBottom:6}}>
+                  <span>Total articles repassés — {periodeLabel}</span>
+                  <span className="mono" style={{color:'var(--pine)', fontSize:16}}>{totalArticlesRepasseurs}</span>
+                </div>
                 <div style={{display:'flex', justifyContent:'space-between', fontWeight:700}}>
                   <span>Total rémunérations repassage — {periodeLabel}</span>
                   <span className="mono" style={{color:'var(--pine)', fontSize:16}}>{fmtGNF(totalRem)}</span>
@@ -10661,9 +10672,12 @@ function RepassageApercuView({ site, updateSite, employeId }){
         const modeSel = modeChoisi[empId] || 'Espèces';
         return (
           <div key={empId} className="card" style={{padding:'1.25rem', marginBottom:14}}>
-            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10}}>
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10, flexWrap:'wrap', gap:8}}>
               <h3 style={{margin:0, fontSize:15}}>👔 {p.nom}</h3>
-              <span className="mono" style={{fontWeight:700, color:'var(--pine)'}}>{fmtGNF(p.totalMontant)}</span>
+              <div style={{display:'flex', alignItems:'center', gap:12}}>
+                <span style={{fontSize:12.5, color:'var(--steam)'}}>Total articles : <span className="mono" style={{fontWeight:700, color:'var(--ink)'}}>{p.totalArticles}</span></span>
+                <span className="mono" style={{fontWeight:700, color:'var(--pine)'}}>{fmtGNF(p.totalMontant)}</span>
+              </div>
             </div>
             {articlesList.length > 0 && (
               <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(140px, 1fr))', gap:8, marginBottom:14}}>
@@ -10811,6 +10825,7 @@ function PerformanceCaissiersView({ site }){
 
   const totalCommandes = commandesPeriode.length;
   const totalCA = commandesPeriode.reduce((s,c)=>s+calcCommandeTotal(c, site.services),0);
+  const totalArticles = commandesPeriode.reduce((s,c)=>s+c.lignes.reduce((s2,l)=>s2+l.qte,0),0);
   const periodeLabel = periode==='jour' ? "Aujourd'hui" : periode==='semaine' ? 'Cette semaine' : periode==='mois' ? 'Ce mois' : 'Cette année';
 
   return (
@@ -10834,8 +10849,9 @@ function PerformanceCaissiersView({ site }){
         )}
       </div>
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:14, marginBottom:20}}>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20}}>
         <StatCard label={`Commandes générées — ${periodeLabel}`} value={totalCommandes} icon="ticket" />
+        <StatCard label={`Articles traités — ${periodeLabel}`} value={totalArticles} icon="shirt" />
         <StatCard label={`Chiffre d'affaires généré — ${periodeLabel}`} value={fmtGNF(totalCA)} icon="euro" />
       </div>
 
@@ -10867,6 +10883,14 @@ function PerformanceCaissiersView({ site }){
                   <td style={{...td, fontWeight:600, color: c.netPercu<0?'var(--danger)':'var(--ink)'}} className="mono">{fmtGNF(c.netPercu)}</td>
                 </tr>
               ))}
+              <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
+                <td style={{...td, fontWeight:700}}>Total</td>
+                <td style={{...td, fontWeight:700}} className="mono">{totalCommandes}</td>
+                <td style={{...td, fontWeight:700}} className="mono">{totalArticles}</td>
+                <td style={{...td, fontWeight:700}} className="mono">{parCaissier.reduce((s,c)=>s+c.nbClients,0)}</td>
+                <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalCA)}</td>
+                <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(parCaissier.reduce((s,c)=>s+c.netPercu,0))}</td>
+              </tr>
             </tbody>
           </table>
         </div>
