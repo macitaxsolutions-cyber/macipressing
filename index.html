@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-02-5">
+<meta name="app-version" content="2026-10-03-2">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-02-5';
+  const APP_VERSION_ACTUELLE = '2026-10-03-2';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -4829,7 +4829,7 @@ function SitesManager({ db, addSite, removeSite, onOpenSite, setDb }){
             <div style={{marginTop:12}}>
               <div style={{fontSize:12, color:'var(--pine)', fontWeight:600, marginBottom:6}}>Services qui seront copiés :</div>
               <div style={{display:'flex', flexWrap:'wrap', gap:6, marginBottom:10}}>
-                {db.sites.find(s=>s.id===sourceSiteId)?.services.map(svc => (
+                {[...(db.sites.find(s=>s.id===sourceSiteId)?.services||[])].sort((a,b) => a.nom.localeCompare(b.nom, 'fr', { sensitivity:'base' })).map(svc => (
                   <span key={svc.id} style={{fontSize:12, background:'var(--white)', padding:'3px 10px', borderRadius:100, border:'1px solid var(--pine)'}}>
                     {svc.nom} — {fmtGNF(svc.prix)}
                   </span>
@@ -6218,7 +6218,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
                 <div>
                   <label>Type de service</label>
                   <select value={newServiceCat} onChange={e=>setNewServiceCat(e.target.value)}>
-                    <option>Nettoyage complet</option>
+                    <option>Nettoyage</option>
                     <option>Repassage</option>
                     <option>Nettoyage + Repassage</option>
                     <option>Retouche</option>
@@ -6249,7 +6249,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
               {/* Liste des articles existants pour édition rapide */}
               <div style={{marginTop:12, maxHeight:160, overflowY:'auto'}}>
                 <div style={{fontSize:12, color:'var(--steam)', marginBottom:6, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.03em'}}>Cliquez sur un article pour modifier son prix</div>
-                {site.services.map(s => (
+                {[...site.services].sort((a,b) => a.nom.localeCompare(b.nom, 'fr', { sensitivity:'base' })).map(s => (
                   <div key={s.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'5px 0', borderBottom:'1px solid var(--line)', fontSize:13}}>
                     <span>{s.nom} <span style={{color:'var(--steam)', fontSize:11}}>· {s.categorie}</span></span>
                     <div style={{display:'flex', gap:8, alignItems:'center'}}>
@@ -6268,8 +6268,8 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
           )}
 
           {/* Articles groupés par catégorie */}
-          {['Nettoyage','Nettoyage + Repassage','Repassage','Retouche','Autres'].map(cat => {
-            const items = site.services.filter(s => s.categorie === cat);
+          {['Nettoyage','Nettoyage + Repassage','Repassage','Retouche','Maison','Autres'].map(cat => {
+            const items = site.services.filter(s => s.categorie === cat).sort((a,b) => a.nom.localeCompare(b.nom, 'fr', { sensitivity:'base' }));
             if(items.length === 0) return null;
             return (
               <div key={cat} style={{marginBottom:10}}>
@@ -8772,7 +8772,7 @@ function NewPrestationModal({ site, updateSite, onClose, caissierId }){
             {tarifsRepassage.length > 0 ? (
               <>
                 <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:6, marginBottom:8}}>
-                  {tarifsRepassage.map(t => (
+                  {[...tarifsRepassage].sort((a,b) => a.nom.localeCompare(b.nom, "fr", { sensitivity:"base" })).map(t => (
                     <button key={t.id} className="btn btn-sm"
                       style={{justifyContent:'space-between', display:'flex', background: selectedArticles.find(a=>a.tarifId===t.id) ? 'var(--pine-light)' : 'transparent', borderColor: selectedArticles.find(a=>a.tarifId===t.id) ? 'var(--pine)' : 'var(--line-strong)'}}
                       onClick={()=>addArticle(t.id)}>
@@ -10352,7 +10352,7 @@ function ServicesEditor({ site, updateSite, db, employeId }){
               <input type="text" value={editNom} onChange={e=>setEditNom(e.target.value)} style={{padding:'6px 8px', fontSize:13}} />
               <input type="number" value={editPrix} onChange={e=>setEditPrix(e.target.value)} style={{padding:'6px 8px', fontSize:13}} />
               <select value={editCategorie} onChange={e=>setEditCategorie(e.target.value)} style={{padding:'6px 8px', fontSize:13}}>
-                <option>Nettoyage complet</option>
+                <option>Nettoyage</option>
                 <option>Repassage</option>
                 <option>Nettoyage + Repassage</option>
                 <option>Retouche</option>
@@ -10379,7 +10379,7 @@ function ServicesEditor({ site, updateSite, db, employeId }){
         <input type="text" placeholder="Nom du service" value={nom} onChange={e=>setNom(e.target.value)} />
         <input type="number" placeholder="Prix (GNF)" value={prix} onChange={e=>setPrix(e.target.value)} />
         <select value={categorie} onChange={e=>setCategorie(e.target.value)}>
-          <option>Nettoyage complet</option>
+          <option>Nettoyage</option>
           <option>Repassage</option>
           <option>Nettoyage + Repassage</option>
           <option>Retouche</option>
@@ -11873,7 +11873,7 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
               {tarifsRepassage.length > 0 ? (
                 <>
                   <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:6, marginBottom:8}}>
-                    {tarifsRepassage.map(t => (
+                    {[...tarifsRepassage].sort((a,b) => a.nom.localeCompare(b.nom, "fr", { sensitivity:"base" })).map(t => (
                       <button key={t.id} className="btn btn-sm"
                         style={{justifyContent:'space-between', display:'flex', background: selectedArticles.find(a=>a.tarifId===t.id) ? 'var(--pine-light)' : 'transparent', borderColor: selectedArticles.find(a=>a.tarifId===t.id) ? 'var(--pine)' : 'var(--line-strong)'}}
                         onClick={()=>addArticle(t.id)}>
