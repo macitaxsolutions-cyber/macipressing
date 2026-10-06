@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-03-3">
+<meta name="app-version" content="2026-10-06-2">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-03-3';
+  const APP_VERSION_ACTUELLE = '2026-10-06-2';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -36,9 +36,19 @@
   // (bascule d'onglet, verrouillage, mise en veille) : à ce moment-là, il n'y a par définition rien en
   // cours de saisie à perdre.
   let majEnAttente = false;
+  // Numéro de la nouvelle version détectée (affiché à l'utilisateur après rechargement, dans le message
+  // « nouvelle version, veuillez vous reconnecter » — voir maci-update-notice ci-dessous et RoleSelect).
+  let nouvelleVersionDetectee = null;
   function appliquerRechargement(){
     if(dejaRecharge) return;
     dejaRecharge = true;
+    // On recharge TOUJOURS vers l'écran de connexion (aucune session n'est conservée après un
+    // rechargement), ce qui a pour effet de forcer tout le monde à se reconnecter après une mise à
+    // jour — on dépose juste ici de quoi afficher un message explicite au lieu de les y renvoyer
+    // silencieusement sans explication.
+    try {
+      localStorage.setItem('maci-update-notice', JSON.stringify({ version: nouvelleVersionDetectee, ts: Date.now() }));
+    } catch(e){ /* stockage indisponible — tant pis pour le message, le rechargement reste prioritaire */ }
     window.location.reload();
   }
   function verifierNouvelleVersion(){
@@ -49,6 +59,7 @@
         const m = html.match(/<meta name="app-version" content="([^"]+)"/);
         if(m && m[1] !== APP_VERSION_ACTUELLE){
           majEnAttente = true;
+          nouvelleVersionDetectee = m[1];
           if(document.visibilityState !== 'visible') appliquerRechargement();
         }
       })
@@ -1435,6 +1446,18 @@ function RoleSelect({ db, setDb, onSelect }){
   const [selectedEmp, setSelectedEmp] = useState(null); // {emp, siteId}
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  // Message « nouvelle version, reconnectez-vous » déposé par le script de rechargement automatique
+  // (voir maci-update-notice en haut du fichier) juste avant de recharger la page suite à une mise à
+  // jour déployée — on le lit une seule fois au montage puis on l'efface pour qu'il ne réapparaisse
+  // pas à chaque visite ultérieure de l'écran de connexion.
+  const [updateNotice, setUpdateNotice] = useState(() => {
+    try {
+      const raw = localStorage.getItem('maci-update-notice');
+      if(!raw) return null;
+      localStorage.removeItem('maci-update-notice');
+      return JSON.parse(raw);
+    } catch(e){ return null; }
+  });
 
   // Tous les employés de tous les sites
   const allEmployes = useMemo(() => {
@@ -1567,6 +1590,16 @@ function RoleSelect({ db, setDb, onSelect }){
 
   return (
     <div style={{minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'2rem'}}>
+      {updateNotice && (
+        <div style={{background:'var(--pine-light)', color:'var(--pine)', borderRadius:10, padding:'12px 18px', marginBottom:20, fontSize:13.5, display:'flex', alignItems:'center', gap:14, maxWidth:480, textAlign:'left', border:'1px solid var(--pine)'}}>
+          <Icon name="chart" size={18} style={{flexShrink:0}}/>
+          <div style={{flex:1, lineHeight:1.5}}>
+            <strong>Application mise à jour{updateNotice.version ? ` — version ${updateNotice.version}` : ''}.</strong><br/>
+            Veuillez vous reconnecter pour continuer.
+          </div>
+          <button className="btn btn-ghost btn-sm" style={{flexShrink:0}} onClick={()=>setUpdateNotice(null)}>OK</button>
+        </div>
+      )}
       <div style={{textAlign:'center', marginBottom:'2.5rem'}}>
         <div style={{display:'flex', justifyContent:'center', marginBottom:16}}>
           <Logo size={68} />
@@ -1632,6 +1665,8 @@ function ClientLoginFlow({ db, onPick, onCreate, onBack }){
   }
 
   if(showCreate){
+    const newTelComplet = newTel.trim() ? `${newIndicatif} ${newTel.trim()}` : '';
+    const doublonNewTel = trouverClientMemeTelAutreNom(site.clients, newTelComplet, newNom);
     return (
       <div className="card" style={{marginTop:24, padding:'1.25rem', width:380, maxWidth:'90vw'}}>
         <label>Créer ma fiche client — {site.nom}</label>
@@ -1642,12 +1677,17 @@ function ClientLoginFlow({ db, onPick, onCreate, onBack }){
             <input type="tel" placeholder="6XX XX XX XX" value={newTel} onChange={e=>setNewTel(e.target.value)} style={{flex:1}} />
           </div>
         </div>
+        {doublonNewTel && (
+          <div style={{background:'var(--warn-light)', color:'#B45309', borderRadius:8, padding:'10px 12px', fontSize:12.5, lineHeight:1.5, marginTop:10}}>
+            ⚠️ Ce numéro est déjà enregistré sous le nom « {doublonNewTel.nom} ». C'est probablement vous — utilisez plutôt « Trouvez votre fiche client » ci-dessus pour vous connecter avec cette fiche, au lieu d'en créer une nouvelle.
+          </div>
+        )}
         <p style={{fontSize:12, color:'var(--steam)', margin:'10px 0 0', lineHeight:1.4}}>
-          Pas besoin de déposer un vêtement pour créer votre fiche — vous pourrez suivre vos futures commandes ici.
+          Pas besoin de déposer un vêtement pour créer votre fiche — vous pourrez suivre vos futures commandes ici. Indiquer votre téléphone permet d'éviter les fiches en double.
         </p>
         <div style={{display:'flex', gap:8, marginTop:14}}>
           <button className="btn btn-ghost btn-sm" onClick={()=>{ setShowCreate(false); setNewNom(''); setNewTel(''); }}>← Retour</button>
-          <button className="btn btn-rust btn-sm" disabled={!newNom.trim()} onClick={()=>onCreate(siteId, newNom, newIndicatif, newTel)} style={{flex:1}}>Créer ma fiche</button>
+          <button className="btn btn-rust btn-sm" disabled={!newNom.trim() || !!doublonNewTel} onClick={()=>onCreate(siteId, newNom, newIndicatif, newTel)} style={{flex:1}}>Créer ma fiche</button>
         </div>
       </div>
     );
@@ -13149,6 +13189,42 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
   function updateSite(updatedSite){
     setDb({ ...db, sites: db.sites.map(s => s.id === updatedSite.id ? updatedSite : s) });
   }
+
+  // Rattrapage du salaire journalier (voir recordDailyCaissierExpense dans RoleSelect) : celui-ci n'était
+  // enregistré QUE lors de la saisie du mot de passe à la connexion. Sur une tablette de caisse laissée
+  // allumée en continu (l'écran employé reste ouvert sans jamais revenir à l'écran de connexion — voir
+  // les commentaires sur la mise à jour auto en haut du fichier), un employé peut très bien travailler
+  // toute une journée sans jamais « se reconnecter » ce jour-là, et son salaire journalier n'était alors
+  // jamais comptabilisé. On revérifie donc ici, à l'ouverture de l'espace employé ET périodiquement tant
+  // qu'il reste ouvert, si le salaire du jour a déjà été saisi — sinon on l'ajoute (la vérification
+  // `deja` ci-dessous rend l'opération sans risque de doublon, qu'elle vienne d'ici ou de la connexion).
+  useEffect(() => {
+    if(!monProfil || !estEmployeSalaireJournalier(monProfil)) return;
+    function verifierSalaireJournalier(){
+      const today = todayISO();
+      if(new Date(today + 'T00:00:00Z').getUTCDay() === 0) return; // pas de salaire journalier le dimanche
+      setDb(prevDb => {
+        const s = (prevDb.sites||[]).find(x => x.id === siteId);
+        if(!s) return prevDb;
+        const deja = (s.depenses||[]).some(d => d.autoCaissierId === monProfil.id && d.date === today);
+        if(deja) return prevDb;
+        const responsable = employeResponsableCaisse(s, today);
+        const dep = {
+          id: uid('dep_'),
+          date: today,
+          description: `Salaire journalier — ${monProfil.nom}`,
+          montant: 50000,
+          categorie: 'Salaires',
+          autoCaissierId: monProfil.id,
+          saisiPar: (responsable ? responsable.id : monProfil.id),
+        };
+        return { ...prevDb, sites: prevDb.sites.map(x => x.id === siteId ? { ...x, depenses: [dep, ...(x.depenses||[])] } : x) };
+      });
+    }
+    verifierSalaireJournalier();
+    const intervalId = setInterval(verifierSalaireJournalier, 5 * 60 * 1000);
+    return () => clearInterval(intervalId);
+  }, [monProfil && monProfil.id, siteId]);
 
   if(!site){
     return (
