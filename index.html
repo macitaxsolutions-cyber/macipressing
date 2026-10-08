@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-06-2">
+<meta name="app-version" content="2026-10-08-2">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-06-2';
+  const APP_VERSION_ACTUELLE = '2026-10-08-2';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -10565,6 +10565,30 @@ function RepassageApercuView({ site, updateSite, employeId }){
 
   const repassages = useMemo(() => (site.remunerations||[]).filter(r => r.type === 'repassage'), [site.remunerations]);
 
+  // Articles qui restent à repasser EN CE MOMENT : articles « repassables » (ceux qui correspondent à un
+  // tarif de repassage configuré) des commandes pas encore passées au statut Prêt — c'est à ce moment-là
+  // que le repassage est enregistré (voir advanceStatut), donc avant ça ils ne sont ni comptés ni payés.
+  // C'est un arriéré actuel (combien reste à faire là, tout de suite), pas un flux sur la période choisie
+  // ci-dessus — comme « À traiter » dans Vue globale, qui n'est pas non plus filtré par période.
+  const articlesRestantARepasser = useMemo(() => {
+    const tarifsRepassage = (site.configRemuneration||{}).tarifsRepassage || [];
+    if(tarifsRepassage.length === 0) return 0;
+    let total = 0;
+    (site.commandes||[]).forEach(cmd => {
+      if(cmd.statut === 'Récupéré' || cmd.statut === 'Prêt') return;
+      (cmd.lignes||[]).forEach(l => {
+        const svc = site.services.find(s=>s.id===l.serviceId);
+        if(!svc) return;
+        const tarif = tarifsRepassage.find(t =>
+          svc.nom.toLowerCase().includes(t.nom.toLowerCase()) ||
+          t.nom.toLowerCase().includes(svc.nom.toLowerCase())
+        );
+        if(tarif) total += Number(l.qte)||0;
+      });
+    });
+    return total;
+  }, [site.commandes, site.services, site.configRemuneration]);
+
   const anneesDisponibles = useMemo(() => {
     const set = new Set(repassages.map(r => Number(r.date.slice(0,4))));
     set.add(Number(todayISO().slice(0,4)));
@@ -10616,6 +10640,10 @@ function RepassageApercuView({ site, updateSite, employeId }){
       p.payees = p.entrees.filter(r => r.statutPaiement === 'paye');
       p.totalNonPaye = p.nonPayees.reduce((s,r)=>s+Number(r.montant),0);
       p.totalPaye = p.payees.reduce((s,r)=>s+Number(r.montant),0);
+      // Payé au repasseur mais qu'il n'a pas encore confirmé avoir reçu (voir « Ma rémunération » côté
+      // repasseur, où il valide chaque paiement) — à surveiller pour pouvoir le relancer si besoin.
+      p.payeesNonConfirmees = p.payees.filter(r=>!r.valideParRepasseur);
+      p.totalPayeNonConfirme = p.payeesNonConfirmees.reduce((s,r)=>s+Number(r.montant),0);
       p.totalConfirme = p.payees.filter(r=>r.valideParRepasseur).length;
     });
     return acc;
@@ -10658,6 +10686,7 @@ function RepassageApercuView({ site, updateSite, employeId }){
     : periode==='semaine' ? 'Cette semaine'
     : periode==='mois' ? 'Ce mois'
     : periode==='annee' ? 'Cette année'
+    : periode==='total' ? 'À ce jour'
     : periode==='date' ? `Le ${fmtDate(dateChoisie)}`
     : `Du ${fmtDate(plageBornes.debut)} au ${fmtDate(plageBornes.fin)}`;
   const repasseurIds = Object.keys(parRepasseur);
@@ -10668,10 +10697,10 @@ function RepassageApercuView({ site, updateSite, employeId }){
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px'}}>Articles repassés, totaux, et paiement des repasseurs — groupé par période</p>
 
       <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
-        {['jour','semaine','mois','annee','date','plage'].map(v => (
+        {['jour','semaine','mois','annee','total','date','plage'].map(v => (
           <button key={v} className="btn btn-sm" onClick={()=>setPeriode(v)}
             style={{background:periode===v?'var(--pine)':'transparent', color:periode===v?'var(--white)':'var(--ink)', borderColor:periode===v?'var(--pine)':'var(--line-strong)'}}>
-            {v === 'jour' ? "Aujourd'hui" : v === 'semaine' ? 'Cette semaine' : v === 'mois' ? 'Ce mois' : v === 'annee' ? 'Cette année' : v === 'date' ? 'Une date' : 'Intervalle'}
+            {v === 'jour' ? "Aujourd'hui" : v === 'semaine' ? 'Cette semaine' : v === 'mois' ? 'Ce mois' : v === 'annee' ? 'Cette année' : v === 'total' ? 'À ce jour' : v === 'date' ? 'Une date' : 'Intervalle'}
           </button>
         ))}
         {periode === 'mois' && (
@@ -10697,9 +10726,10 @@ function RepassageApercuView({ site, updateSite, employeId }){
         )}
       </div>
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:14, marginBottom:20}}>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20}}>
         <StatCard label={`Total articles repassés — ${periodeLabel}`} value={totalArticlesGeneral} icon="shirt" />
         <StatCard label={`Total — ${periodeLabel}`} value={fmtGNF(totalGeneral)} icon="euro" />
+        <StatCard label="Reste à repasser (actuellement)" value={articlesRestantARepasser} icon="shirt" />
       </div>
 
       {repasseurIds.length === 0 ? (
@@ -10714,9 +10744,12 @@ function RepassageApercuView({ site, updateSite, employeId }){
           <div key={empId} className="card" style={{padding:'1.25rem', marginBottom:14}}>
             <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10, flexWrap:'wrap', gap:8}}>
               <h3 style={{margin:0, fontSize:15}}>👔 {p.nom}</h3>
-              <div style={{display:'flex', alignItems:'center', gap:12}}>
-                <span style={{fontSize:12.5, color:'var(--steam)'}}>Total articles : <span className="mono" style={{fontWeight:700, color:'var(--ink)'}}>{p.totalArticles}</span></span>
-                <span className="mono" style={{fontWeight:700, color:'var(--pine)'}}>{fmtGNF(p.totalMontant)}</span>
+              <div style={{display:'flex', alignItems:'center', gap:22, flexWrap:'wrap'}}>
+                <MiniMetric label="Total articles" value={p.totalArticles} />
+                <MiniMetric label="Total repassé" value={fmtGNF(p.totalMontant)} />
+                {p.totalNonPaye > 0 && (
+                  <MiniMetric label="Dû au repasseur" value={fmtGNF(p.totalNonPaye)} danger />
+                )}
               </div>
             </div>
             {articlesList.length > 0 && (
@@ -10758,6 +10791,33 @@ function RepassageApercuView({ site, updateSite, employeId }){
               <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:8, flexWrap:'wrap'}}>
                 <span className="tag" style={{background:'var(--pine-light)', color:'var(--pine)'}}>✓ Déjà payé : {fmtGNF(p.totalPaye)}</span>
                 <span style={{fontSize:12, color:'var(--steam)'}}>({p.totalConfirme}/{p.payees.length} confirmé(s) par le repasseur)</span>
+              </div>
+            )}
+
+            {p.payeesNonConfirmees.length > 0 && (
+              <div style={{marginBottom:12, padding:'10px 12px', background:'var(--warn-light)', borderRadius:8}}>
+                <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, flexWrap:'wrap', marginBottom:6}}>
+                  <span style={{fontSize:13, fontWeight:600, color:'#B45309'}}>
+                    ⚠️ Payé mais pas encore validé par {p.nom} : {fmtGNF(p.totalPayeNonConfirme)} ({p.payeesNonConfirmees.length} prestation{p.payeesNonConfirmees.length>1?'s':''})
+                  </span>
+                </div>
+                <p style={{fontSize:11.5, color:'#B45309', margin:'0 0 8px', lineHeight:1.4}}>
+                  Le repasseur n'a pas encore confirmé avoir reçu ces paiements (via « Ma rémunération ») — à rappeler si besoin.
+                </p>
+                <div style={{display:'flex', flexDirection:'column', gap:5}}>
+                  {p.payeesNonConfirmees.map(r => (
+                    <div key={r.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, padding:'6px 10px', background:'var(--white)', borderRadius:6, flexWrap:'wrap', fontSize:12}}>
+                      <span>
+                        <span className="mono" style={{fontWeight:700}}>N°{r.ticketSuffix || (r.commandeNumero||'').slice(-4) || '—'}</span>
+                        {' · '}<span style={{fontWeight:600}}>{r.clientNom || 'Client inconnu'}</span>
+                      </span>
+                      <span style={{display:'flex', alignItems:'center', gap:8}}>
+                        <span style={{color:'var(--steam)'}}>payé le {r.datePaiement ? fmtDate(r.datePaiement.slice(0,10)) : fmtDate(r.date)}</span>
+                        <span className="mono" style={{fontWeight:600}}>{fmtGNF(r.montant)}</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
