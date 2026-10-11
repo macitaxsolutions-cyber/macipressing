@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-08-2">
+<meta name="app-version" content="2026-10-11-1">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-08-2';
+  const APP_VERSION_ACTUELLE = '2026-10-11-1';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -1434,6 +1434,14 @@ const PLANNING_DECAISSEMENT_SALAIRE = [
   { cible: 'mamadou alpha', jours: [4, 5, 6] }, // jeudi, vendredi, samedi
 ];
 function employeResponsableCaisse(site, dateISO){
+  // Remplacement ponctuel saisi par le gérant (voir « Remplacement caisse » dans Paramètres →
+  // Rémunérations) pour une date précise où la personne normalement responsable ce jour-là ne peut pas
+  // travailler — prioritaire sur le planning hebdomadaire par défaut ci-dessous.
+  const remplacement = (site.remplacementsCaisse||[]).find(r => r.date === dateISO);
+  if(remplacement){
+    const empRemplacant = (site.employes||[]).find(e => (e.nom||'').trim().toLowerCase().includes(remplacement.cible));
+    if(empRemplacant) return empRemplacant;
+  }
   const jour = new Date(dateISO + 'T00:00:00Z').getUTCDay();
   const entree = PLANNING_DECAISSEMENT_SALAIRE.find(p => p.jours.includes(jour));
   if(!entree) return null;
@@ -9309,6 +9317,11 @@ function ConfigRemunerationEditor({ site, updateSite, db, employeId }){
   const [pendingSave, setPendingSave] = useState(false);
   const [aucunChangement, setAucunChangement] = useState(false);
   const [rechercheRep, setRechercheRep] = useState('');
+  const [remplacementDate, setRemplacementDate] = useState(todayISO());
+  const [remplacementCible, setRemplacementCible] = useState('');
+  const remplacementsCaisseTries = useMemo(() =>
+    [...(site.remplacementsCaisse||[])].sort((a,b) => (b.date||'').localeCompare(a.date||'')),
+    [site.remplacementsCaisse]);
 
   const tarifsRepassageAffiches = useMemo(() => {
     const q = rechercheRep.trim().toLowerCase();
@@ -9360,6 +9373,20 @@ function ConfigRemunerationEditor({ site, updateSite, db, employeId }){
     setNewZoneNom(''); setNewZoneMontant('');
   }
   function removeZone(id){ setZones(zones.filter(z=>z.id!==id)); }
+
+  // Remplacement caisse : contrairement aux tarifs/zones ci-dessus, prend effet immédiatement (pas besoin
+  // de confirmer avec le mot de passe gérant, ni de cliquer sur « Enregistrer la configuration »), car
+  // c'est une correction ponctuelle souvent saisie au dernier moment (ex: le matin même d'une absence).
+  function ajouterRemplacementCaisse(){
+    if(!remplacementDate || !remplacementCible) return;
+    const liste = (site.remplacementsCaisse||[]).filter(r => r.date !== remplacementDate);
+    const entry = { id: uid('remplcaisse_'), date: remplacementDate, cible: remplacementCible };
+    updateSite({ ...site, remplacementsCaisse: [...liste, entry] });
+    setRemplacementCible('');
+  }
+  function supprimerRemplacementCaisse(id){
+    updateSite({ ...site, remplacementsCaisse: (site.remplacementsCaisse||[]).filter(r=>r.id!==id) });
+  }
   function startEditZone(z){ setNewZoneNom(z.nom); setNewZoneMontant(String(z.montant)); setEditingZoneId(z.id); }
   function saveEditZone(){
     if(!newZoneNom.trim()||!newZoneMontant) return;
@@ -9436,6 +9463,44 @@ function ConfigRemunerationEditor({ site, updateSite, db, employeId }){
           )}
         </div>
       </div>
+
+      {/* Remplacement caisse : quand Nene Djiba ou Mamadou Alpha ne peut pas travailler un jour qui lui
+          est normalement attribué (voir planning hebdomadaire du salaire journalier), l'autre le
+          remplace ce jour-là pour la responsabilité de la caisse — voir employeResponsableCaisse.
+          Réservé au gérant (pas affiché côté « Services & rémunérations » employé) : ça change à qui
+          revient le salaire journalier et les décaissements, donc pas une modification à laisser à
+          n'importe quel employé ayant accès à cette page de configuration. */}
+      {!employeId && (
+      <div style={{marginTop:24, paddingTop:20, borderTop:'1px solid var(--line)'}}>
+        <label>🔄 Remplacement caisse (Nene Djiba ⇄ Mamadou Alpha)</label>
+        <p style={{fontSize:12, color:'var(--steam)', margin:'2px 0 10px', lineHeight:1.5}}>
+          Par défaut, c'est Nene Djiba qui est responsable de la caisse lundi-mardi-mercredi, et Mamadou Alpha
+          jeudi-vendredi-samedi (salaire journalier, décaissements). Si l'un des deux ne peut pas travailler un
+          jour qui lui est attribué, ajoutez ici une date précise pour que ce soit l'autre qui prenne le relais
+          ce jour-là — ça change qui touche son salaire ce jour et à qui sont attribués les décaissements.
+        </p>
+        {remplacementsCaisseTries.length > 0 && (
+          <div style={{marginBottom:10}}>
+            {remplacementsCaisseTries.map(r => (
+              <div key={r.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'7px 0', borderBottom:'1px solid var(--line)', fontSize:13.5}}>
+                <span>{fmtDate(r.date)} — remplacé(e) par <strong style={{textTransform:'capitalize'}}>{r.cible.replace(/\b\w/g, c=>c.toUpperCase())}</strong></span>
+                <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)', padding:'3px 7px'}} onClick={()=>supprimerRemplacementCaisse(r.id)}><Icon name="trash" size={13}/></button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{display:'grid', gridTemplateColumns:'1fr 1.3fr auto', gap:8}}>
+          <input type="date" value={remplacementDate} onChange={e=>setRemplacementDate(e.target.value)} />
+          <select value={remplacementCible} onChange={e=>setRemplacementCible(e.target.value)}>
+            <option value="">Remplacé(e) par…</option>
+            {EMPLOYES_SALAIRE_JOURNALIER.map(cle => <option key={cle} value={cle} style={{textTransform:'capitalize'}}>{cle.replace(/\b\w/g, c=>c.toUpperCase())}</option>)}
+          </select>
+          <button className="btn btn-sm" disabled={!remplacementDate || !remplacementCible} onClick={ajouterRemplacementCaisse}>
+            <Icon name="plus" size={13}/> Ajouter
+          </button>
+        </div>
+      </div>
+      )}
 
       <button className="btn btn-rust" style={{marginTop:16}} onClick={demanderSauvegarde}>
         {flash ? <><Icon name="check" size={14}/> Enregistré !</> : 'Enregistrer la configuration'}
