@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-11-1">
+<meta name="app-version" content="2026-10-11-2">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-11-1';
+  const APP_VERSION_ACTUELLE = '2026-10-11-2';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -5557,6 +5557,10 @@ function EncaisserSansCommandeModal({ site: siteFixe, sites, updateSite, employe
   const [note, setNote] = useState('');
   const [datePaiement, setDatePaiement] = useState(todayISO());
   const [dateOrigine, setDateOrigine] = useState('');
+  // Obligatoire par défaut (pour qu'un vieil impayé ne soit jamais oublié) — sauf si l'employé coche
+  // explicitement que ce paiement ne règle aucune ancienne commande papier (ex: vente ponctuelle, avance),
+  // auquel cas on retombe sur l'ancien comportement (origine = date du paiement, aucun impayé réduit).
+  const [pasDeCommandeOrigine, setPasDeCommandeOrigine] = useState(false);
 
   const clients = (site && site.clients) || [];
   const clientsFiltres = useMemo(() => {
@@ -5576,11 +5580,12 @@ function EncaisserSansCommandeModal({ site: siteFixe, sites, updateSite, employe
   function submit(){
     const montantNum = Number(montant)||0;
     if(!site || montantNum <= 0 || !datePaiement) return;
+    if(!pasDeCommandeOrigine && !dateOrigine) return; // obligatoire sauf si explicitement sans objet
     const nomClientFinal = clientChoisi ? clientChoisi.nom : (nouveauNomClient.trim() || 'Client non précisé');
     const entry = {
       id: uid('phc_'),
       datePaiement,
-      dateCommandeOrigine: dateOrigine || datePaiement,
+      dateCommandeOrigine: pasDeCommandeOrigine ? datePaiement : dateOrigine,
       clientId: clientId || null,
       clientNom: nomClientFinal,
       montant: montantNum,
@@ -5598,7 +5603,7 @@ function EncaisserSansCommandeModal({ site: siteFixe, sites, updateSite, employe
         Pour un client qui vient récupérer une commande prise avant le lancement de l'app (papier) et régler son solde — ça compte comme argent reçu, sans créer de nouvelle commande ni fausser le nombre de commandes.
       </p>
       <p style={{fontSize:12.5, color:'var(--pine)', margin:'0 0 14px', lineHeight:1.5, fontWeight:600}}>
-        💵 Le montant compte comme argent reçu dans le mois de la « Date du paiement » (Tableau de bord, Encaissements, Distribution des recettes) — c'est la date d'aujourd'hui par défaut. La « Date de la commande d'origine » (optionnelle) sert uniquement à faire baisser l'impayé du mois concerné, sans déplacer l'argent dans ce mois-là.
+        💵 Le montant compte comme argent reçu dans le mois de la « Date du paiement » (Tableau de bord, Encaissements, Distribution des recettes) — c'est la date d'aujourd'hui par défaut. La « Date de la commande d'origine » est maintenant obligatoire : c'est elle qui fait baisser l'impayé du mois concerné, sans déplacer l'argent dans ce mois-là.
       </p>
       <div style={{display:'grid', gap:14}}>
         {!siteFixe && (
@@ -5651,9 +5656,13 @@ function EncaisserSansCommandeModal({ site: siteFixe, sites, updateSite, employe
           </div>
         </div>
         <div>
-          <label>Date de la commande d'origine (papier), si connue — optionnel</label>
-          <input type="date" value={dateOrigine} onChange={e=>setDateOrigine(e.target.value)} max={todayISO()} />
-          <div style={{fontSize:11.5, color:'var(--steam)', marginTop:4}}>Laissez vide si vous ne la connaissez pas ou si ce n'est pas pertinent — l'impayé de ce mois-là baissera automatiquement dès l'enregistrement.</div>
+          <label>Date de la commande d'origine (papier) *</label>
+          <input type="date" value={dateOrigine} onChange={e=>setDateOrigine(e.target.value)} max={todayISO()} disabled={pasDeCommandeOrigine} required={!pasDeCommandeOrigine} />
+          {!pasDeCommandeOrigine && !dateOrigine && <div style={{fontSize:11.5, color:'var(--rust)', marginTop:4}}>Obligatoire — c'est elle qui fait baisser l'impayé du bon mois. Cochez la case ci-dessous si ce paiement ne règle aucune ancienne commande.</div>}
+          <label style={{display:'flex', alignItems:'center', gap:6, marginTop:8, fontWeight:400, fontSize:12.5}}>
+            <input type="checkbox" checked={pasDeCommandeOrigine} onChange={e=>{ setPasDeCommandeOrigine(e.target.checked); if(e.target.checked) setDateOrigine(''); }} style={{width:'auto'}} />
+            Ce paiement ne règle aucune ancienne commande papier (vente ponctuelle, avance…) — ne pas réduire d'impayé
+          </label>
         </div>
         <div>
           <label>Mode de paiement</label>
@@ -5672,7 +5681,7 @@ function EncaisserSansCommandeModal({ site: siteFixe, sites, updateSite, employe
           <label>Note (optionnel)</label>
           <input type="text" placeholder="Ex: solde commande papier avant lancement" value={note} onChange={e=>setNote(e.target.value)} />
         </div>
-        <button className="btn btn-rust" style={{width:'100%'}} disabled={!site || !montant || Number(montant)<=0 || !datePaiement} onClick={submit}>
+        <button className="btn btn-rust" style={{width:'100%'}} disabled={!site || !montant || Number(montant)<=0 || !datePaiement || (!pasDeCommandeOrigine && !dateOrigine)} onClick={submit}>
           Enregistrer l'encaissement
         </button>
       </div>
