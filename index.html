@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-11-2">
+<meta name="app-version" content="2026-10-17-4">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-11-2';
+  const APP_VERSION_ACTUELLE = '2026-10-17-4';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -943,6 +943,44 @@ function purgeCorbeille(dbData){
   return { ...dbData, sites, corbeilleSites };
 }
 
+// Fusionne les changements d'un appareil resté hors ligne avec la version fraîche du serveur, au lieu de
+// tout jeter dès qu'un autre appareil a sauvegardé entre-temps (ce qui faisait disparaître des commandes
+// déjà remises au client, avec reçu déjà imprimé). Toute la base (les 3 pressings + le compte gérant)
+// partage un seul numéro de révision Firebase : n'importe quelle sauvegarde, même sur un site totalement
+// différent, provoquait donc un conflit et l'abandon pur et simple du travail hors ligne.
+//
+// Principe : "base" est la dernière copie connue de CET appareil avant qu'il ne passe hors ligne (donc
+// avant ses propres modifications) ; "parsed" est cette même copie après ses modifications hors ligne ;
+// "fraiche" est la version actuelle du serveur (qui a pu évoluer ailleurs pendant la coupure). Pour
+// chaque pressing et chaque champ de premier niveau, on ne garde la version de cet appareil QUE s'il l'a
+// réellement modifiée (différente de "base") — sinon on garde la version fraîche du serveur, pour ne pas
+// écraser ce que d'autres appareils ont fait pendant ce temps. Seul un changement concurrent sur
+// EXACTEMENT le même pressing, au même moment, peut encore être écrasé par cette fusion.
+function fusionnerApresConflitHorsLigne(base, parsed, fraiche){
+  if(!base || !parsed || !fraiche) return fraiche;
+  const merged = { ...fraiche };
+  Object.keys(parsed).forEach(key => {
+    if(key === 'sites' || key === '_rev') return;
+    if(JSON.stringify(parsed[key]) !== JSON.stringify(base[key])) merged[key] = parsed[key];
+  });
+  const baseSites = base.sites || [];
+  const parsedSites = parsed.sites || [];
+  const fraicheSites = fraiche.sites || [];
+  const mergedSites = fraicheSites.map(fs => {
+    const bs = baseSites.find(s => s.id === fs.id);
+    const ps = parsedSites.find(s => s.id === fs.id);
+    if(ps && JSON.stringify(ps) !== JSON.stringify(bs)) return ps;
+    return fs;
+  });
+  // Un site créé hors ligne (absent du serveur ET de la base) est ajouté — cas rare (ajout de pressing
+  // par le gérant), mais on ne veut pas non plus le perdre silencieusement.
+  parsedSites.forEach(ps => {
+    if(!fraicheSites.some(fs => fs.id === ps.id)) mergedSites.push(ps);
+  });
+  merged.sites = mergedSites;
+  return merged;
+}
+
 /* ===================== APP ROOT ===================== */
 
 function App(){
@@ -994,18 +1032,41 @@ function App(){
             if(localDataEnAttente){
               try {
                 const parsed = JSON.parse(localDataEnAttente);
-                const revAttendue = typeof parsed._rev === 'number' ? parsed._rev : 0;
-                const res = await storageSetSiRevisionValide(DB_KEY, parsed, revAttendue);
+                // Dernière copie connue de CET appareil avant qu'il ne passe hors ligne (donc avant ses
+                // propres modifications) — sert de référence pour la fusion en cas de conflit ci-dessous.
+                let baseAvantHorsLigne = null;
+                try {
+                  const baseRaw = localStorage.getItem('maci-pressing-local');
+                  if(baseRaw) baseAvantHorsLigne = JSON.parse(baseRaw);
+                } catch(e){ /* pas de référence disponible : la fusion sera simplement ignorée */ }
+
+                let aEnvoyer = parsed;
+                let revAttendue = typeof parsed._rev === 'number' ? parsed._rev : 0;
+                let res = await storageSetSiRevisionValide(DB_KEY, aEnvoyer, revAttendue);
+                let essaiFusion = 0;
+                // Quelqu'un d'autre a sauvegardé pendant que cet appareil était hors ligne — ce n'est pas
+                // forcément sur le même pressing (toute la base partage un seul numéro de révision). Plutôt
+                // que de jeter tout le travail hors ligne de cet appareil, on fusionne pressing par pressing :
+                // on garde la version fraîche du serveur pour tout ce que cet appareil n'a pas touché, et on
+                // garde sa propre version uniquement pour ce qu'il a réellement modifié (son pressing, ses
+                // commandes, ses reçus déjà remis au client). On retente jusqu'à 5 fois en cas de nouveaux
+                // conflits rapprochés.
+                while(!res.ok && !res.erreurTechnique && res.fraiche && baseAvantHorsLigne && essaiFusion < 5){
+                  const fraichePurgee = purgeCorbeille(res.fraiche);
+                  aEnvoyer = fusionnerApresConflitHorsLigne(baseAvantHorsLigne, parsed, fraichePurgee);
+                  revAttendue = typeof fraichePurgee._rev === 'number' ? fraichePurgee._rev : 0;
+                  essaiFusion++;
+                  res = await storageSetSiRevisionValide(DB_KEY, aEnvoyer, revAttendue);
+                }
                 if(!res.ok){
                   if(res.erreurTechnique){
                     // Panne technique passagère (pas un conflit de données) : on retentera
                     // à la prochaine reconnexion plutôt que de bloquer l'appareil.
                     return;
                   }
-                  // Quelqu'un a déjà sauvegardé depuis que cet appareil est passé hors ligne —
-                  // ce n'est presque toujours pas un hasard : il était hors ligne depuis un
-                  // moment. On refuse d'écraser, on garde sa copie de côté pour vérification
-                  // manuelle au lieu de la perdre, et on adopte la version fraîche en ligne.
+                  // La fusion n'a pas pu se faire (pas de référence disponible pour comparer, ou conflits
+                  // répétés) : on garde la tentative de côté pour vérification manuelle au lieu de la
+                  // perdre silencieusement, et on adopte la version fraîche en ligne.
                   localStorage.setItem('maci-offline-db-conflit', localDataEnAttente);
                   localStorage.removeItem('maci-offline-db');
                   if(res.fraiche){
@@ -5721,6 +5782,16 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
     return diffHours <= 8;
   }
 
+  // Commande non récupérée depuis plus de 30 jours : le client l'a peut-être tout simplement oubliée.
+  // On la met en évidence pour rappeler à l'employé qu'il serait peut-être utile de relancer le client.
+  function joursDepuisDepot(cmd){
+    return Math.floor((Date.now() - new Date(cmd.dateCreation).getTime()) / 86400000);
+  }
+  function isAncienneNonRecuperee(cmd){
+    if(cmd.statut === 'Récupéré') return false;
+    return joursDepuisDepot(cmd) > 30;
+  }
+
   const monProfil = employeId ? site.employes.find(e=>e.id===employeId) : null;
   const isRepasseur = monProfil && monProfil.role === 'Repasseur';
   const isCaissier = !monProfil || monProfil.role !== 'Repasseur'; // gérant ou caissier
@@ -5728,12 +5799,28 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
   function deleteCommande(id){
     const cmd = site.commandes.find(c=>c.id===id);
     const entry = { id: uid('trash_'), type:'commande', label: cmd ? `Commande ${cmd.numero}` : 'Commande', data: cmd, dateSuppression: new Date().toISOString() };
-    updateSite({ ...site, commandes: site.commandes.filter(c=>c.id!==id), corbeille: [entry, ...(site.corbeille||[])] });
+    // Si c'est la toute dernière commande numérotée automatiquement par le système (aucune commande plus
+    // récente n'a encore été créée depuis), on recule le compteur pour que ce même numéro soit réutilisé
+    // par la prochaine commande au lieu d'être perdu — utile quand un employé se trompe et reprend tout
+    // de suite : le client garde le même numéro de reçu que celui déjà annoncé/imprimé.
+    let nouveauSeq = site.seq;
+    if(cmd && !cmd.numeroSaisiManuellement){
+      const m = (cmd.numero||'').match(/-(\d{4})$/);
+      if(m && Number(m[1]) === site.seq - 1) nouveauSeq = site.seq - 1;
+    }
+    updateSite({ ...site, commandes: site.commandes.filter(c=>c.id!==id), seq: nouveauSeq, corbeille: [entry, ...(site.corbeille||[])] });
   }
+
+  // Compteurs affichés dans le bandeau d'alerte en haut de page (visibles sans avoir à faire défiler
+  // la liste) et dans les boutons de filtre rapide ci-dessous.
+  const nbImpayees = site.commandes.filter(c => c.paiement !== 'paye').length;
+  const nbAnciennesNonRecuperees = site.commandes.filter(isAncienneNonRecuperee).length;
 
   const filtered = useMemo(() => {
     let list = [...site.commandes].sort((a,b)=> new Date(b.dateCreation) - new Date(a.dateCreation));
-    if(filter !== 'Toutes') list = list.filter(c => c.statut === filter);
+    if(filter === 'Impayées') list = list.filter(c => c.paiement !== 'paye');
+    else if(filter === 'Anciennes') list = list.filter(isAncienneNonRecuperee);
+    else if(filter !== 'Toutes') list = list.filter(c => c.statut === filter);
     if(search.trim()){
       const q = search.toLowerCase();
       list = list.filter(c => {
@@ -5858,12 +5945,42 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
   function togglePaiement(cmd){
     updateCommande({ ...cmd, paiement: cmd.paiement === 'paye' ? 'impaye' : 'paye' });
   }
-  function enregistrerPaiement(cmd, montant, mode){
+  async function enregistrerPaiement(cmd, montant, mode){
     const total = calcCommandeTotal(cmd, site.services);
     const nouvelAcompte = Math.min((Number(cmd.acompte)||0) + Number(montant), total);
+    const nouveauSolde = total - nouvelAcompte;
     const nouveauPaiement = { id: uid('pmt_'), montant: Number(montant), mode, date: new Date().toISOString(), employeId: employeId || null };
     const updated = { ...cmd, acompte: nouvelAcompte, paiement: nouvelAcompte >= total ? 'paye' : 'impaye', modePaiement: mode, paiements: [...(cmd.paiements||[]), nouveauPaiement] };
-    updateSite({ ...site, commandes: site.commandes.map(c => c.id === updated.id ? updated : c) });
+
+    const client = site.clients.find(c => c.id === cmd.clientId);
+
+    // Reçu de paiement à envoyer au client (montant versé maintenant + nouveau solde)
+    let msgPaiement = `🧾 Reçu de paiement — ${site.nom}\nCommande : ${cmd.numero}\n\nMontant versé aujourd'hui : ${fmtGNF(Number(montant))}\nMode : ${mode}\nTotal commande : ${fmtGNF(total)}\nTotal payé à ce jour : ${fmtGNF(nouvelAcompte)}\n${nouveauSolde > 0 ? `Solde restant : ${fmtGNF(nouveauSolde)}` : '✅ Commande entièrement payée'}\n\nMerci pour votre confiance !`;
+
+    // Générer un nouveau reçu PDF reflétant ce paiement et l'envoyer sur Firebase Storage (avec délai de sécurité de 8s)
+    try {
+      const pdfBlob = generateReceiptPDFBlob(updated, site, client, total, nouvelAcompte, nouveauSolde);
+      const timeout = new Promise((_, reject) => setTimeout(()=>reject(new Error('timeout')), 8000));
+      const url = await Promise.race([uploadReceiptPDF(site.id, updated, pdfBlob), timeout]);
+      msgPaiement += `\n\n📄 Reçu PDF : ${url}`;
+      updated.receiptPdfUrl = url;
+    } catch(e) {
+      console.error('Erreur génération/envoi du reçu PDF (paiement)', e);
+    }
+
+    const notif = client ? { id: uid('notif_'), clientId: client.id, message: msgPaiement, canal: client.canalPref || 'SMS', date: new Date().toISOString() } : null;
+
+    updateSite({
+      ...site,
+      commandes: site.commandes.map(c => c.id === updated.id ? updated : c),
+      notifications: notif ? [notif, ...site.notifications].slice(0,300) : site.notifications,
+    });
+
+    // Ouvrir WhatsApp automatiquement si le client a un numéro
+    if(client && client.tel){
+      const tel = client.tel.replace(/\D/g,'');
+      setTimeout(() => window.open(`https://wa.me/${tel}?text=${encodeURIComponent(msgPaiement)}`, '_blank'), 300);
+    }
   }
 
   return (
@@ -5880,6 +5997,21 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
         ) : null}
       />
 
+      {editable && (nbImpayees > 0 || nbAnciennesNonRecuperees > 0) && (
+        <div style={{display:'flex', gap:10, flexWrap:'wrap', marginBottom:14}}>
+          {nbImpayees > 0 && (
+            <button onClick={()=>setFilter('Impayées')} style={{display:'flex', alignItems:'center', gap:8, background:'var(--danger-light)', color:'var(--danger)', border:'1px solid var(--danger)', borderRadius:8, padding:'10px 14px', fontWeight:700, fontSize:13, cursor:'pointer'}}>
+              ⚠️ {nbImpayees} commande{nbImpayees>1?'s':''} impayée{nbImpayees>1?'s':''} — cliquer pour filtrer
+            </button>
+          )}
+          {nbAnciennesNonRecuperees > 0 && (
+            <button onClick={()=>setFilter('Anciennes')} style={{display:'flex', alignItems:'center', gap:8, background:'var(--warn-light)', color:'var(--warn)', border:'1px solid var(--warn)', borderRadius:8, padding:'10px 14px', fontWeight:700, fontSize:13, cursor:'pointer'}}>
+              ⏳ {nbAnciennesNonRecuperees} commande{nbAnciennesNonRecuperees>1?'s':''} non récupérée{nbAnciennesNonRecuperees>1?'s':''} depuis +30j — cliquer pour filtrer
+            </button>
+          )}
+        </div>
+      )}
+
       <div style={{display:'flex', gap:10, marginBottom:18, flexWrap:'wrap', alignItems:'center'}}>
         <div style={{position:'relative', flex:'1 1 240px', maxWidth:320}}>
           <input type="text" placeholder="Rechercher (n° ticket, client, téléphone)…" value={search} onChange={e=>setSearch(e.target.value)} style={{paddingLeft:34}}/>
@@ -5892,6 +6024,16 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
             borderColor: filter===s ? 'var(--pine)' : 'var(--line-strong)'
           }}>{s}</button>
         ))}
+        <button onClick={()=>setFilter('Impayées')} className="btn btn-sm" style={{
+          background: filter==='Impayées' ? 'var(--danger)' : 'transparent',
+          color: filter==='Impayées' ? 'var(--white)' : 'var(--danger)',
+          borderColor: 'var(--danger)'
+        }}>Impayées{nbImpayees>0?` (${nbImpayees})`:''}</button>
+        <button onClick={()=>setFilter('Anciennes')} className="btn btn-sm" style={{
+          background: filter==='Anciennes' ? 'var(--warn)' : 'transparent',
+          color: filter==='Anciennes' ? 'var(--white)' : 'var(--warn)',
+          borderColor: 'var(--warn)'
+        }}>+30j non récup.{nbAnciennesNonRecuperees>0?` (${nbAnciennesNonRecuperees})`:''}</button>
       </div>
 
       <div className="card" style={{overflow:'hidden'}}>
@@ -5918,7 +6060,7 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
               const client = site.clients.find(c => c.id === cmd.clientId);
               const total = calcCommandeTotal(cmd, site.services);
               return (
-                <tr key={cmd.id} className={isRdvCritical(cmd) ? 'blink-urgent' : undefined} style={{borderTop:'1px solid var(--line)', background: isRdvCritical(cmd) ? undefined : (isRdvUrgent(cmd) ? (cmd.statut === 'Prêt' ? 'var(--ok-light)' : 'var(--danger-light)') : undefined)}}>
+                <tr key={cmd.id} className={isRdvCritical(cmd) ? 'blink-urgent' : undefined} style={{borderTop:'1px solid var(--line)', background: isRdvCritical(cmd) ? undefined : (isRdvUrgent(cmd) ? (cmd.statut === 'Prêt' ? 'var(--ok-light)' : 'var(--danger-light)') : (isAncienneNonRecuperee(cmd) ? 'var(--warn-light)' : undefined))}}>
                   <td style={{...td}}>
                     <span className="mono" style={{fontWeight:600}}>{cmd.numero}</span>
                     {cmd.express && <span className="tag" style={{background:'var(--rust-light)', color:'var(--rust)', marginLeft:6}}>⚡ Express</span>}
@@ -5937,7 +6079,14 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
                     {cmd.modePaiement && <div style={{fontSize:11, color:'var(--steam)', marginTop:3}}>{cmd.modePaiement}</div>}
                   </td>
                   <td style={{...td, color:'var(--steam)'}}>{cmd.caissierEmpId ? ((site.employes.find(e=>e.id===cmd.caissierEmpId)||{}).nom || 'Employé supprimé') : 'Gérant'}</td>
-                  <td style={td}>{fmtDate(cmd.dateCreation.slice(0,10))}</td>
+                  <td style={td}>
+                    {fmtDate(cmd.dateCreation.slice(0,10))}
+                    {isAncienneNonRecuperee(cmd) && (
+                      <div style={{fontSize:11, color:'var(--warn)', fontWeight:700, marginTop:2}}>
+                        ⏳ Depuis {joursDepuisDepot(cmd)} j — rappeler le client ?
+                      </div>
+                    )}
+                  </td>
                   <td style={td}>
                     {cmd.dateRdvRecuperation ? (
                       <span style={{color: isRdvUrgent(cmd) ? 'var(--danger)' : 'var(--ink)', fontWeight: isRdvUrgent(cmd) ? 700 : 400}}>
@@ -5962,6 +6111,15 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
                             const msg = encodeURIComponent(`Bonjour ${client.nom}, votre commande ${cmd.numero} chez ${site.nom} est prete.${solde>0?` Solde a regler : ${fmtGNF(solde)}.`:' Entierement payee.'} Merci !`);
                             window.open(`https://wa.me/${tel}?text=${msg}`, '_blank');
                           }}>📱</button>
+                      )}
+                      {editable && client && client.tel && isAncienneNonRecuperee(cmd) && (
+                        <button className="btn btn-sm" title="Rappeler au client que ses articles l'attendent" style={{background:'var(--warn)', color:'white', borderColor:'var(--warn)', padding:'6px 10px'}}
+                          onClick={()=>{
+                            const tel = client.tel.replace(/\D/g,'');
+                            const solde = total - (Number(cmd.acompte)||0);
+                            const msg = encodeURIComponent(`Bonjour ${client.nom}, vos articles de la commande ${cmd.numero} chez ${site.nom}, deposes le ${fmtDate(cmd.dateCreation.slice(0,10))}, vous attendent toujours (${joursDepuisDepot(cmd)} jours).${solde>0?` Solde a regler : ${fmtGNF(solde)}.`:''} Merci de venir les recuperer dès que possible !`);
+                            window.open(`https://wa.me/${tel}?text=${msg}`, '_blank');
+                          }}>⏰</button>
                       )}
                       {editable && cmd.statut !== 'Récupéré' && (
                         // Le caissier ne peut PAS marquer "Prêt" — seul le repasseur peut
