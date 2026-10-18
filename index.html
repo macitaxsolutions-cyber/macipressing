@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-17-4">
+<meta name="app-version" content="2026-10-18-1">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-17-4';
+  const APP_VERSION_ACTUELLE = '2026-10-18-1';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -5811,10 +5811,17 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
     updateSite({ ...site, commandes: site.commandes.filter(c=>c.id!==id), seq: nouveauSeq, corbeille: [entry, ...(site.corbeille||[])] });
   }
 
-  // Compteurs affichés dans le bandeau d'alerte en haut de page (visibles sans avoir à faire défiler
-  // la liste) et dans les boutons de filtre rapide ci-dessous.
-  const nbImpayees = site.commandes.filter(c => c.paiement !== 'paye').length;
-  const nbAnciennesNonRecuperees = site.commandes.filter(isAncienneNonRecuperee).length;
+  // Compteurs et montants affichés dans le bandeau d'alerte en haut de page (visibles sans avoir à
+  // faire défiler la liste) et dans les boutons de filtre rapide ci-dessous. Pour les impayées, le
+  // montant est le solde encore dû (ce qu'il reste réellement à encaisser) ; pour les anciennes non
+  // récupérées, c'est la valeur totale des commandes concernées (même déjà payées, pour donner une
+  // idée de la valeur des articles qui dorment en boutique).
+  const commandesImpayees = site.commandes.filter(c => c.paiement !== 'paye');
+  const nbImpayees = commandesImpayees.length;
+  const montantImpayees = commandesImpayees.reduce((s,c) => s + (calcCommandeTotal(c, site.services) - (Number(c.acompte)||0)), 0);
+  const commandesAnciennesNonRecuperees = site.commandes.filter(isAncienneNonRecuperee);
+  const nbAnciennesNonRecuperees = commandesAnciennesNonRecuperees.length;
+  const montantAnciennesNonRecuperees = commandesAnciennesNonRecuperees.reduce((s,c) => s + calcCommandeTotal(c, site.services), 0);
 
   const filtered = useMemo(() => {
     let list = [...site.commandes].sort((a,b)=> new Date(b.dateCreation) - new Date(a.dateCreation));
@@ -6001,12 +6008,12 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
         <div style={{display:'flex', gap:10, flexWrap:'wrap', marginBottom:14}}>
           {nbImpayees > 0 && (
             <button onClick={()=>setFilter('Impayées')} style={{display:'flex', alignItems:'center', gap:8, background:'var(--danger-light)', color:'var(--danger)', border:'1px solid var(--danger)', borderRadius:8, padding:'10px 14px', fontWeight:700, fontSize:13, cursor:'pointer'}}>
-              ⚠️ {nbImpayees} commande{nbImpayees>1?'s':''} impayée{nbImpayees>1?'s':''} — cliquer pour filtrer
+              ⚠️ {nbImpayees} commande{nbImpayees>1?'s':''} impayée{nbImpayees>1?'s':''} — <span className="mono">{fmtGNF(montantImpayees)}</span> dû — cliquer pour filtrer
             </button>
           )}
           {nbAnciennesNonRecuperees > 0 && (
             <button onClick={()=>setFilter('Anciennes')} style={{display:'flex', alignItems:'center', gap:8, background:'var(--warn-light)', color:'var(--warn)', border:'1px solid var(--warn)', borderRadius:8, padding:'10px 14px', fontWeight:700, fontSize:13, cursor:'pointer'}}>
-              ⏳ {nbAnciennesNonRecuperees} commande{nbAnciennesNonRecuperees>1?'s':''} non récupérée{nbAnciennesNonRecuperees>1?'s':''} depuis +30j — cliquer pour filtrer
+              ⏳ {nbAnciennesNonRecuperees} commande{nbAnciennesNonRecuperees>1?'s':''} non récupérée{nbAnciennesNonRecuperees>1?'s':''} depuis +30j — <span className="mono">{fmtGNF(montantAnciennesNonRecuperees)}</span> de valeur — cliquer pour filtrer
             </button>
           )}
         </div>
