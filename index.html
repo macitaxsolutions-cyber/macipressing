@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-18-1">
+<meta name="app-version" content="2026-10-18-2">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-18-1';
+  const APP_VERSION_ACTUELLE = '2026-10-18-2';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -10977,7 +10977,7 @@ function RepassageApercuView({ site, updateSite, employeId }){
         </div>
       ) : repasseurIds.map(empId => {
         const p = parRepasseur[empId];
-        const articlesList = Object.entries(p.articles);
+        const articlesList = Object.entries(p.articles).sort((a,b) => b[1] - a[1]);
         const modeSel = modeChoisi[empId] || 'Espèces';
         return (
           <div key={empId} className="card" style={{padding:'1.25rem', marginBottom:14}}>
