@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-18-2">
+<meta name="app-version" content="2026-10-18-3">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-18-2';
+  const APP_VERSION_ACTUELLE = '2026-10-18-3';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -4083,6 +4083,8 @@ function EncaissementsDecaissementsGlobalView({ db, updateSite }){
   const [periode, setPeriode] = useState('jour');
   const [moisChoisi, setMoisChoisi] = useState(todayISO().slice(0,7));
   const [anneeChoisie, setAnneeChoisie] = useState(Number(todayISO().slice(0,4)));
+  const [intervalleDebut, setIntervalleDebut] = useState(todayISO());
+  const [intervalleFin, setIntervalleFin] = useState(todayISO());
   const [siteOuvert, setSiteOuvert] = useState(null); // pressing dont on affiche le détail par employé
   const [showEncaisserSansCommande, setShowEncaisserSansCommande] = useState(false);
 
@@ -4102,6 +4104,7 @@ function EncaissementsDecaissementsGlobalView({ db, updateSite }){
     if(periode === 'jour') return d === today;
     if(periode === 'semaine') return d >= week.start && d <= week.end;
     if(periode === 'mois') return d.slice(0,7) === moisChoisi;
+    if(periode === 'intervalle') return d >= intervalleDebut && d <= (intervalleFin || intervalleDebut);
     return d.slice(0,4) === String(anneeChoisie);
   }
 
@@ -4175,7 +4178,7 @@ function EncaissementsDecaissementsGlobalView({ db, updateSite }){
     }
 
     return { especes, orangeMoney, depenses, impayes };
-  }, [db.sites, periode, moisChoisi, anneeChoisie, today]);
+  }, [db.sites, periode, moisChoisi, anneeChoisie, intervalleDebut, intervalleFin, today]);
 
   const anneesDisponibles = useMemo(() => {
     const arr = [];
@@ -4184,7 +4187,7 @@ function EncaissementsDecaissementsGlobalView({ db, updateSite }){
     return arr;
   }, [today]);
 
-  const periodeLabel = periode==='jour' ? "Aujourd'hui" : periode==='semaine' ? 'Cette semaine' : periode==='mois' ? 'Ce mois' : periode==='annee' ? 'Cette année' : 'À ce jour (tout confondu)';
+  const periodeLabel = periode==='jour' ? "Aujourd'hui" : periode==='semaine' ? 'Cette semaine' : periode==='mois' ? 'Ce mois' : periode==='annee' ? 'Cette année' : periode==='intervalle' ? `Du ${fmtDate(intervalleDebut)} au ${fmtDate(intervalleFin||intervalleDebut)}` : 'À ce jour (tout confondu)';
   const totalPercu = totaux.especes + totaux.orangeMoney;
   const netPercu = totalPercu - totaux.depenses;
 
@@ -4197,7 +4200,7 @@ function EncaissementsDecaissementsGlobalView({ db, updateSite }){
       />
 
       <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
-        {[{k:'jour',l:"Aujourd'hui"},{k:'semaine',l:'Cette semaine'},{k:'mois',l:'Mois'},{k:'annee',l:'Année'},{k:'total',l:'À ce jour'}].map(opt => (
+        {[{k:'jour',l:"Aujourd'hui"},{k:'semaine',l:'Cette semaine'},{k:'mois',l:'Mois'},{k:'annee',l:'Année'},{k:'intervalle',l:'Intervalle'},{k:'total',l:'À ce jour'}].map(opt => (
           <button key={opt.k} className="btn btn-sm" onClick={()=>setPeriode(opt.k)}
             style={{background:periode===opt.k?'var(--pine)':'transparent', color:periode===opt.k?'var(--white)':'var(--ink)', borderColor:periode===opt.k?'var(--pine)':'var(--line-strong)'}}>
             {opt.l}
@@ -4210,6 +4213,14 @@ function EncaissementsDecaissementsGlobalView({ db, updateSite }){
           <select value={anneeChoisie} onChange={e=>setAnneeChoisie(Number(e.target.value))} style={{width:'auto', minWidth:100}}>
             {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
           </select>
+        )}
+        {periode === 'intervalle' && (
+          <span style={{display:'flex', alignItems:'center', gap:8}}>
+            <span style={{fontSize:12.5}}>du</span>
+            <input type="date" value={intervalleDebut} max={intervalleFin || today} onChange={e=>setIntervalleDebut(e.target.value)} style={{width:'auto'}} />
+            <span style={{fontSize:12.5}}>au</span>
+            <input type="date" value={intervalleFin} min={intervalleDebut} max={today} onChange={e=>setIntervalleFin(e.target.value)} style={{width:'auto'}} />
+          </span>
         )}
       </div>
 
