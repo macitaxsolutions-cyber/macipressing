@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-18-3">
+<meta name="app-version" content="2026-10-18-4">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-18-3';
+  const APP_VERSION_ACTUELLE = '2026-10-18-4';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -3946,16 +3946,59 @@ function DepensesPropresActeursView({ db, setDb }){
 
 function DetailMensuelConsolideView({ db }){
   const currentYear = Number(todayISO().slice(0,4));
+  const today = todayISO();
   const anneesDisponibles = useMemo(() => {
     const arr = [];
     for(let y = currentYear; y >= ANNEE_DEBUT_APP - 10; y--) arr.push(y);
     return arr;
   }, [currentYear]);
 
+  const [periode, setPeriode] = useState('annee'); // 'mois' | 'annee' | 'intervalle' | 'total'
   const [annee, setAnnee] = useState(currentYear);
+  const [moisChoisi, setMoisChoisi] = useState(today.slice(0,7));
+  const [intervalleDebut, setIntervalleDebut] = useState(`${currentYear}-01-01`);
+  const [intervalleFin, setIntervalleFin] = useState(today);
   const [moisOuvertConsolide, setMoisOuvertConsolide] = useState(null);
 
-  const donneesParMois = useMemo(() => calculerDonneesMensuellesMultiSites(db.sites, annee), [db, annee]);
+  // Liste des (année, mois) à inclure selon le mode choisi — cette page est fondamentalement construite
+  // mois par mois (impayés, saisies manuelles...), donc même « Intervalle » et « À ce jour » agrègent des
+  // mois entiers plutôt que des jours exacts (voir avertissement affiché pour « Intervalle » ci-dessous).
+  const anneeMoisListe = useMemo(() => {
+    if(periode === 'mois'){
+      const [a,m] = moisChoisi.split('-').map(Number);
+      return [{annee:a, mois:m}];
+    }
+    if(periode === 'intervalle'){
+      const fin = intervalleFin || intervalleDebut;
+      const [ad, md] = intervalleDebut.slice(0,7).split('-').map(Number);
+      const [af, mf] = fin.slice(0,7).split('-').map(Number);
+      const liste = [];
+      let a = ad, m = md;
+      while(a < af || (a === af && m <= mf)){
+        liste.push({annee:a, mois:m});
+        m++; if(m>12){ m=1; a++; }
+      }
+      return liste;
+    }
+    if(periode === 'total'){
+      const liste = [];
+      for(let a=ANNEE_DEBUT_APP-3; a<=currentYear; a++){
+        for(let m=1; m<=12; m++) liste.push({annee:a, mois:m});
+      }
+      return liste;
+    }
+    return Array.from({length:12}, (_,i) => ({ annee, mois: i+1 })); // 'annee'
+  }, [periode, moisChoisi, intervalleDebut, intervalleFin, annee, currentYear]);
+
+  // Regroupe les mois demandés par année pour ne lancer le calcul (une passe sur toutes les commandes/
+  // dépenses de tous les pressings) qu'une seule fois par année concernée.
+  const donneesParMois = useMemo(() => {
+    const parAnnee = {};
+    anneeMoisListe.forEach(({annee:a}) => {
+      if(!parAnnee[a]) parAnnee[a] = calculerDonneesMensuellesMultiSites(db.sites, a);
+    });
+    return anneeMoisListe.map(({annee:a, mois:m}) => ({ ...parAnnee[a][m-1], annee: a, labelAvecAnnee: `${parAnnee[a][m-1].label} ${a}` }));
+  }, [db.sites, anneeMoisListe]);
 
   const recetteBrute = donneesParMois.reduce((s,m)=>s+m.recetteBrute,0);
   const depensesAnnee = donneesParMois.reduce((s,m)=>s+m.depenses,0);
@@ -3963,18 +4006,48 @@ function DetailMensuelConsolideView({ db }){
   const impayesReelAnnee = donneesParMois.reduce((s,m)=>s+(m.impayesReel||0),0);
   const netPercuAnnee = donneesParMois.reduce((s,m)=>s+(m.netPercu||0),0);
 
+  const periodeLabel = periode === 'annee' ? `Année ${annee}`
+    : periode === 'mois' ? `${donneesParMois[0] ? donneesParMois[0].labelAvecAnnee : moisChoisi}`
+    : periode === 'intervalle' ? `De ${donneesParMois[0] ? donneesParMois[0].labelAvecAnnee : ''} à ${donneesParMois[donneesParMois.length-1] ? donneesParMois[donneesParMois.length-1].labelAvecAnnee : ''}`
+    : 'À ce jour (depuis le début)';
+
   return (
     <div>
-      <PageHeader title="Détail mensuel — synthèse de tous les pressings" subtitle={`Année ${annee}`}
-        right={
+      <PageHeader title="Détail mensuel — synthèse de tous les pressings" subtitle={periodeLabel} />
+
+      <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
+        {[{k:'mois',l:'Mois'},{k:'annee',l:'Année'},{k:'intervalle',l:'Intervalle'},{k:'total',l:'À ce jour'}].map(opt => (
+          <button key={opt.k} className="btn btn-sm" onClick={()=>setPeriode(opt.k)}
+            style={{background:periode===opt.k?'var(--pine)':'transparent', color:periode===opt.k?'var(--white)':'var(--ink)', borderColor:periode===opt.k?'var(--pine)':'var(--line-strong)'}}>
+            {opt.l}
+          </button>
+        ))}
+        {periode === 'mois' && (
+          <input type="month" value={moisChoisi} onChange={e=>setMoisChoisi(e.target.value)} style={{width:'auto'}} />
+        )}
+        {periode === 'annee' && (
           <select value={annee} onChange={e=>setAnnee(Number(e.target.value))} style={{width:'auto', minWidth:100}}>
             {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
           </select>
-        } />
+        )}
+        {periode === 'intervalle' && (
+          <span style={{display:'flex', alignItems:'center', gap:8}}>
+            <span style={{fontSize:12.5}}>du</span>
+            <input type="date" value={intervalleDebut} max={intervalleFin || today} onChange={e=>setIntervalleDebut(e.target.value)} style={{width:'auto'}} />
+            <span style={{fontSize:12.5}}>au</span>
+            <input type="date" value={intervalleFin} min={intervalleDebut} max={today} onChange={e=>setIntervalleFin(e.target.value)} style={{width:'auto'}} />
+          </span>
+        )}
+      </div>
 
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
         « Dépenses entreprise » = dépenses des pressings (fournitures, factures, salaires...). « Dépenses propres » = dépenses personnelles saisies par chaque caissier. « Net perçu » = Espèces + Orange Money réellement reçus, moins les dépenses entreprise, tous pressings confondus. Lecture seule — pour corriger un chiffre, modifiez-le directement dans le Détail mensuel du pressing concerné.
       </p>
+      {(periode === 'intervalle' || periode === 'total') && (
+        <p style={{fontSize:12.5, background:'var(--warn-light)', color:'var(--warn)', padding:'8px 12px', borderRadius:8, margin:'0 0 14px', lineHeight:1.5}}>
+          ⚠️ Cette page calcule mois par mois (impayés, saisies manuelles...) : « {periode === 'intervalle' ? 'Intervalle' : 'À ce jour'} » additionne donc des mois ENTIERS touchés par la période choisie, pas des jours exacts. Pour un montant exact jour par jour, utilisez plutôt « Mes encaissements et décaissements ».
+        </p>
+      )}
       <p style={{fontSize:12.5, background:'var(--pine-light)', color:'var(--pine)', padding:'8px 12px', borderRadius:8, margin:'0 0 14px', lineHeight:1.5}}>
         🔎 Vous cherchez le détail saisi par chaque caissier ? Cliquez « Détail par caissier » sur une ligne ci-dessous, ou allez dans <strong>« Mes pressings »</strong>, ouvrez le pressing concerné, puis son onglet <strong>« Détail mensuel »</strong>.
       </p>
@@ -4014,10 +4087,10 @@ function DetailMensuelConsolideView({ db }){
           </thead>
           <tbody>
             {donneesParMois.map(m => (
-              <React.Fragment key={m.mois}>
+              <React.Fragment key={`${m.annee}-${m.mois}`}>
                 <tr style={{borderTop:'1px solid var(--line)'}}>
                   <td style={{...td, textTransform:'capitalize', fontWeight:600}}>
-                    {m.label}
+                    {periode === 'annee' ? m.label : m.labelAvecAnnee}
                     {m.manuel && <span className="tag" style={{fontSize:9, marginLeft:6, background:'var(--warn-light)', color:'var(--warn)'}}>Manuel</span>}
                   </td>
                   <td style={td} className="mono">{fmtGNF(m.recetteBrute)}</td>
@@ -4029,13 +4102,13 @@ function DetailMensuelConsolideView({ db }){
                   <td style={{...td, fontWeight:700, color: m.netPercu<0?'var(--danger)':'var(--ink)'}} className="mono">{fmtGNF(m.netPercu)}</td>
                   <td style={{...td, textAlign:'right'}}>
                     {m.parEmployeParSite.length > 0 && (
-                      <button className="btn btn-ghost btn-sm" onClick={()=>setMoisOuvertConsolide(moisOuvertConsolide===m.mois?null:m.mois)}>
-                        {moisOuvertConsolide===m.mois ? 'Fermer' : 'Détail par caissier'}
+                      <button className="btn btn-ghost btn-sm" onClick={()=>setMoisOuvertConsolide(moisOuvertConsolide===`${m.annee}-${m.mois}`?null:`${m.annee}-${m.mois}`)}>
+                        {moisOuvertConsolide===`${m.annee}-${m.mois}` ? 'Fermer' : 'Détail par caissier'}
                       </button>
                     )}
                   </td>
                 </tr>
-                {moisOuvertConsolide === m.mois && m.parEmployeParSite.length > 0 && (
+                {moisOuvertConsolide === `${m.annee}-${m.mois}` && m.parEmployeParSite.length > 0 && (
                   <tr style={{background:'var(--paper-2)'}}>
                     <td colSpan={9} style={{padding:'10px 14px'}}>
                       {m.parEmployeParSite.map(({siteNom, parEmploye}) => (
@@ -4060,7 +4133,7 @@ function DetailMensuelConsolideView({ db }){
               </React.Fragment>
             ))}
             <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
-              <td style={{...td, fontWeight:700}}>Total {annee}</td>
+              <td style={{...td, fontWeight:700}}>Total {periode === 'annee' ? annee : periodeLabel}</td>
               <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(recetteBrute)}</td>
               <td style={{...td, fontWeight:700}} className="mono">{impayesReelAnnee>0?fmtGNF(impayesReelAnnee):'—'}</td>
               <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(depensesAnnee)}</td>
