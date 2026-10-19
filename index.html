@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-19-5">
+<meta name="app-version" content="2026-10-19-7">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-19-5';
+  const APP_VERSION_ACTUELLE = '2026-10-19-7';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -13059,7 +13059,7 @@ function RepasseurView({ site, updateSite, employeId }){
 
 /* ===================== DETAIL MENSUEL (espace caissier — vue par site) ===================== */
 
-function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave, montantRecu, acteurs, annee }){
+function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave, montantRecu, acteurs, annee, afficherAnnee }){
   const mesValeurs = (valeurs.parEmploye && valeurs.parEmploye[employeId]) || { recetteBrute: 0, depenses: 0, impayes: 0, depensesPropres: 0, depensesPropresDescription: '', depensesPropresBeneficiaire: '', depensesPropresDate: '', montantRecuEspeces: 0, montantRecuOrangeMoney: 0 };
   const acteurAutoMatch = useMemo(() => (acteurs||[]).find(p=>nomsCorrespondent(monNom, p.nom)), [acteurs, monNom]);
   const moisStr = String(valeurs.mois).padStart(2,'0');
@@ -13111,7 +13111,7 @@ function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave, monta
     <React.Fragment>
       <tr style={{borderTop:'1px solid var(--line)'}}>
         <td style={{...td, textTransform:'capitalize', fontWeight:600, whiteSpace:'nowrap'}}>
-          {valeurs.label}
+          {afficherAnnee ? `${valeurs.label} ${annee}` : valeurs.label}
           {valeurs.manuel && <span className="tag" style={{fontSize:9, marginLeft:6, background:'var(--warn-light)', color:'var(--warn)'}}>Manuel</span>}
         </td>
         <td style={td} className="mono">{fmtGNF(valeurs.recetteBrute)}</td>
@@ -13439,65 +13439,127 @@ function getEmpNomMultiSites(sites, empId){
 function DetailMensuelSiteView({ site, updateSite, employeId, db }){
   const acteursBeneficiaires = useMemo(() => partsActuelles(db).filter(p => p.nom !== 'Conservation du Capital Fixe'), [db]);
   const currentYear = Number(todayISO().slice(0,4));
+  const today = todayISO();
   const anneesDisponibles = useMemo(() => {
     const arr = [];
     for(let y = currentYear; y >= ANNEE_DEBUT_APP - 3; y--) arr.push(y);
     return arr;
   }, [currentYear]);
+
+  // Même sélecteur de période que « Détail mensuel — synthèse de tous les pressings » côté gérant (Mois /
+  // Année / Intervalle / À ce jour), mais filtré sur ce seul pressing et ce seul employé.
+  const [periode, setPeriode] = useState('annee'); // 'mois' | 'annee' | 'intervalle' | 'total'
   const [annee, setAnnee] = useState(currentYear);
+  const [moisChoisi, setMoisChoisi] = useState(today.slice(0,7));
+  const [intervalleDebut, setIntervalleDebut] = useState(`${currentYear}-01-01`);
+  const [intervalleFin, setIntervalleFin] = useState(today);
 
   const monProfil = site.employes.find(e=>e.id===employeId);
   const monNom = monProfil ? monProfil.nom : 'Moi';
 
-  const donneesParMois = useMemo(() => calculerDonneesMensuellesEmploye(site, annee, employeId), [site, annee, employeId]);
+  // Liste des (année, mois) à inclure selon le mode choisi — identique à la logique du gérant.
+  const anneeMoisListe = useMemo(() => {
+    if(periode === 'mois'){
+      const [a,m] = moisChoisi.split('-').map(Number);
+      return [{annee:a, mois:m}];
+    }
+    if(periode === 'intervalle'){
+      const fin = intervalleFin || intervalleDebut;
+      const [ad, md] = intervalleDebut.slice(0,7).split('-').map(Number);
+      const [af, mf] = fin.slice(0,7).split('-').map(Number);
+      const liste = [];
+      let a = ad, m = md;
+      while(a < af || (a === af && m <= mf)){
+        liste.push({annee:a, mois:m});
+        m++; if(m>12){ m=1; a++; }
+      }
+      return liste;
+    }
+    if(periode === 'total'){
+      const liste = [];
+      for(let a=ANNEE_DEBUT_APP - 3; a<=currentYear; a++){
+        const finMois = a === currentYear ? Number(today.slice(5,7)) : 12;
+        for(let m=1; m<=finMois; m++) liste.push({annee:a, mois:m});
+      }
+      return liste;
+    }
+    return Array.from({length:12}, (_,i) => ({ annee, mois: i+1 })); // 'annee'
+  }, [periode, moisChoisi, intervalleDebut, intervalleFin, annee, currentYear, today]);
 
-  // Montant réellement encaissé par CET employé (caissier), par mois, séparé Espèces / Orange Money
-  const montantRecuParMois = useMemo(() => {
-    const acc = {};
-    (site.commandes||[]).forEach(c => {
-      getPaiementsCommande(c).forEach(pmt => {
-        if(!pmt.date) return;
-        const employeAttribue = pmt.employeId != null ? pmt.employeId : (c.caissierEmpId || null);
-        if(employeAttribue !== employeId) return;
-        const mois = pmt.date.slice(0,7);
-        if(Number(mois.slice(0,4)) !== annee) return;
-        if(!acc[mois]) acc[mois] = { especes: 0, orangeMoney: 0 };
-        if(pmt.mode === 'Orange Money') acc[mois].orangeMoney += Number(pmt.montant);
-        else acc[mois].especes += Number(pmt.montant);
-      });
+  // Ne lance le calcul (une passe sur les commandes/dépenses de CE pressing) qu'une seule fois par année
+  // concernée, même si plusieurs mois de cette année sont affichés.
+  const donneesParMois = useMemo(() => {
+    const parAnnee = {};
+    anneeMoisListe.forEach(({annee:a}) => {
+      if(!parAnnee[a]) parAnnee[a] = calculerDonneesMensuellesEmploye(site, a, employeId);
     });
-    return acc;
-  }, [site, employeId, annee]);
+    return anneeMoisListe.map(({annee:a, mois:m}) => ({ ...parAnnee[a][m-1], annee: a, labelAvecAnnee: `${parAnnee[a][m-1].label} ${a}` }));
+  }, [site, employeId, anneeMoisListe]);
 
-  function saveMois(m, valeurs){
+  function saveMois(anneeRow, m, valeurs){
     const manuelActuel = site.detailMensuelManuel || {};
-    const anneeActuelle = manuelActuel[annee] || {};
+    const anneeActuelle = manuelActuel[anneeRow] || {};
     const moisNormalise = normaliserMoisManuel(anneeActuelle[m]) || {};
     const nextMois = { ...moisNormalise, [employeId]: valeurs };
     const nextAnnee = { ...anneeActuelle, [m]: nextMois };
-    updateSite({ ...site, detailMensuelManuel: { ...manuelActuel, [annee]: nextAnnee } });
+    updateSite({ ...site, detailMensuelManuel: { ...manuelActuel, [anneeRow]: nextAnnee } });
   }
 
   const totalBrute = donneesParMois.reduce((s,m)=>s+m.recetteBrute,0);
-  const totalImpayes = donneesParMois.reduce((s,m)=>s+m.impayes,0);
   const totalDepenses = donneesParMois.reduce((s,m)=>s+m.depenses,0);
   const totalDepensesPropres = donneesParMois.reduce((s,m)=>s+m.depensesPropres,0);
-  const totalNet = donneesParMois.reduce((s,m)=>s+m.net,0);
-  const totalNetPercu = donneesParMois.reduce((s,m)=>s+m.netPercu,0);
-  const totalImpayesReel = donneesParMois.reduce((s,m)=>s+m.impayesReel,0);
+  const totalNetPercu = donneesParMois.reduce((s,m)=>s+(m.netPercu||0),0);
+  const totalImpayesReel = donneesParMois.reduce((s,m)=>s+(m.impayesReel||0),0);
+  const totalEspeces = donneesParMois.reduce((s,m)=>s+(m.montantRecuEspeces||0),0);
+  const totalOrangeMoney = donneesParMois.reduce((s,m)=>s+(m.montantRecuOrangeMoney||0),0);
+  // Même principe que le tableau « Total par employé » du gérant (Détail mensuel — synthèse de tous les
+  // pressings) : ce Net perçu-ci retire AUSSI les dépenses propres (pas seulement les dépenses entreprise
+  // comme le « Net perçu » global ci-dessus) — si vous avez pris de l'argent pour vous-même sur la caisse,
+  // ça réduit votre net perçu à vous.
+  const monNetPercuCorrige = totalEspeces + totalOrangeMoney - totalDepenses - totalDepensesPropres;
+
+  const periodeLabel = periode === 'annee' ? `Année ${annee}`
+    : periode === 'mois' ? `${donneesParMois[0] ? donneesParMois[0].labelAvecAnnee : moisChoisi}`
+    : periode === 'intervalle' ? `De ${donneesParMois[0] ? donneesParMois[0].labelAvecAnnee : ''} à ${donneesParMois[donneesParMois.length-1] ? donneesParMois[donneesParMois.length-1].labelAvecAnnee : ''}`
+    : 'À ce jour (depuis le début)';
 
   return (
     <div>
-      <PageHeader title="Détail mensuel" subtitle={`${site.nom} — chiffre d'affaires et dépenses par mois`}
-        right={
-          <select value={annee} onChange={e=>setAnnee(Number(e.target.value))} style={{width:'auto', minWidth:120}}>
+      <PageHeader title="Détail mensuel" subtitle={`${site.nom} — ${monNom} — vos chiffres, mois par mois`} />
+
+      <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
+        {[{k:'mois',l:'Mois'},{k:'annee',l:'Année'},{k:'intervalle',l:'Intervalle'},{k:'total',l:'À ce jour'}].map(opt => (
+          <button key={opt.k} className="btn btn-sm" onClick={()=>setPeriode(opt.k)}
+            style={{background:periode===opt.k?'var(--pine)':'transparent', color:periode===opt.k?'var(--white)':'var(--ink)', borderColor:periode===opt.k?'var(--pine)':'var(--line-strong)'}}>
+            {opt.l}
+          </button>
+        ))}
+        {periode === 'mois' && (
+          <input type="month" value={moisChoisi} onChange={e=>setMoisChoisi(e.target.value)} style={{width:'auto'}} />
+        )}
+        {periode === 'annee' && (
+          <select value={annee} onChange={e=>setAnnee(Number(e.target.value))} style={{width:'auto', minWidth:100}}>
             {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
           </select>
-        } />
+        )}
+        {periode === 'intervalle' && (
+          <span style={{display:'flex', alignItems:'center', gap:8}}>
+            <span style={{fontSize:12.5}}>du</span>
+            <input type="date" value={intervalleDebut} max={intervalleFin || today} onChange={e=>setIntervalleDebut(e.target.value)} style={{width:'auto'}} />
+            <span style={{fontSize:12.5}}>au</span>
+            <input type="date" value={intervalleFin} min={intervalleDebut} max={today} onChange={e=>setIntervalleFin(e.target.value)} style={{width:'auto'}} />
+          </span>
+        )}
+      </div>
 
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
         Les mois avant <strong>septembre 2026</strong> ont leur recette brute, impayés et dépenses entreprise modifiables. Les <strong>dépenses propres</strong> (personnelles) restent modifiables pour tous les mois. Cliquez « Mes données » pour entrer vos chiffres — votre saisie s'ajoute à celle des autres caissiers, elle ne la remplace jamais. « Net perçu » = Espèces + Orange Money réellement reçus, moins les dépenses entreprise.
       </p>
+      {(periode === 'intervalle' || periode === 'total') && (
+        <p style={{fontSize:12.5, background:'var(--warn-light)', color:'var(--warn)', padding:'8px 12px', borderRadius:8, margin:'0 0 14px', lineHeight:1.5}}>
+          ⚠️ Cette page calcule mois par mois : « {periode === 'intervalle' ? 'Intervalle' : 'À ce jour'} » additionne donc des mois ENTIERS touchés par la période choisie, pas des jours exacts.
+        </p>
+      )}
 
       <div style={{display:'grid', gridTemplateColumns:'repeat(8, 1fr)', gap:8, marginBottom:24}}>
         {[
@@ -13516,7 +13578,7 @@ function DetailMensuelSiteView({ site, updateSite, employeId, db }){
           </div>
         ))}
       </div>
-      <p style={{fontSize:11, color:'var(--steam)', margin:'-16px 0 24px'}}>{annee}</p>
+      <p style={{fontSize:11, color:'var(--steam)', margin:'-16px 0 24px'}}>{periodeLabel}</p>
 
       <div className="card" style={{overflow:'hidden'}}>
         <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
@@ -13535,10 +13597,13 @@ function DetailMensuelSiteView({ site, updateSite, employeId, db }){
           </thead>
           <tbody>
             {donneesParMois.map(m => (
-              <MoisRowCaissier key={m.mois} valeurs={m} avantSeuil={m.avantSeuil} employeId={employeId} monNom={monNom} onSave={saveMois} montantRecu={montantRecuParMois[m.mois] || {especes:0, orangeMoney:0}} acteurs={acteursBeneficiaires} annee={annee} />
+              <MoisRowCaissier key={`${m.annee}-${m.mois}`} valeurs={m} avantSeuil={m.avantSeuil} employeId={employeId} monNom={monNom}
+                onSave={(mois, valeurs)=>saveMois(m.annee, mois, valeurs)}
+                montantRecu={{especes: m.montantRecuEspeces||0, orangeMoney: m.montantRecuOrangeMoney||0}}
+                acteurs={acteursBeneficiaires} annee={m.annee} afficherAnnee={periode !== 'annee'} />
             ))}
             <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
-              <td style={{...td, fontWeight:700}}>Total {annee}</td>
+              <td style={{...td, fontWeight:700}}>Total {periode === 'annee' ? annee : periodeLabel}</td>
               <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalBrute)}</td>
               <td style={{...td, fontWeight:700}} className="mono">{totalImpayesReel>0?fmtGNF(totalImpayesReel):'—'}</td>
               <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalDepenses)}</td>
@@ -13550,6 +13615,58 @@ function DetailMensuelSiteView({ site, updateSite, employeId, db }){
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <h2 style={{fontSize:16, color:'var(--ink)', margin:'28px 0 10px'}}>Mon total — {periodeLabel}</h2>
+      <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
+        Contrairement au « Net perçu » ci-dessus (qui ne retire que les dépenses entreprise), le Net perçu ci-dessous retire AUSSI vos dépenses propres : si vous avez pris de l'argent pour vous-même sur la caisse, ce montant réduit votre net perçu.
+      </p>
+      <div className="card" style={{padding:'1.1rem 1.25rem', marginBottom:24}}>
+        <div style={{fontWeight:700, fontSize:14.5, marginBottom:10}}>{site.nom} — {monNom}</div>
+        <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:8, marginBottom:14}}>
+          <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+            <span style={{fontSize:12.5, color:'var(--steam)'}}>Espèces</span>
+            <span className="mono" style={{fontSize:13, fontWeight:600}}>{fmtGNF(totalEspeces)}</span>
+          </div>
+          <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+            <span style={{fontSize:12.5, color:'var(--steam)'}}>Orange Money</span>
+            <span className="mono" style={{fontSize:13, fontWeight:600}}>{fmtGNF(totalOrangeMoney)}</span>
+          </div>
+          <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+            <span style={{fontSize:12.5, color:'var(--steam)'}}>Dépenses (entreprise + propres)</span>
+            <span className="mono" style={{fontSize:13, fontWeight:600, color:'var(--danger)'}}>{fmtGNF(totalDepenses + totalDepensesPropres)}</span>
+          </div>
+          <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+            <span style={{fontSize:12.5, color:'var(--steam)'}}>Net perçu</span>
+            <span className="mono" style={{fontSize:13, fontWeight:600, color: monNetPercuCorrige<0?'var(--danger)':'var(--ink)'}}>{fmtGNF(monNetPercuCorrige)}</span>
+          </div>
+        </div>
+        <div style={{overflowX:'auto'}}>
+          <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
+            <thead>
+              <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                <th style={th}>Employé</th>
+                <th style={th}>Espèces</th>
+                <th style={th}>Orange Money</th>
+                <th style={th}>Total encaissé</th>
+                <th style={th}>Dép. entreprise</th>
+                <th style={th}>Dép. propres</th>
+                <th style={th}>Net perçu</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style={{borderTop:'1px solid var(--line)'}}>
+                <td style={{...td, fontWeight:600}}>{monNom}</td>
+                <td style={td} className="mono">{fmtGNF(totalEspeces)}</td>
+                <td style={td} className="mono">{fmtGNF(totalOrangeMoney)}</td>
+                <td style={{...td, fontWeight:600, color:'var(--pine)'}} className="mono">{fmtGNF(totalEspeces + totalOrangeMoney)}</td>
+                <td style={{...td, color:'var(--danger)'}} className="mono">{fmtGNF(totalDepenses)}</td>
+                <td style={{...td, color:'var(--rust)'}} className="mono">{fmtGNF(totalDepensesPropres)}</td>
+                <td style={{...td, fontWeight:600, color: monNetPercuCorrige<0?'var(--danger)':'var(--ink)'}} className="mono">{fmtGNF(monNetPercuCorrige)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
