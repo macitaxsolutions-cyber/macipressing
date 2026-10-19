@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-18-4">
+<meta name="app-version" content="2026-10-19-5">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-18-4';
+  const APP_VERSION_ACTUELLE = '2026-10-19-5';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -2461,6 +2461,44 @@ function validerReceptionDistribution(db, cle, nomActeur, valideParNom){
   if(!entreeActuelle || !entreeActuelle.paye) return db;
   return { ...db, distributionPaiements: { ...(db.distributionPaiements||{}), [cle]: { ...existant, [nomActeur]: { ...entreeActuelle, valide: true, dateValidation: new Date().toISOString(), valideParNom } } } };
 }
+// Annule une confirmation de réception faite par erreur (ex: employé a cliqué « J'ai bien reçu » trop
+// vite) — réservé au gérant. Remet la ligne à l'état « payé mais pas encore confirmé », sans toucher au
+// paiement lui-même (montant, mode, date, payeParNom restent inchangés).
+function annulerValidationDistribution(db, cle, nomActeur){
+  const existant = (db.distributionPaiements||{})[cle] || {};
+  const entreeActuelle = existant[nomActeur];
+  if(!entreeActuelle || !entreeActuelle.valide) return db;
+  return { ...db, distributionPaiements: { ...(db.distributionPaiements||{}), [cle]: { ...existant, [nomActeur]: { ...entreeActuelle, valide: false, dateValidation: null, valideParNom: null } } } };
+}
+// Liste des (année, mois) couverte depuis le lancement de l'app (avec 3 ans de marge pour les saisies
+// manuelles antérieures) jusqu'au mois en cours inclus — la même portée que « À ce jour » (Distribution des
+// recettes) / « Cumul » (Suivi distribution), mais calculée indépendamment du filtre de période choisi à
+// l'écran, pour donner un solde « depuis le début » toujours fiable quel que soit l'onglet ouvert.
+function moisCouvertsDepuisDebut(currentYear, currentMonth){
+  const liste = [];
+  for(let a = ANNEE_DEBUT_APP - 3; a <= currentYear; a++){
+    const dernierMois = a === currentYear ? currentMonth : 12;
+    for(let m = 1; m <= dernierMois; m++) liste.push({ annee:a, mois:m });
+  }
+  return liste;
+}
+// Total déjà marqué « payé » pour UN acteur, toutes périodes confondues (peu importe si marqué mois par
+// mois ou année par année), depuis le début — sert à calculer ce qu'il lui reste réellement à percevoir,
+// indépendamment de la période actuellement affichée à l'écran.
+function totalDistribueLifetime(db, nomActeur){
+  const paiements = db.distributionPaiements || {};
+  return Object.values(paiements).reduce((s, parActeur) => {
+    const e = parActeur[nomActeur];
+    return s + (e && e.paye ? (Number(e.montant)||0) : 0);
+  }, 0);
+}
+// Même chose, mais TOUS les acteurs confondus — utilisé pour le Solde de caisse théorique.
+function totalDistribueLifetimeTousActeurs(db){
+  const paiements = db.distributionPaiements || {};
+  return Object.values(paiements).reduce((s, parActeur) => {
+    return s + Object.values(parActeur).reduce((s2,e)=> s2 + (e && e.paye ? (Number(e.montant)||0) : 0), 0);
+  }, 0);
+}
 // Nom de l'employé (n'importe quel site) correspondant à cet identifiant — utilisé pour savoir si la
 // personne connectée est elle-même l'un des acteurs de la distribution (et peut donc valider sa réception).
 function nomEmployeGlobal(db, employeId){
@@ -2616,8 +2654,10 @@ function DistributionView({ db, setDb, anneeInitiale }){
   const today = todayISO();
   // ---- Période d'affichage pour « Répartition entre les acteurs » et « Total encaissé par mode de paiement »,
   // même sélecteur que « Mes encaissements Et Décaissements » : Aujourd'hui / Cette semaine / Mois / Année / À ce jour
-  const [periodeRepartition, setPeriodeRepartition] = useState('mois'); // 'jour' | 'semaine' | 'mois' | 'annee' | 'total'
+  const [periodeRepartition, setPeriodeRepartition] = useState('mois'); // 'jour' | 'semaine' | 'mois' | 'annee' | 'intervalle' | 'total'
   const [moisChoisi, setMoisChoisi] = useState(today.slice(0,7)); // 'AAAA-MM', utilisé en mode 'mois'
+  const [intervalleDebut, setIntervalleDebut] = useState(`${currentYear}-01-01`);
+  const [intervalleFin, setIntervalleFin] = useState(today);
   useEffect(() => {
     // « Aujourd'hui » et « Cette semaine » sont toujours relatifs à maintenant : on aligne l'année affichée dessus
     if((periodeRepartition === 'jour' || periodeRepartition === 'semaine') && annee !== currentYear) setAnnee(currentYear);
@@ -2636,11 +2676,13 @@ function DistributionView({ db, setDb, anneeInitiale }){
     : periodeRepartition === 'semaine' ? semaineRepartition.start
     : periodeRepartition === 'mois' ? `${moisChoisi}-01`
     : periodeRepartition === 'annee' ? `${annee}-01-01`
+    : periodeRepartition === 'intervalle' ? intervalleDebut
     : '2000-01-01'; // 'total' — à ce jour, depuis le début
   const dateFinRep = periodeRepartition === 'jour' ? today
     : periodeRepartition === 'semaine' ? semaineRepartition.end
     : periodeRepartition === 'mois' ? `${moisChoisi}-31`
     : periodeRepartition === 'annee' ? `${annee}-12-31`
+    : periodeRepartition === 'intervalle' ? (intervalleFin || intervalleDebut)
     : today; // 'total'
 
   // Mois couverts par la période affichée (chaque mois utilise la grille de parts valable ce mois-là)
@@ -2655,6 +2697,20 @@ function DistributionView({ db, setDb, anneeInitiale }){
     if(periodeRepartition === 'annee'){
       return Array.from({length:12}, (_,i) => ({ annee, mois:i+1 }));
     }
+    if(periodeRepartition === 'intervalle'){
+      // Comme pour Détail mensuel : cette page calcule mois par mois (parts, impayés...), donc un
+      // intervalle agrège tous les mois ENTIERS touchés par la plage choisie (voir avertissement affiché).
+      const fin = intervalleFin || intervalleDebut;
+      const [ad, md] = intervalleDebut.slice(0,7).split('-').map(Number);
+      const [af, mf] = fin.slice(0,7).split('-').map(Number);
+      const liste = [];
+      let a = ad, m = md;
+      while(a < af || (a === af && m <= mf)){
+        liste.push({ annee:a, mois:m });
+        m++; if(m>12){ m=1; a++; }
+      }
+      return liste;
+    }
     // 'total' : tous les mois depuis le début de l'activité jusqu'à aujourd'hui
     const liste = [];
     for(let a = ANNEE_DEBUT_APP - 3; a <= currentYear; a++){
@@ -2662,7 +2718,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
       for(let m = 1; m <= finMois; m++) liste.push({ annee:a, mois:m });
     }
     return liste;
-  }, [periodeRepartition, moisChoisi, annee, currentYear, today]);
+  }, [periodeRepartition, moisChoisi, annee, currentYear, today, intervalleDebut, intervalleFin]);
   const dernierMoisCouvert = moisCouverts[moisCouverts.length-1];
   const anneesCouvertes = useMemo(() => Array.from(new Set(moisCouverts.map(mc=>mc.annee))), [moisCouverts]);
   const donneesParAnneeMap = useMemo(() => {
@@ -2670,6 +2726,37 @@ function DistributionView({ db, setDb, anneeInitiale }){
     anneesCouvertes.forEach(a => { map[a] = calculerDonneesMensuellesMultiSites(db.sites, a); });
     return map;
   }, [db.sites, anneesCouvertes]);
+
+  // ---- Soldes « depuis le début », indépendants du filtre de période choisi ci-dessus ----
+  // But : savoir ce qu'il reste réellement à distribuer à chaque acteur, et combien d'argent devrait
+  // encore rester physiquement en caisse après toutes les distributions déjà marquées payées.
+  const moisCouvertsLifetime = useMemo(() => moisCouvertsDepuisDebut(currentYear, Number(today.slice(5,7))), [currentYear, today]);
+  const lignesLifetime = useMemo(
+    () => calculerRepartitionActeursPourPeriode(db, moisCouvertsLifetime, null),
+    [db, moisCouvertsLifetime]
+  );
+  const anneesLifetime = useMemo(() => Array.from(new Set(moisCouvertsLifetime.map(mc=>mc.annee))), [moisCouvertsLifetime]);
+  const donneesParAnneeLifetimeMap = useMemo(() => {
+    const map = {};
+    anneesLifetime.forEach(a => { map[a] = calculerDonneesMensuellesMultiSites(db.sites, a); });
+    return map;
+  }, [db.sites, anneesLifetime]);
+  // Net perçu (Espèces + Orange Money reçus, moins dépenses entreprise) ET dépenses propres, cumulés
+  // depuis le début, tous pressings confondus — les deux montants d'argent qui sont réellement sortis
+  // (ou n'ont jamais été ajoutés) de la caisse physique, en dehors des distributions elles-mêmes.
+  const { netPercuLifetime, depensesPropresLifetime } = useMemo(() => {
+    let np = 0, dp = 0;
+    moisCouvertsLifetime.forEach(({annee:a, mois:m}) => {
+      const dm = (donneesParAnneeLifetimeMap[a]||[]).find(x=>x.mois===m);
+      if(dm){ np += dm.netPercu||0; dp += dm.depensesPropres||0; }
+    });
+    return { netPercuLifetime: np, depensesPropresLifetime: dp };
+  }, [moisCouvertsLifetime, donneesParAnneeLifetimeMap]);
+  const totalDistribueLifetimeTous = useMemo(() => totalDistribueLifetimeTousActeurs(db), [db.distributionPaiements]);
+  // Solde de caisse théorique = ce que la caisse a encaissé net, moins ce qui en est déjà sorti (dépenses
+  // propres des employés + distributions déjà marquées payées). Hypothèse : tout l'argent encaissé est
+  // resté en espèces/Orange Money jusqu'à sa sortie (aucun virement bancaire ou autre mouvement hors app).
+  const soldeCaisseTheorique = netPercuLifetime - depensesPropresLifetime - totalDistribueLifetimeTous;
 
   // Grille affichée dans la colonne « Part » = celle du dernier mois de la période
   const parts = partsPourMois(db, dernierMoisCouvert.annee, dernierMoisCouvert.mois);
@@ -2806,6 +2893,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
     : periodeRepartition === 'semaine' ? 'Cette semaine'
     : periodeRepartition === 'mois' ? `${nomMoisRepartition} ${moisChoisi.slice(0,4)}`
     : periodeRepartition === 'annee' ? `Année ${annee}`
+    : periodeRepartition === 'intervalle' ? `Du ${fmtDate(intervalleDebut)} au ${fmtDate(intervalleFin||intervalleDebut)}`
     : 'À ce jour (tout confondu)';
 
   // Montants réels de la période, mois par mois (blend automatique + saisies manuelles pour les mois antérieurs à sept. 2026,
@@ -2886,7 +2974,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
     return liste.sort((a,b) => new Date(b.date) - new Date(a.date));
   }, [db, dateDebutRep, dateFinRep]);
 
-  useEffect(() => { setHistoriquePage(1); }, [periodeRepartition, moisChoisi, annee]);
+  useEffect(() => { setHistoriquePage(1); }, [periodeRepartition, moisChoisi, annee, intervalleDebut, intervalleFin]);
 
 
   // Part du net perçu de CE mois (ou de la période jour/semaine en cours) éligible au remboursement — 0 pour
@@ -2939,6 +3027,18 @@ function DistributionView({ db, setDb, anneeInitiale }){
   return (
     <div>
       <PageHeader title="Distribution des recettes" subtitle="Répartition annuelle du bénéfice net entre les acteurs du pressing" />
+
+      <div className="card" style={{padding:'1.1rem 1.5rem', marginBottom:20}}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:12}}>
+          <div>
+            <div style={{fontWeight:700, fontSize:14.5, color:'var(--ink)'}}>🏦 Solde de caisse théorique — depuis le début</div>
+            <div style={{fontSize:12.5, color:'var(--steam)', marginTop:2, maxWidth:620}}>
+              Net perçu cumulé (Espèces + Orange Money reçus, moins dépenses entreprise) moins dépenses propres des employés moins tout ce qui a déjà été marqué « payé » dans Suivi distribution. Hypothèse : tout l'argent encaissé est resté en espèces/Orange Money jusqu'à sa sortie — ce chiffre ne remplace pas un vrai comptage de caisse.
+            </div>
+          </div>
+          <span className="mono" style={{fontSize:20, fontWeight:700, color: soldeCaisseTheorique<0 ? 'var(--danger)' : 'var(--pine)'}}>{fmtGNF(soldeCaisseTheorique)}</span>
+        </div>
+      </div>
 
       <div className="card" style={{padding:'1.1rem 1.5rem', marginBottom:20, background: remboursementActif ? 'var(--warn-light)' : 'var(--paper-2)'}}>
         <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:12}}>
@@ -3023,7 +3123,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
       </div>
 
       <div style={{display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', marginBottom:14}}>
-        {[{k:'jour',l:"Aujourd'hui"},{k:'semaine',l:'Cette semaine'},{k:'mois',l:'Mois'},{k:'annee',l:'Année'},{k:'total',l:'À ce jour'}].map(opt => (
+        {[{k:'jour',l:"Aujourd'hui"},{k:'semaine',l:'Cette semaine'},{k:'mois',l:'Mois'},{k:'annee',l:'Année'},{k:'intervalle',l:'Intervalle'},{k:'total',l:'À ce jour'}].map(opt => (
           <button key={opt.k} className="btn btn-sm" onClick={()=>setPeriodeRepartition(opt.k)}
             style={{background:periodeRepartition===opt.k?'var(--pine)':'transparent', color:periodeRepartition===opt.k?'var(--white)':'var(--ink)', borderColor:periodeRepartition===opt.k?'var(--pine)':'var(--line-strong)'}}>
             {opt.l}
@@ -3037,7 +3137,20 @@ function DistributionView({ db, setDb, anneeInitiale }){
             {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
           </select>
         )}
+        {periodeRepartition === 'intervalle' && (
+          <span style={{display:'flex', alignItems:'center', gap:8}}>
+            <span style={{fontSize:12.5}}>du</span>
+            <input type="date" value={intervalleDebut} max={intervalleFin || today} onChange={e=>setIntervalleDebut(e.target.value)} style={{width:'auto'}} />
+            <span style={{fontSize:12.5}}>au</span>
+            <input type="date" value={intervalleFin} min={intervalleDebut} max={today} onChange={e=>setIntervalleFin(e.target.value)} style={{width:'auto'}} />
+          </span>
+        )}
       </div>
+      {periodeRepartition === 'intervalle' && (
+        <p style={{fontSize:12.5, background:'var(--warn-light)', color:'var(--warn)', padding:'8px 12px', borderRadius:8, margin:'0 0 14px', lineHeight:1.5}}>
+          ⚠️ Cette page calcule mois par mois (parts, impayés...) : « Intervalle » additionne donc des mois ENTIERS touchés par la période choisie, pas des jours exacts (sauf les dépenses propres, filtrées jour par jour). Pour un montant exact jour par jour, utilisez plutôt « Mes encaissements et décaissements ».
+        </p>
+      )}
 
       <h2 style={{fontSize:16, color:'var(--pine)', marginBottom:6}}>Total encaissé par mode de paiement</h2>
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
@@ -3238,6 +3351,45 @@ function DistributionView({ db, setDb, anneeInitiale }){
           </tbody>
         </table>
       </div>
+
+      <h2 style={{fontSize:16, color:'var(--ink)', margin:'28px 0 6px'}}>Ce qu'il reste à distribuer — depuis le début</h2>
+      <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
+        Indépendant de la période choisie ci-dessus : « Généré » = montant à verser cumulé depuis le début (Distribution des recettes, calcul mois par mois). « Déjà distribué » = total marqué « payé » dans Suivi distribution, tous mois et toutes années confondus. « Reste à distribuer » = Généré − Déjà distribué.
+      </p>
+      <div className="card" style={{overflow:'hidden', marginBottom:24}}>
+        <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+          <thead>
+            <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+              <th style={th}>Bénéficiaire</th>
+              <th style={th}>Généré (depuis le début)</th>
+              <th style={th}>Déjà distribué</th>
+              <th style={th}>Reste à distribuer</th>
+            </tr>
+          </thead>
+          <tbody>
+            {parts.map(p => {
+              const ligneLifetime = lignesLifetime.find(x=>x.nom===p.nom);
+              const genere = ligneLifetime ? ligneLifetime.montantAVerser : 0;
+              const dejaDistribue = totalDistribueLifetime(db, p.nom);
+              const reste = genere - dejaDistribue;
+              return (
+                <tr key={p.nom} style={{borderTop:'1px solid var(--line)'}}>
+                  <td style={{...td, fontWeight:600}}>{p.nom}</td>
+                  <td style={td} className="mono">{fmtGNF(genere)}</td>
+                  <td style={{...td, color: dejaDistribue>0?'var(--pine)':'var(--steam)'}} className="mono">{dejaDistribue>0 ? fmtGNF(dejaDistribue) : '—'}</td>
+                  <td style={{...td, fontWeight:700, color: reste<0 ? 'var(--warn)' : 'var(--ink)'}} className="mono">{fmtGNF(reste)}</td>
+                </tr>
+              );
+            })}
+            <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
+              <td style={{...td, fontWeight:700}}>Total</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(parts.reduce((s,p)=>{ const l=lignesLifetime.find(x=>x.nom===p.nom); return s+(l?l.montantAVerser:0); },0))}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(parts.reduce((s,p)=>s+totalDistribueLifetime(db,p.nom),0))}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(parts.reduce((s,p)=>{ const l=lignesLifetime.find(x=>x.nom===p.nom); return s+((l?l.montantAVerser:0)-totalDistribueLifetime(db,p.nom)); },0))}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -3252,10 +3404,13 @@ function DistributionView({ db, setDb, anneeInitiale }){
 function SuiviDistributionView({ db, setDb, employeId }){
   const currentYear = Number(todayISO().slice(0,4));
   const currentMonth = Number(todayISO().slice(5,7));
-  const [periode, setPeriode] = useState('mois'); // 'mois' | 'annee' | 'cumul'
+  const [periode, setPeriode] = useState('mois'); // 'mois' | 'annee' | 'intervalle' | 'cumul'
   const [moisChoisi, setMoisChoisi] = useState(todayISO().slice(0,7));
   const [anneeChoisie, setAnneeChoisie] = useState(currentYear);
+  const [intervalleDebut, setIntervalleDebut] = useState(`${currentYear}-01-01`);
+  const [intervalleFin, setIntervalleFin] = useState(todayISO());
   const [modeChoisi, setModeChoisi] = useState({});
+  const [confirmAnnulerValidation, setConfirmAnnulerValidation] = useState(null); // nom de l'acteur dont on veut annuler la confirmation
 
   const anneesDisponibles = useMemo(() => {
     const arr = [];
@@ -3280,20 +3435,44 @@ function SuiviDistributionView({ db, setDb, employeId }){
       }
       return arr;
     }
+    if(periode === 'intervalle'){
+      // Même principe que « Intervalle » dans Distribution des recettes : mois entiers touchés par la plage.
+      const fin = intervalleFin || intervalleDebut;
+      const [ad, md] = intervalleDebut.slice(0,7).split('-').map(Number);
+      const [af, mf] = fin.slice(0,7).split('-').map(Number);
+      const liste = [];
+      let a = ad, m = md;
+      while(a < af || (a === af && m <= mf)){
+        liste.push({ annee:a, mois:m });
+        m++; if(m>12){ m=1; a++; }
+      }
+      return liste;
+    }
     return Array.from({length:12}, (_,i) => ({ annee: anneeChoisie, mois:i+1 }));
-  }, [periode, moisChoisi, anneeChoisie, currentYear, currentMonth]);
+  }, [periode, moisChoisi, anneeChoisie, currentYear, currentMonth, intervalleDebut, intervalleFin]);
 
   const lignes = useMemo(
     () => calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi),
     [db, moisCouverts, moisChoisi]
   );
 
+  // Soldes « depuis le début », indépendants de la période choisie ci-dessus — pour répondre à « combien
+  // reste-t-il réellement à verser à cette personne, au total ? » plutôt que juste pour le mois affiché.
+  const moisCouvertsLifetime = useMemo(() => moisCouvertsDepuisDebut(currentYear, currentMonth), [currentYear, currentMonth]);
+  const lignesLifetime = useMemo(
+    () => calculerRepartitionActeursPourPeriode(db, moisCouvertsLifetime, null),
+    [db, moisCouvertsLifetime]
+  );
+
   const nomMoisLabel = useMemo(() => {
     const [a,m] = moisChoisi.split('-').map(Number);
     return new Date(a, m-1, 1).toLocaleDateString('fr-FR', {month:'long', year:'numeric'});
   }, [moisChoisi]);
-  const periodeLabel = periode === 'mois' ? nomMoisLabel : periode === 'cumul' ? 'À ce jour (depuis le début)' : `Année ${anneeChoisie}`;
-  const suiviPaiementDisponible = periode !== 'cumul'; // le suivi payé/validé se fait par mois ou par année, pas sur un cumul glissant
+  const periodeLabel = periode === 'mois' ? nomMoisLabel
+    : periode === 'cumul' ? 'À ce jour (depuis le début)'
+    : periode === 'intervalle' ? `Du ${fmtDate(intervalleDebut)} au ${fmtDate(intervalleFin||intervalleDebut)}`
+    : `Année ${anneeChoisie}`;
+  const suiviPaiementDisponible = periode !== 'cumul' && periode !== 'intervalle'; // le suivi payé/validé se fait par mois ou par année, pas sur un cumul glissant ou un intervalle arbitraire
 
   const totalAVerser = lignes.reduce((s,l)=>s+l.montantAVerser, 0);
 
@@ -3313,16 +3492,21 @@ function SuiviDistributionView({ db, setDb, employeId }){
     const valideParNom = estGerant ? 'Gérant' : (monNom || 'Employé');
     setDb(validerReceptionDistribution(db, cle, nomActeur, valideParNom));
   }
+  function annulerValidation(){
+    if(!cle || !confirmAnnulerValidation) return;
+    setDb(annulerValidationDistribution(db, cle, confirmAnnulerValidation));
+    setConfirmAnnulerValidation(null);
+  }
 
   return (
     <div>
       <PageHeader title="Suivi de la distribution" subtitle="Montant distribué à chaque acteur, par mois, par année ou à ce jour" />
 
       <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
-        {['mois','annee','cumul'].map(v => (
+        {['mois','annee','intervalle','cumul'].map(v => (
           <button key={v} className="btn btn-sm" onClick={()=>setPeriode(v)}
             style={{background:periode===v?'var(--pine)':'transparent', color:periode===v?'var(--white)':'var(--ink)', borderColor:periode===v?'var(--pine)':'var(--line-strong)'}}>
-            {v === 'mois' ? 'Par mois' : v === 'annee' ? 'Par année' : 'À ce jour'}
+            {v === 'mois' ? 'Par mois' : v === 'annee' ? 'Par année' : v === 'intervalle' ? 'Intervalle' : 'À ce jour'}
           </button>
         ))}
         {periode === 'mois' && (
@@ -3333,7 +3517,20 @@ function SuiviDistributionView({ db, setDb, employeId }){
             {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
           </select>
         )}
+        {periode === 'intervalle' && (
+          <span style={{display:'flex', alignItems:'center', gap:8}}>
+            <span style={{fontSize:12.5}}>du</span>
+            <input type="date" value={intervalleDebut} max={intervalleFin || todayISO()} onChange={e=>setIntervalleDebut(e.target.value)} style={{width:'auto'}} />
+            <span style={{fontSize:12.5}}>au</span>
+            <input type="date" value={intervalleFin} min={intervalleDebut} max={todayISO()} onChange={e=>setIntervalleFin(e.target.value)} style={{width:'auto'}} />
+          </span>
+        )}
       </div>
+      {periode === 'intervalle' && (
+        <p style={{fontSize:12.5, background:'var(--warn-light)', color:'var(--warn)', padding:'8px 12px', borderRadius:8, margin:'0 0 14px', lineHeight:1.5}}>
+          ⚠️ Cette page calcule mois par mois : « Intervalle » additionne donc des mois ENTIERS touchés par la période choisie, pas des jours exacts. Le suivi payé/confirmé n'est pas disponible sur un intervalle (choisissez « Par mois » ou « Par année » pour marquer un paiement) — voici uniquement les montants calculés pour information.
+        </p>
+      )}
 
       <div style={{marginBottom:20}}>
         <StatCard label={`Total distribué — ${periodeLabel}`} value={fmtGNF(totalAVerser)} icon="euro" />
@@ -3341,8 +3538,17 @@ function SuiviDistributionView({ db, setDb, employeId }){
 
       {lignes.map(l => {
         const paiement = paiementsPeriode[l.nom];
-        const peutValider = paiement && paiement.paye && !paiement.valide && (estGerant || nomsCorrespondent(monNom||'', l.nom));
+        // Chacun ne peut agir (marquer payé / confirmer reçu) que sur SA PROPRE ligne ; le gérant peut
+        // agir sur toutes les lignes (beaucoup d'acteurs n'ont pas de compte employé dans l'app).
+        const peutAgir = estGerant || nomsCorrespondent(monNom||'', l.nom);
+        const peutMarquerPaye = peutAgir;
+        const peutValider = paiement && paiement.paye && !paiement.valide && peutAgir;
         const modeSel = modeChoisi[l.nom] || 'Espèces';
+        // « Depuis le début » — indépendant de la période choisie ci-dessus (voir moisCouvertsLifetime).
+        const ligneLifetime = lignesLifetime.find(x=>x.nom===l.nom);
+        const genereLifetime = ligneLifetime ? ligneLifetime.montantAVerser : 0;
+        const dejaDistribueLifetime = totalDistribueLifetime(db, l.nom);
+        const resteADistribuerLifetime = genereLifetime - dejaDistribueLifetime;
         return (
           <div key={l.nom} className="card" style={{padding:'1.25rem', marginBottom:14}}>
             <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10, flexWrap:'wrap', gap:8}}>
@@ -3392,6 +3598,22 @@ function SuiviDistributionView({ db, setDb, employeId }){
               )}
             </div>
 
+            <div style={{fontSize:12, color:'var(--steam)', marginBottom:6, fontWeight:600, textTransform:'uppercase'}}>Depuis le début (toutes périodes confondues)</div>
+            <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(160px, 1fr))', gap:8, marginBottom:12}}>
+              <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                <span style={{fontSize:12.5, color:'var(--steam)'}}>Généré</span>
+                <span className="mono" style={{fontSize:13, fontWeight:600}}>{fmtGNF(genereLifetime)}</span>
+              </div>
+              <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                <span style={{fontSize:12.5, color:'var(--steam)'}}>Déjà distribué</span>
+                <span className="mono" style={{fontSize:13, fontWeight:600, color: dejaDistribueLifetime>0?'var(--pine)':'var(--ink)'}}>{dejaDistribueLifetime>0 ? fmtGNF(dejaDistribueLifetime) : '—'}</span>
+              </div>
+              <div style={{background: resteADistribuerLifetime<0 ? 'var(--warn-light)' : 'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                <span style={{fontSize:12.5, color: resteADistribuerLifetime<0 ? '#7a5c00' : 'var(--steam)'}}>Reste à distribuer</span>
+                <span className="mono" style={{fontSize:13, fontWeight:700, color: resteADistribuerLifetime<0 ? '#7a5c00' : 'var(--ink)'}}>{fmtGNF(resteADistribuerLifetime)}</span>
+              </div>
+            </div>
+
             <div style={{fontSize:12, color:'var(--steam)', marginBottom:6, fontWeight:600, textTransform:'uppercase'}}>Paiement — {periodeLabel}</div>
 
             {!suiviPaiementDisponible ? (
@@ -3401,18 +3623,27 @@ function SuiviDistributionView({ db, setDb, employeId }){
             ) : !paiement || !paiement.paye ? (
               <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, padding:'10px 12px', background:'var(--warn-light)', borderRadius:8, flexWrap:'wrap'}}>
                 <div style={{fontSize:13}}>Pas encore marqué payé pour cette période.</div>
-                <div style={{display:'flex', alignItems:'center', gap:6}}>
-                  <select value={modeSel} onChange={e=>setModeChoisi(prev=>({...prev, [l.nom]: e.target.value}))} style={{width:'auto', fontSize:12.5, padding:'4px 8px'}}>
-                    <option value="Espèces">Espèces</option>
-                    <option value="Orange Money">Orange Money</option>
-                  </select>
-                  <button className="btn btn-rust btn-sm" onClick={()=>marquerPaye(l.nom, l.montantAVerser, modeSel)}>Marquer payé</button>
-                </div>
+                {peutMarquerPaye ? (
+                  <div style={{display:'flex', alignItems:'center', gap:6}}>
+                    <select value={modeSel} onChange={e=>setModeChoisi(prev=>({...prev, [l.nom]: e.target.value}))} style={{width:'auto', fontSize:12.5, padding:'4px 8px'}}>
+                      <option value="Espèces">Espèces</option>
+                      <option value="Orange Money">Orange Money</option>
+                    </select>
+                    <button className="btn btn-rust btn-sm" onClick={()=>marquerPaye(l.nom, l.montantAVerser, modeSel)}>Marquer payé</button>
+                  </div>
+                ) : (
+                  <span style={{fontSize:12, color:'var(--steam)'}}>Seul {l.nom} ou le gérant peut marquer ce paiement.</span>
+                )}
               </div>
             ) : paiement.valide ? (
               <div style={{display:'flex', alignItems:'center', gap:8, flexWrap:'wrap'}}>
                 <span className="tag" style={{background:'var(--pine-light)', color:'var(--pine)'}}>✓✓ Reçu et confirmé par {paiement.valideParNom}</span>
                 <span style={{fontSize:12, color:'var(--steam)'}}>Payé {fmtGNF(paiement.montant)} ({paiement.modePaiement}) le {fmtDate(paiement.datePaiement.slice(0,10))}</span>
+                {estGerant && (
+                  <button className="btn btn-ghost btn-sm" onClick={()=>setConfirmAnnulerValidation(l.nom)} title="Si l'employé a cliqué « J'ai bien reçu » par erreur">
+                    Annuler cette confirmation
+                  </button>
+                )}
               </div>
             ) : (
               <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, padding:'10px 12px', background:'var(--paper-2)', borderRadius:8, flexWrap:'wrap'}}>
@@ -3426,6 +3657,16 @@ function SuiviDistributionView({ db, setDb, employeId }){
           </div>
         );
       })}
+
+      {confirmAnnulerValidation && (
+        <ConfirmDelete db={db}
+          title="Annuler la confirmation de réception"
+          actionLabel="Annuler la confirmation"
+          message={`Annuler la confirmation « J'ai bien reçu » de ${confirmAnnulerValidation} pour ${periodeLabel} ? Le paiement restera marqué « payé » (${fmtGNF((paiementsPeriode[confirmAnnulerValidation]||{}).montant||0)}), mais redeviendra en attente de confirmation — utile si ${confirmAnnulerValidation} a cliqué par erreur.`}
+          onConfirm={annulerValidation}
+          onCancel={()=>setConfirmAnnulerValidation(null)}
+        />
+      )}
     </div>
   );
 }
@@ -3959,6 +4200,7 @@ function DetailMensuelConsolideView({ db }){
   const [intervalleDebut, setIntervalleDebut] = useState(`${currentYear}-01-01`);
   const [intervalleFin, setIntervalleFin] = useState(today);
   const [moisOuvertConsolide, setMoisOuvertConsolide] = useState(null);
+  const [siteOuvertEmploye, setSiteOuvertEmploye] = useState(null); // pressing dont on affiche le détail par employé (section ci-dessous)
 
   // Liste des (année, mois) à inclure selon le mode choisi — cette page est fondamentalement construite
   // mois par mois (impayés, saisies manuelles...), donc même « Intervalle » et « À ce jour » agrègent des
@@ -4010,6 +4252,39 @@ function DetailMensuelConsolideView({ db }){
     : periode === 'mois' ? `${donneesParMois[0] ? donneesParMois[0].labelAvecAnnee : moisChoisi}`
     : periode === 'intervalle' ? `De ${donneesParMois[0] ? donneesParMois[0].labelAvecAnnee : ''} à ${donneesParMois[donneesParMois.length-1] ? donneesParMois[donneesParMois.length-1].labelAvecAnnee : ''}`
     : 'À ce jour (depuis le début)';
+
+  // Total par employé, par pressing, sur TOUTE la période choisie (fusion des mois listés dans
+  // anneeMoisListe) — réutilise calculerDonneesMensuellesEmploye, qui gère déjà correctement aussi bien
+  // les mois à saisie manuelle que les mois automatiques (transactions réelles), contrairement à
+  // m.parEmployeParSite ci-dessus qui n'existe que pour les mois saisis manuellement.
+  // Contrairement au « Net perçu » global de cette page (Espèces + Orange Money − dépenses ENTREPRISE
+  // seulement), le Net perçu ci-dessous impute aussi les dépenses PROPRES à l'employé qui les a prises :
+  // si un caissier a pris de l'argent pour lui-même sur la caisse, ça réduit SON net perçu à lui.
+  const detailParEmployeParSite = useMemo(() => {
+    const anneesUniques = Array.from(new Set(anneeMoisListe.map(x => x.annee)));
+    return db.sites.map(site => {
+      const employesSite = [
+        ...(site.employes||[]).filter(e => e.role !== 'Repasseur').map(e => ({ id: e.id, nom: e.nom })),
+        { id: null, nom: 'Gérant' },
+      ];
+      const lignes = employesSite.map(({id, nom}) => {
+        let especes = 0, orangeMoney = 0, depenses = 0, depensesPropres = 0;
+        anneesUniques.forEach(a => {
+          const donneesAnneeEmp = calculerDonneesMensuellesEmploye(site, a, id);
+          anneeMoisListe.forEach(({annee: aa, mois}) => {
+            if(aa !== a) return;
+            const d = donneesAnneeEmp[mois-1];
+            especes += d.montantRecuEspeces||0;
+            orangeMoney += d.montantRecuOrangeMoney||0;
+            depenses += d.depenses||0;
+            depensesPropres += d.depensesPropres||0;
+          });
+        });
+        return { id, nom, especes, orangeMoney, depenses, depensesPropres };
+      });
+      return { site, lignes };
+    });
+  }, [db.sites, anneeMoisListe]);
 
   return (
     <div>
@@ -4145,6 +4420,89 @@ function DetailMensuelConsolideView({ db }){
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <h2 style={{fontSize:16, color:'var(--ink)', margin:'0 0 10px'}}>Total par employé — {periodeLabel}</h2>
+      <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
+        Contrairement au « Net perçu » global ci-dessus (qui ne retire que les dépenses entreprise), le Net perçu ci-dessous retire AUSSI les dépenses propres : si un caissier a pris de l'argent pour lui-même sur la caisse, ce montant réduit son net perçu à lui, pas celui des autres.
+      </p>
+      <div style={{display:'flex', flexDirection:'column', gap:14, marginBottom:24}}>
+        {detailParEmployeParSite.map(({site, lignes}) => {
+          const ouvert = siteOuvertEmploye === site.id;
+          const totalSite = lignes.reduce((acc, l) => ({
+            especes: acc.especes + l.especes,
+            orangeMoney: acc.orangeMoney + l.orangeMoney,
+            depenses: acc.depenses + l.depenses,
+            depensesPropres: acc.depensesPropres + l.depensesPropres,
+          }), { especes:0, orangeMoney:0, depenses:0, depensesPropres:0 });
+          const netSite = totalSite.especes + totalSite.orangeMoney - totalSite.depenses - totalSite.depensesPropres;
+          return (
+            <div key={site.id} className="card" style={{padding:'1.1rem 1.25rem'}}>
+              <div onClick={()=>setSiteOuvertEmploye(ouvert ? null : site.id)}
+                style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10, cursor:'pointer'}}>
+                <div style={{fontWeight:700, fontSize:14.5}}>{site.nom}</div>
+                <span style={{fontSize:12, color:'var(--steam)'}}>{ouvert ? '▲ Masquer le détail par employé' : '▼ Voir le détail par employé'}</span>
+              </div>
+              <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:8}}>
+                <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                  <span style={{fontSize:12.5, color:'var(--steam)'}}>Espèces</span>
+                  <span className="mono" style={{fontSize:13, fontWeight:600}}>{fmtGNF(totalSite.especes)}</span>
+                </div>
+                <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                  <span style={{fontSize:12.5, color:'var(--steam)'}}>Orange Money</span>
+                  <span className="mono" style={{fontSize:13, fontWeight:600}}>{fmtGNF(totalSite.orangeMoney)}</span>
+                </div>
+                <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                  <span style={{fontSize:12.5, color:'var(--steam)'}}>Dépenses (entreprise + propres)</span>
+                  <span className="mono" style={{fontSize:13, fontWeight:600, color:'var(--danger)'}}>{fmtGNF(totalSite.depenses + totalSite.depensesPropres)}</span>
+                </div>
+                <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                  <span style={{fontSize:12.5, color:'var(--steam)'}}>Net perçu</span>
+                  <span className="mono" style={{fontSize:13, fontWeight:600, color: netSite<0?'var(--danger)':'var(--ink)'}}>{fmtGNF(netSite)}</span>
+                </div>
+              </div>
+
+              {ouvert && (
+                <div style={{marginTop:14, overflowX:'auto'}}>
+                  <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
+                    <thead>
+                      <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                        <th style={th}>Employé</th>
+                        <th style={th}>Espèces</th>
+                        <th style={th}>Orange Money</th>
+                        <th style={th}>Total encaissé</th>
+                        <th style={th}>Dép. entreprise</th>
+                        <th style={th}>Dép. propres</th>
+                        <th style={th}>Net perçu</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {lignes.map(l => {
+                        const total = l.especes + l.orangeMoney;
+                        const net = total - l.depenses - l.depensesPropres;
+                        const vide = total === 0 && l.depenses === 0 && l.depensesPropres === 0;
+                        return (
+                          <tr key={l.id || 'gerant'} style={{borderTop:'1px solid var(--line)', opacity: vide ? 0.55 : 1}}>
+                            <td style={{...td, fontWeight:600}}>{l.nom}</td>
+                            <td style={td} className="mono">{fmtGNF(l.especes)}</td>
+                            <td style={td} className="mono">{fmtGNF(l.orangeMoney)}</td>
+                            <td style={{...td, fontWeight:600, color:'var(--pine)'}} className="mono">{fmtGNF(total)}</td>
+                            <td style={{...td, color:'var(--danger)'}} className="mono">{fmtGNF(l.depenses)}</td>
+                            <td style={{...td, color:'var(--rust)'}} className="mono">{fmtGNF(l.depensesPropres)}</td>
+                            <td style={{...td, fontWeight:600, color: net<0?'var(--danger)':'var(--ink)'}} className="mono">{fmtGNF(net)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  <p style={{fontSize:11, color:'var(--steam)', margin:'8px 0 0'}}>
+                    « Gérant » = argent encaissé ou dépensé sans employé attribué (saisi directement par le gérant).
+                  </p>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -6759,7 +7117,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
 
 /* ===================== CONFIRMATION SUPPRESSION AVEC MOT DE PASSE ===================== */
 
-function ConfirmDelete({ message, onConfirm, onCancel, db }){
+function ConfirmDelete({ message, onConfirm, onCancel, db, title='Confirmer la suppression', actionLabel='Supprimer' }){
   const [pass, setPass] = useState('');
   const [error, setError] = useState('');
 
@@ -6780,7 +7138,7 @@ function ConfirmDelete({ message, onConfirm, onCancel, db }){
       <div className="card" style={{width:380, maxWidth:'92vw', padding:'1.5rem'}}>
         <div style={{display:'flex', alignItems:'center', gap:10, marginBottom:14, color:'var(--danger)'}}>
           <Icon name="alert" size={22} />
-          <h2 style={{margin:0, fontSize:18, color:'var(--danger)'}}>Confirmer la suppression</h2>
+          <h2 style={{margin:0, fontSize:18, color:'var(--danger)'}}>{title}</h2>
         </div>
         <p style={{fontSize:14, color:'var(--ink)', marginBottom:16, lineHeight:1.5}}>{message}</p>
         <div style={{marginBottom:14}}>
@@ -6798,7 +7156,7 @@ function ConfirmDelete({ message, onConfirm, onCancel, db }){
         <div style={{display:'flex', gap:10, justifyContent:'flex-end'}}>
           <button className="btn" onClick={onCancel}>Annuler</button>
           <button className="btn" style={{background:'var(--danger)', borderColor:'var(--danger)', color:'var(--white)'}} onClick={handleConfirm}>
-            Supprimer
+            {actionLabel}
           </button>
         </div>
       </div>
