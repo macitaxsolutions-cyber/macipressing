@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-20-11">
+<meta name="app-version" content="2026-10-20-15">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-20-11';
+  const APP_VERSION_ACTUELLE = '2026-10-20-15';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -2035,7 +2035,7 @@ function GerantApp({ db, setDb, onLogout }){
           {page === 'global' && <GlobalDashboard db={db} onOpenSite={setActiveSiteId} />}
           {page === 'sites' && <SitesManager db={db} setDb={setDb} addSite={addSite} removeSite={removeSite} onOpenSite={setActiveSiteId} />}
           {page === 'depensesPropres' && <DepensesPropresActeursView db={db} setDb={setDb} />}
-          {page === 'detailMensuelConsolide' && <DetailMensuelConsolideView db={db} />}
+          {page === 'detailMensuelConsolide' && <DetailMensuelConsolideView db={db} updateSite={updateSite} />}
           {page === 'encaissementsDecaissements' && <EncaissementsDecaissementsGlobalView db={db} updateSite={updateSite} />}
           {page === 'encaisserSansCommandeBilan' && <BilanEncaisserSansCommandeGlobalView db={db} updateSite={updateSite} />}
           {page === 'distribution' && <DistributionView db={db} setDb={setDb} anneeInitiale={anneeDistribution} />}
@@ -4670,7 +4670,7 @@ function DepensesPropresActeursView({ db, setDb }){
 
 /* ===================== DÉTAIL MENSUEL CONSOLIDÉ (menu autonome) ===================== */
 
-function DetailMensuelConsolideView({ db }){
+function DetailMensuelConsolideView({ db, updateSite }){
   const currentYear = Number(todayISO().slice(0,4));
   const today = todayISO();
   const anneesDisponibles = useMemo(() => {
@@ -4686,6 +4686,16 @@ function DetailMensuelConsolideView({ db }){
   const [intervalleFin, setIntervalleFin] = useState(today);
   const [moisOuvertConsolide, setMoisOuvertConsolide] = useState(null);
   const [siteOuvertEmploye, setSiteOuvertEmploye] = useState(null); // pressing dont on affiche le détail par employé (section ci-dessous)
+  const [ecartBrouillon, setEcartBrouillon] = useState({}); // { 'siteId__annee__mois__employeId': texte en cours de saisie } — voir Détail mensuel par pressing (même mécanisme)
+
+  function enregistrerEcartVerifie(siteId, anneeLigne, mois, employeId){
+    const site = db.sites.find(s => s.id === siteId);
+    if(!site) return;
+    const cle = `${siteId}__${anneeLigne}__${mois}__${employeId}`;
+    const valeur = ecartBrouillon[cle];
+    updateEcartVerifieEmploye(site, updateSite, anneeLigne, mois, employeId, valeur === undefined ? '' : valeur);
+    setEcartBrouillon(prev => { const next = { ...prev }; delete next[cle]; return next; });
+  }
 
   // Liste des (année, mois) à inclure selon le mode choisi — cette page est fondamentalement construite
   // mois par mois (impayés, saisies manuelles...), donc même « Intervalle » et « À ce jour » agrègent des
@@ -4871,20 +4881,52 @@ function DetailMensuelConsolideView({ db }){
                 {moisOuvertConsolide === `${m.annee}-${m.mois}` && m.parEmployeParSite.length > 0 && (
                   <tr style={{background:'var(--paper-2)'}}>
                     <td colSpan={9} style={{padding:'10px 14px'}}>
-                      {m.parEmployeParSite.map(({siteNom, parEmploye}) => (
+                      {m.parEmployeParSite.map(({siteId, siteNom, parEmploye, ecartsVerifiesEmploye}) => (
                         <div key={siteNom} style={{marginBottom:10}}>
                           <div style={{fontWeight:700, fontSize:13, color:'var(--pine)', marginBottom:4}}>{siteNom}</div>
-                          {Object.entries(parEmploye).filter(([empId]) => empId !== '_legacy').map(([empId, v]) => (
+                          {Object.entries(parEmploye).filter(([empId]) => empId !== '_legacy').map(([empId, v]) => {
+                            const netPercuEmp = netPercuEmployeMois(v);
+                            const cleBrouillon = `${siteId}__${m.annee}__${m.mois}__${empId}`;
+                            const ecartEnregistre = (ecartsVerifiesEmploye||{})[empId];
+                            const ecartAffiche = ecartBrouillon[cleBrouillon] !== undefined ? ecartBrouillon[cleBrouillon] : (ecartEnregistre ?? '');
+                            // Net perçu corrigé = Net perçu système + écart — recalculé en direct à chaque frappe
+                            // (pas seulement après enregistrement), pour que le gérant voie tout de suite le vrai
+                            // montant de cet employé pendant qu'il saisit.
+                            const ecartPourCalcul = ecartAffiche === '' ? 0 : (Number(ecartAffiche)||0);
+                            const netPercuCorrige = netPercuEmp + ecartPourCalcul;
+                            return (
                             <div key={empId} style={{padding:'6px 0', borderBottom:'1px solid var(--line)'}}>
                               <div style={{fontWeight:600, fontSize:13, marginBottom:2}}>{getEmpNomMultiSites(db.sites, empId)}</div>
                               <div className="mono" style={{fontSize:12.5, color:'var(--steam)'}}>
                                 Recette : {fmtGNF(v.recetteBrute)} · Impayés : {fmtGNF(v.impayes||0)} · Dép. entreprise : {fmtGNF(v.depenses)} · Dép. propres : {fmtGNF(v.depensesPropres||0)}
                               </div>
                               <div className="mono" style={{fontSize:12.5, color:'var(--pine)', marginTop:2}}>
-                                Reçu Espèces : {fmtGNF(v.montantRecuEspeces||0)} · Reçu Orange Money : {fmtGNF(v.montantRecuOrangeMoney||0)}
+                                Reçu Espèces : {fmtGNF(v.montantRecuEspeces||0)} · Reçu Orange Money : {fmtGNF(v.montantRecuOrangeMoney||0)} · Net perçu : {fmtGNF(netPercuEmp)}
                               </div>
+                              {siteId && (
+                                <>
+                                  <div style={{display:'flex', alignItems:'center', gap:8, marginTop:6, flexWrap:'wrap'}}>
+                                    <label style={{fontSize:12, color:'var(--steam)'}}>Écart (reçus réels − Net perçu) :</label>
+                                    <input type="number" value={ecartAffiche}
+                                      onChange={e=>setEcartBrouillon(prev=>({...prev, [cleBrouillon]: e.target.value}))}
+                                      onBlur={()=>enregistrerEcartVerifie(siteId, m.annee, m.mois, empId)}
+                                      placeholder="—" style={{width:130, padding:'4px 8px', fontSize:12.5}} />
+                                    {ecartEnregistre != null && (
+                                      <span className="mono" style={{fontSize:12.5, fontWeight:700, color: ecartEnregistre===0 ? 'var(--steam)' : (ecartEnregistre>0 ? 'var(--ok)' : 'var(--danger)')}}>
+                                        {ecartEnregistre===0 ? 'Aucun écart' : (ecartEnregistre>0 ? `+${fmtGNF(ecartEnregistre)}` : fmtGNF(ecartEnregistre))}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {ecartPourCalcul !== 0 && (
+                                    <div className="mono" style={{fontSize:13, fontWeight:700, color:'var(--ink)', marginTop:4}}>
+                                      Net perçu corrigé : {fmtGNF(netPercuCorrige)}
+                                    </div>
+                                  )}
+                                </>
+                              )}
                             </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       ))}
                     </td>
@@ -4906,6 +4948,73 @@ function DetailMensuelConsolideView({ db }){
           </tbody>
         </table>
       </div>
+
+      {(() => {
+        // ---- Comparaison Écart vérifié, par employé, agrégée sur tous les pressings et sur tous les mois de
+        // la période affichée ci-dessus — n'affiche que les mois où au moins un écart a été saisi (voir
+        // « Écart » dans le détail par caissier de chaque mois, un peu plus haut). L'écart est saisi
+        // directement par le gérant (déjà calculé de son côté, ex: dans un tableur de rapprochement
+        // journalier) — l'app ne fait que l'additionner par employé et par mois, elle ne le recalcule pas.
+        const moisAvecEcart = donneesParMois.filter(m => (m.parEmployeParSite||[]).some(s => Object.keys(s.ecartsVerifiesEmploye||{}).length > 0));
+        if(moisAvecEcart.length === 0) return null;
+        const cleMoisAffichage = (m) => `${m.annee}-${m.mois}`;
+        const employesAvecEcart = new Map(); // empId -> nom
+        moisAvecEcart.forEach(m => (m.parEmployeParSite||[]).forEach(s => Object.keys(s.ecartsVerifiesEmploye||{}).forEach(empId => {
+          if(!employesAvecEcart.has(empId)) employesAvecEcart.set(empId, getEmpNomMultiSites(db.sites, empId));
+        })));
+        const lignesComparaison = Array.from(employesAvecEcart.entries()).map(([empId, nom]) => {
+          const parMois = {};
+          let total = 0;
+          moisAvecEcart.forEach(m => {
+            let ecartMois = null;
+            (m.parEmployeParSite||[]).forEach(s => {
+              const ecart = (s.ecartsVerifiesEmploye||{})[empId];
+              if(ecart == null) return;
+              ecartMois = (ecartMois||0) + ecart;
+            });
+            parMois[cleMoisAffichage(m)] = ecartMois;
+            if(ecartMois != null) total += ecartMois;
+          });
+          return { empId, nom, parMois, total };
+        });
+        return (
+          <div style={{marginBottom:24}}>
+            <h2 style={{fontSize:16, color:'var(--ink)', margin:'0 0 10px'}}>Comparaison des écarts vérifiés — {periodeLabel}</h2>
+            <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
+              Écart saisi directement par le gérant dans le détail par caissier ci-dessus (déjà calculé de son côté par rapprochement). Positif = l'employé a en réalité reçu plus que ce qui est saisi dans Détail mensuel. Négatif = Détail mensuel saisi plus élevé que les reçus retrouvés. Cet écart corrige le Net perçu partout, y compris dans Distribution des recettes : ce n'est plus seulement un affichage, il change réellement l'argent réparti entre les acteurs.
+            </p>
+            <div className="card" style={{overflow:'hidden', overflowX:'auto'}}>
+              <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
+                <thead>
+                  <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                    <th style={th}></th>
+                    {moisAvecEcart.map(m => <th key={cleMoisAffichage(m)} style={{...th, textTransform:'capitalize'}}>{m.labelAvecAnnee || m.label}</th>)}
+                    <th style={th}>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lignesComparaison.map(l => (
+                    <tr key={l.empId} style={{borderTop:'1px solid var(--line)'}}>
+                      <td style={{...td, fontWeight:600}}>{l.nom}</td>
+                      {moisAvecEcart.map(m => {
+                        const v = l.parMois[cleMoisAffichage(m)];
+                        return (
+                          <td key={cleMoisAffichage(m)} style={{...td, fontWeight:600, color: v==null ? 'var(--steam)' : (v===0 ? 'var(--ink)' : (v>0 ? 'var(--ok)' : 'var(--danger)'))}} className="mono">
+                            {v==null ? '—' : (v>0 ? `+${fmtGNF(v)}` : fmtGNF(v))}
+                          </td>
+                        );
+                      })}
+                      <td style={{...td, fontWeight:700, color: l.total===0 ? 'var(--ink)' : (l.total>0 ? 'var(--ok)' : 'var(--danger)')}} className="mono">
+                        {l.total>0 ? `+${fmtGNF(l.total)}` : fmtGNF(l.total)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
 
       <h2 style={{fontSize:16, color:'var(--ink)', margin:'0 0 10px'}}>Total par employé — {periodeLabel}</h2>
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
@@ -13744,9 +13853,16 @@ function calculerDonneesMensuellesSite(site, annee){
     const parEmploye = normaliserMoisManuel(manuel[a.mois]) || {};
     const aDesSaisiesManuelles = Object.keys(parEmploye).length > 0;
     const depensesPropres = Object.values(parEmploye).reduce((s,v)=>s+(Number(v.depensesPropres)||0),0);
-    const montantRecuEspeces = aDesSaisiesManuelles
+    // Écarts vérifiés (rapprochement du gérant, saisis dans Détail mensuel → Détail par caissier) : un écart
+    // positif veut dire que les acteurs ont en réalité reçu PLUS d'espèces que ce qui était saisi — ajouté
+    // directement à l'Espèces du mois, il corrige automatiquement le Net perçu ici ET partout en aval
+    // (Total par employé, Distribution des recettes), sans qu'il faille dupliquer le calcul ailleurs. Vide
+    // (0) pour un mois où aucun écart n'a été saisi — aucun effet dans ce cas.
+    const ecartsMois = ((site.ecartsVerifiesEmploye||{})[annee]||{})[a.mois] || {};
+    const totalEcartsMois = Object.values(ecartsMois).reduce((s,e)=>s+(Number(e)||0),0);
+    const montantRecuEspeces = (aDesSaisiesManuelles
       ? Object.values(parEmploye).reduce((s,v)=>s+(Number(v.montantRecuEspeces)||0),0)
-      : a.especes;
+      : a.especes) + totalEcartsMois;
     const montantRecuOrangeMoney = aDesSaisiesManuelles
       ? Object.values(parEmploye).reduce((s,v)=>s+(Number(v.montantRecuOrangeMoney)||0),0)
       : a.orangeMoney;
@@ -13773,27 +13889,31 @@ function calculerDonneesMensuellesSite(site, annee){
 
 // Net perçu d'UN employé pour un mois donné (sa part du détail par caissier) : Espèces + Orange Money qu'il
 // a personnellement reçus, moins SES dépenses entreprise et SES dépenses propres — même formule que la vue
-// « Total par employé » consolidée (DetailMensuelConsolideView), reprise ici pour comparer au montant
-// « reçus vérifiés » saisi par le gérant lors d'un rapprochement physique (comptage caisse, relevé Orange
-// Money...).
+// « Total par employé » consolidée (DetailMensuelConsolideView). Affiché à côté du champ Écart, pour
+// référence — le Net perçu CORRIGÉ (celui qui compte réellement, Écart inclus) est affiché séparément dans
+// l'UI (netPercuEmployeMois + écart), et l'écart lui-même est injecté dans le Montant reçu Espèces du mois
+// par calculerDonneesMensuellesSite / calculerDonneesMensuellesEmploye, ce qui le propage automatiquement
+// au Net perçu du site puis à la Distribution des recettes (voir le commentaire dans ces deux fonctions).
 function netPercuEmployeMois(v){
   if(!v) return 0;
   return (Number(v.montantRecuEspeces)||0) + (Number(v.montantRecuOrangeMoney)||0) - (Number(v.depenses)||0) - (Number(v.depensesPropres)||0);
 }
-// Enregistre (ou corrige) le montant « reçus vérifiés » d'un employé pour un mois donné — un chiffre de
-// rapprochement saisi à part par le gérant (ex: après avoir recompté la caisse ou comparé à un relevé
-// Orange Money), totalement indépendant de ce qui a été saisi dans Détail mensuel. Sert uniquement à
-// calculer un écart (reçus vérifiés − Net perçu) affiché à titre informatif ; ne modifie jamais le Net
-// perçu lui-même ni aucun calcul de distribution.
-function updateRecuVerifieEmploye(site, updateSite, annee, mois, employeId, montant){
-  const existant = site.recusVerifiesEmploye || {};
+// Enregistre (ou corrige) directement l'ÉCART (positif ou négatif) constaté pour un employé, pour un mois
+// donné — déjà calculé par le gérant en dehors de l'app (ex: un tableur de rapprochement journalier qui
+// compare les reçus réels au Net perçu saisi ici) : positif = l'employé a en réalité reçu plus que ce qui
+// est saisi dans Détail mensuel, négatif = l'inverse. Cet écart est ensuite ajouté au Montant reçu Espèces
+// du mois (voir calculerDonneesMensuellesSite et calculerDonneesMensuellesEmploye), donc il corrige non
+// seulement l'affichage mais aussi le Net perçu réellement utilisé par Distribution des recettes — il
+// change l'argent effectivement réparti entre les acteurs, pas seulement ce qui est montré à l'écran.
+function updateEcartVerifieEmploye(site, updateSite, annee, mois, employeId, ecart){
+  const existant = site.ecartsVerifiesEmploye || {};
   const anneeExistante = existant[annee] || {};
   const moisExistant = anneeExistante[mois] || {};
-  const nextMois = montant === '' || montant == null
+  const nextMois = ecart === '' || ecart == null
     ? Object.fromEntries(Object.entries(moisExistant).filter(([id]) => id !== employeId))
-    : { ...moisExistant, [employeId]: Number(montant)||0 };
+    : { ...moisExistant, [employeId]: Number(ecart)||0 };
   const nextAnnee = { ...anneeExistante, [mois]: nextMois };
-  updateSite({ ...site, recusVerifiesEmploye: { ...existant, [annee]: nextAnnee } });
+  updateSite({ ...site, ecartsVerifiesEmploye: { ...existant, [annee]: nextAnnee } });
 }
 
 // Comme calculerDonneesMensuellesSite, mais ne montre QUE la contribution d'UN employé précis
@@ -13860,7 +13980,11 @@ function calculerDonneesMensuellesEmploye(site, annee, employeId){
     const parEmploye = normaliserMoisManuel(manuel[a.mois]) || {};
     const mesValeurs = parEmploye[employeId] || null;
     const depensesPropres = Number(mesValeurs?.depensesPropres)||0;
-    const montantRecuEspeces = mesValeurs ? (Number(mesValeurs.montantRecuEspeces)||0) : a.especes;
+    // Écart vérifié de CET employé pour ce mois (voir le commentaire équivalent dans
+    // calculerDonneesMensuellesSite) — ajouté à son Espèces pour que « Total par employé » reflète lui
+    // aussi le rapprochement, et pas seulement le total du site.
+    const monEcartMois = (((site.ecartsVerifiesEmploye||{})[annee]||{})[a.mois]||{})[employeId];
+    const montantRecuEspeces = (mesValeurs ? (Number(mesValeurs.montantRecuEspeces)||0) : a.especes) + (Number(monEcartMois)||0);
     const montantRecuOrangeMoney = mesValeurs ? (Number(mesValeurs.montantRecuOrangeMoney)||0) : a.orangeMoney;
     const reglementsAnciens = reglementsAnciensParMois[a.mois-1];
     if(mesValeurs){
@@ -13902,7 +14026,7 @@ function calculerDonneesMensuellesMultiSites(sites, annee){
       merged.net += m.net||0;
       merged.manuel = merged.manuel || m.manuel;
       if(Object.keys(m.parEmploye||{}).length > 0){
-        merged.parEmployeParSite.push({ siteNom: site.nom, parEmploye: m.parEmploye });
+        merged.parEmployeParSite.push({ siteId: site.id, siteNom: site.nom, parEmploye: m.parEmploye, ecartsVerifiesEmploye: ((site.ecartsVerifiesEmploye||{})[annee]||{})[i+1] || {} });
       }
     });
     return merged;
@@ -14193,7 +14317,7 @@ function DetailMensuelGerantView({ site, updateSite, db }){
   const [annee, setAnnee] = useState(currentYear);
   const [moisOuvert, setMoisOuvert] = useState(null);
   const [empSaisieMois, setEmpSaisieMois] = useState(null); // { mois, employeId } en cours d'édition
-  const [recuBrouillon, setRecuBrouillon] = useState({}); // { 'mois__employeId': texte en cours de saisie, avant enregistrement } — évite de ré-écrire site.recusVerifiesEmploye à chaque frappe
+  const [ecartBrouillon, setEcartBrouillon] = useState({}); // { 'mois__employeId': texte en cours de saisie, avant enregistrement } — évite de ré-écrire site.ecartsVerifiesEmploye à chaque frappe
 
   function getEmpNom(id){
     if(id === '_legacy') return 'Saisie antérieure (sans détail par caissier)';
@@ -14211,11 +14335,11 @@ function DetailMensuelGerantView({ site, updateSite, db }){
     setEmpSaisieMois(null);
   }
 
-  function enregistrerRecuVerifie(mois, employeId){
+  function enregistrerEcartVerifie(mois, employeId){
     const cle = `${mois}__${employeId}`;
-    const valeur = recuBrouillon[cle];
-    updateRecuVerifieEmploye(site, updateSite, annee, mois, employeId, valeur === undefined ? '' : valeur);
-    setRecuBrouillon(prev => { const next = { ...prev }; delete next[cle]; return next; });
+    const valeur = ecartBrouillon[cle];
+    updateEcartVerifieEmploye(site, updateSite, annee, mois, employeId, valeur === undefined ? '' : valeur);
+    setEcartBrouillon(prev => { const next = { ...prev }; delete next[cle]; return next; });
   }
 
   const donneesParMois = useMemo(() => calculerDonneesMensuellesSite(site, annee), [site, annee]);
@@ -14307,9 +14431,13 @@ function DetailMensuelGerantView({ site, updateSite, db }){
                       {Object.entries(m.parEmploye).filter(([empId]) => empId !== '_legacy').map(([empId, v]) => {
                         const netPercuEmp = netPercuEmployeMois(v);
                         const cleBrouillon = `${m.mois}__${empId}`;
-                        const recuEnregistre = ((site.recusVerifiesEmploye||{})[annee]||{})[m.mois]?.[empId];
-                        const recuAffiche = recuBrouillon[cleBrouillon] !== undefined ? recuBrouillon[cleBrouillon] : (recuEnregistre ?? '');
-                        const variation = recuEnregistre != null ? recuEnregistre - netPercuEmp : null;
+                        const ecartEnregistre = ((site.ecartsVerifiesEmploye||{})[annee]||{})[m.mois]?.[empId];
+                        const ecartAffiche = ecartBrouillon[cleBrouillon] !== undefined ? ecartBrouillon[cleBrouillon] : (ecartEnregistre ?? '');
+                        // Net perçu corrigé = Net perçu système + écart — recalculé en direct à chaque frappe
+                        // (pas seulement après enregistrement), pour que le gérant voie tout de suite le vrai
+                        // montant de cet employé pendant qu'il saisit.
+                        const ecartPourCalcul = ecartAffiche === '' ? 0 : (Number(ecartAffiche)||0);
+                        const netPercuCorrige = netPercuEmp + ecartPourCalcul;
                         return (
                         <div key={empId} style={{padding:'6px 0', borderBottom:'1px solid var(--line)'}}>
                           <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:2}}>
@@ -14323,17 +14451,22 @@ function DetailMensuelGerantView({ site, updateSite, db }){
                             Reçu Espèces : {fmtGNF(v.montantRecuEspeces||0)} · Reçu Orange Money : {fmtGNF(v.montantRecuOrangeMoney||0)} · Net perçu : {fmtGNF(netPercuEmp)}
                           </div>
                           <div style={{display:'flex', alignItems:'center', gap:8, marginTop:6, flexWrap:'wrap'}}>
-                            <label style={{fontSize:12, color:'var(--steam)'}}>Reçus vérifiés (rapprochement) :</label>
-                            <input type="number" value={recuAffiche}
-                              onChange={e=>setRecuBrouillon(prev=>({...prev, [cleBrouillon]: e.target.value}))}
-                              onBlur={()=>enregistrerRecuVerifie(m.mois, empId)}
+                            <label style={{fontSize:12, color:'var(--steam)'}}>Écart (reçus réels − Net perçu) :</label>
+                            <input type="number" value={ecartAffiche}
+                              onChange={e=>setEcartBrouillon(prev=>({...prev, [cleBrouillon]: e.target.value}))}
+                              onBlur={()=>enregistrerEcartVerifie(m.mois, empId)}
                               placeholder="—" style={{width:130, padding:'4px 8px', fontSize:12.5}} />
-                            {variation != null && (
-                              <span className="mono" style={{fontSize:12.5, fontWeight:700, color: variation===0 ? 'var(--steam)' : (variation>0 ? 'var(--ok)' : 'var(--danger)')}}>
-                                {variation===0 ? 'Aucun écart' : (variation>0 ? `+${fmtGNF(variation)}` : fmtGNF(variation))}
+                            {ecartEnregistre != null && (
+                              <span className="mono" style={{fontSize:12.5, fontWeight:700, color: ecartEnregistre===0 ? 'var(--steam)' : (ecartEnregistre>0 ? 'var(--ok)' : 'var(--danger)')}}>
+                                {ecartEnregistre===0 ? 'Aucun écart' : (ecartEnregistre>0 ? `+${fmtGNF(ecartEnregistre)}` : fmtGNF(ecartEnregistre))}
                               </span>
                             )}
                           </div>
+                          {ecartPourCalcul !== 0 && (
+                            <div className="mono" style={{fontSize:13, fontWeight:700, color:'var(--ink)', marginTop:4}}>
+                              Net perçu corrigé : {fmtGNF(netPercuCorrige)}
+                            </div>
+                          )}
                         </div>
                         );
                       })}
@@ -14358,40 +14491,37 @@ function DetailMensuelGerantView({ site, updateSite, db }){
       </div>
 
       {(() => {
-        // ---- Comparaison Reçus vérifiés vs Net perçu, par employé et par mois — reconstruite à partir de
-        // site.recusVerifiesEmploye (saisi à la main par le gérant lors d'un rapprochement) comparé au Net
-        // perçu déjà calculé dans Détail mensuel pour ce même employé/mois. N'affiche que les mois où AU
-        // MOINS un reçu a été saisi, pour rester lisible même sur une année avec peu de rapprochements faits.
-        const recusAnnee = (site.recusVerifiesEmploye||{})[annee] || {};
-        const moisAvecRecu = donneesParMois.filter(m => Object.keys(recusAnnee[m.mois]||{}).length > 0).map(m => m.mois);
-        if(moisAvecRecu.length === 0) return null;
-        const employeIds = Array.from(new Set(moisAvecRecu.flatMap(mo => Object.keys(recusAnnee[mo]||{}))));
+        // ---- Comparaison des écarts vérifiés, par employé et par mois — reconstruite à partir de
+        // site.ecartsVerifiesEmploye (saisi directement par le gérant, déjà calculé de son côté par
+        // rapprochement). N'affiche que les mois où AU MOINS un écart a été saisi, pour rester lisible même
+        // sur une année avec peu de rapprochements faits. L'app ne recalcule rien : elle additionne juste
+        // les écarts déjà saisis par employé et par mois.
+        const ecartsAnnee = (site.ecartsVerifiesEmploye||{})[annee] || {};
+        const moisAvecEcart = donneesParMois.filter(m => Object.keys(ecartsAnnee[m.mois]||{}).length > 0).map(m => m.mois);
+        if(moisAvecEcart.length === 0) return null;
+        const employeIds = Array.from(new Set(moisAvecEcart.flatMap(mo => Object.keys(ecartsAnnee[mo]||{}))));
         const lignesComparaison = employeIds.map(empId => {
           const parMois = {};
           let total = 0;
-          moisAvecRecu.forEach(mo => {
-            const recu = recusAnnee[mo]?.[empId];
-            if(recu == null) { parMois[mo] = null; return; }
-            const donneesMois = donneesParMois.find(m => m.mois === mo);
-            const v = (donneesMois?.parEmploye || {})[empId];
-            const variation = recu - netPercuEmployeMois(v);
-            parMois[mo] = variation;
-            total += variation;
+          moisAvecEcart.forEach(mo => {
+            const ecart = ecartsAnnee[mo]?.[empId];
+            parMois[mo] = ecart == null ? null : ecart;
+            if(ecart != null) total += ecart;
           });
           return { empId, nom: getEmpNom(empId), parMois, total };
         });
         return (
           <div style={{marginBottom:24}}>
-            <h2 style={{fontSize:16, color:'var(--ink)', margin:'0 0 10px'}}>Comparaison reçus vérifiés vs Net perçu — {annee}</h2>
+            <h2 style={{fontSize:16, color:'var(--ink)', margin:'0 0 10px'}}>Comparaison des écarts vérifiés — {annee}</h2>
             <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
-              « Reçus vérifiés » = montant saisi ci-dessus lors d'un rapprochement (comptage caisse, relevé Orange Money...), comparé au Net perçu déjà calculé dans Détail mensuel pour cet employé ce mois-là. Positif = l'employé a en réalité reçu plus que ce qui est saisi dans Détail mensuel. Négatif = Détail mensuel saisi plus élevé que les reçus retrouvés.
+              Écart saisi directement par le gérant ci-dessus (déjà calculé de son côté par rapprochement). Positif = l'employé a en réalité reçu plus que ce qui est saisi dans Détail mensuel. Négatif = Détail mensuel saisi plus élevé que les reçus retrouvés. Cet écart corrige le Net perçu partout, y compris dans Distribution des recettes : ce n'est plus seulement un affichage, il change réellement l'argent réparti entre les acteurs.
             </p>
             <div className="card" style={{overflow:'hidden', overflowX:'auto'}}>
               <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
                 <thead>
                   <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
                     <th style={th}></th>
-                    {moisAvecRecu.map(mo => <th key={mo} style={{...th, textTransform:'capitalize'}}>{(donneesParMois.find(m=>m.mois===mo)||{}).label}</th>)}
+                    {moisAvecEcart.map(mo => <th key={mo} style={{...th, textTransform:'capitalize'}}>{(donneesParMois.find(m=>m.mois===mo)||{}).label}</th>)}
                     <th style={th}>Total</th>
                   </tr>
                 </thead>
@@ -14399,7 +14529,7 @@ function DetailMensuelGerantView({ site, updateSite, db }){
                   {lignesComparaison.map(l => (
                     <tr key={l.empId} style={{borderTop:'1px solid var(--line)'}}>
                       <td style={{...td, fontWeight:600}}>{l.nom}</td>
-                      {moisAvecRecu.map(mo => {
+                      {moisAvecEcart.map(mo => {
                         const v = l.parMois[mo];
                         return (
                           <td key={mo} style={{...td, fontWeight:600, color: v==null ? 'var(--steam)' : (v===0 ? 'var(--ink)' : (v>0 ? 'var(--ok)' : 'var(--danger)'))}} className="mono">
