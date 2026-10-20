@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-19-7">
+<meta name="app-version" content="2026-10-20-10">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-19-7';
+  const APP_VERSION_ACTUELLE = '2026-10-20-10';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -2150,10 +2150,11 @@ function calculerDepensesPropresEmployesParActeur(db, moisCouverts){
 
 // ---- Remboursement des avances personnelles (« dépenses propres ») ----
 // db.historiqueAnnuel[annee].remboursementsActeurs = { [nomActeur]: [{id, montant, date, description}] }
-// Une avance personnelle est de l'argent qui appartenait au groupe des acteurs, pas à celui qui l'a prise :
-// quand il la rembourse, ce montant ne lui revient PAS (il l'a déjà reçu via l'avance) — il est reversé aux
-// AUTRES acteurs, au prorata de leur %, daté du jour réel du remboursement (même logique de datation que les
-// dépenses propres elles-mêmes).
+// Une avance personnelle est désormais retirée du pot commun AVANT répartition (mutualisée entre tous les
+// acteurs, celui qui l'a prise inclus, au prorata de leur %) — donc quand il la rembourse, ce montant
+// revient au pot commun et est reversé à TOUS les acteurs au prorata de leur %, lui compris (il a payé sa
+// part de sa propre avance comme tout le monde), daté du jour réel du remboursement (même logique de
+// datation que les dépenses propres elles-mêmes).
 function remboursementsActeurPourPeriode(db, nomActeur, anneesCouvertes, surUnSeulMois, moisChoisi){
   let entries = [];
   anneesCouvertes.forEach(a => {
@@ -2168,16 +2169,16 @@ function calculerCreditsRemboursementPourPeriode(db, parts, anneesCouvertes, sur
   parts.forEach(p => { credits[p.nom] = 0; });
   parts.forEach(p => {
     // Remboursements manuels pendant la période + prélèvements automatiques effectifs pendant la période
-    // (voir simulerAutoDeductionsActeur) — les deux sont reversés aux AUTRES acteurs de la même façon, le
-    // partage proportionnel étant linéaire, additionner les deux sources d'abord ne change rien au résultat.
+    // (voir simulerAutoDeductionsActeur) — les deux sont reversés à TOUS les acteurs de la même façon
+    // (celui qui rembourse inclus), le partage proportionnel étant linéaire, additionner les deux sources
+    // d'abord ne change rien au résultat.
     const montantManuel = remboursementsActeurPourPeriode(db, p.nom, anneesCouvertes, surUnSeulMois, moisChoisi).reduce((s,r)=>s+(Number(r.montant)||0),0);
     const montantAuto = autoDeductionTotalPourPeriode(db, p.nom, anneesCouvertes, surUnSeulMois, moisChoisi);
     const montant = montantManuel + montantAuto;
     if(montant <= 0) return;
-    const autres = parts.filter(x => x.nom !== p.nom);
-    const sommePct = autres.reduce((s,x)=>s+(Number(x.pct)||0),0);
+    const sommePct = parts.reduce((s,x)=>s+(Number(x.pct)||0),0);
     if(sommePct <= 0) return;
-    autres.forEach(x => { credits[x.nom] += montant * (Number(x.pct)||0) / sommePct; });
+    parts.forEach(x => { credits[x.nom] += montant * (Number(x.pct)||0) / sommePct; });
   });
   return credits;
 }
@@ -2393,30 +2394,55 @@ function calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi){
   const depensesActeursPeriode = {};
   parts.forEach(p => { depensesActeursPeriode[p.nom] = depensesActeurPourPeriode(p.nom); });
   const depensesPropresEmployes = calculerDepensesPropresEmployesParActeur(db, moisCouverts);
-  // Remboursements d'avances personnelles effectués PENDANT cette période : reversés aux AUTRES acteurs
-  // (jamais à celui qui rembourse, qui a déjà reçu son dû via l'avance) — voir calculerCreditsRemboursementPourPeriode.
+  // Remboursements d'avances personnelles effectués PENDANT cette période : reversés à TOUS les acteurs au
+  // prorata de leur %, CELUI QUI REMBOURSE INCLUS — puisque sa dépense propre est désormais mutualisée (voir
+  // ci-dessous), son remboursement doit l'être aussi, comme pour n'importe quel autre acteur.
   const creditsRemboursement = calculerCreditsRemboursementPourPeriode(db, parts, anneesCouvertes, surUnSeulMois, moisChoisi);
+
+  // ---- Mutualisation des dépenses propres (avances personnelles) ----
+  // Une avance personnelle n'est plus déduite de la part de la personne qui l'a prise : elle est retirée du
+  // pot commun AVANT répartition, comme n'importe quelle autre dépense, et donc partagée par TOUS les
+  // acteurs au prorata de ce qu'ils ont chacun gagné sur la période (pas juste leur % nominal, pour rester
+  // exact même si les % ont changé en cours de période). Charge à chacun de rembourser sa propre avance —
+  // voir « Dépenses propres de chaque acteur » / Suivi distribution — ce remboursement étant lui-même
+  // reversé à tous au prorata (calculerCreditsRemboursementPourPeriode, ci-dessus, inclut maintenant celui
+  // qui rembourse).
+  const totalDepensesPropresPeriode = parts.reduce((s,p) => {
+    return s + (depensesActeursPeriode[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
+  }, 0);
+  const montantBrutAvantPoolingParActeur = {};
+  parts.forEach(p => { montantBrutAvantPoolingParActeur[p.nom] = partActeur(p.nom, 'recetteNette'); });
+  const sommeMontantBrutAvantPooling = parts.reduce((s,p) => s + montantBrutAvantPoolingParActeur[p.nom], 0);
+  function montantBrutPoolePourActeur(p){
+    const avantPooling = montantBrutAvantPoolingParActeur[p.nom];
+    // Poids de CET acteur dans le pot commun = sa part effectivement gagnée / somme de tout le monde (égal
+    // à son % exact sur un seul mois ; pondéré mois par mois sur une période à cheval sur plusieurs mois ou
+    // plusieurs grilles de %). Repli sur le % nominal si la somme est nulle (aucun revenu net ce mois-là).
+    const poids = sommeMontantBrutAvantPooling !== 0 ? (avantPooling / sommeMontantBrutAvantPooling) : ((Number(p.pct)||0) / 100);
+    return avantPooling - (totalDepensesPropresPeriode * poids);
+  }
 
   // Montant que CET acteur verse en plus vers la Conservation du Capital Fixe (20% de la part de son net
   // perçu gagnée pendant un mois où le remboursement était actif, uniquement pour les 4 acteurs concernés).
-  // Ses dépenses propres réduisent d'abord cette part éligible (ce sont des avances déjà prises) avant
-  // d'appliquer les 20% — jamais en dessous de 0.
+  // Plus de déduction de ses dépenses propres ici : elles sont déjà mutualisées via le pot commun ci-dessus,
+  // les 20% s'appliquent donc directement à sa part normale.
   function extraCapitalFixeActeur(p){
     if(!ACTEURS_REMBOURSEMENT_INVESTISSEMENT.includes(p.nom)) return 0;
-    const depensePropreP = (depensesActeursPeriode[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
-    const eligibleApresDepense = Math.max(0, partActeurEligibleRemboursement(p.nom) - depensePropreP);
-    return eligibleApresDepense * 0.2;
+    return Math.max(0, partActeurEligibleRemboursement(p.nom)) * 0.2;
   }
 
   const totalRedirigeVersCapitalFixe = parts.reduce((s,p) => s + extraCapitalFixeActeur(p), 0);
 
   return parts.map(p => {
     const impayesPart = partActeur(p.nom, 'impayes');
-    const montantBrut = partActeur(p.nom, 'recetteNette');
     const montantBrutAvantImpayes = partActeur(p.nom, 'recetteBrute');
+    // Dépense propre de CET acteur — gardée pour affichage informatif (son « solde dû » continue d'augmenter
+    // tant qu'il ne rembourse pas), mais NE réduit PLUS sa propre part : elle a déjà été retirée du pot
+    // commun ci-dessus et partagée entre tout le monde, lui compris, au prorata.
     const depensePropre = (depensesActeursPeriode[p.nom]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
+    const montantBrut = montantBrutPoolePourActeur(p);
     const creditRemboursement = creditsRemboursement[p.nom] || 0;
-    const montantNet = montantBrut - depensePropre + creditRemboursement;
+    const montantNet = montantBrut + creditRemboursement;
     // Montant que CET acteur verse en plus vers la Conservation du Capital Fixe (0 si non concerné, ou si
     // aucun des mois de la période n'avait le remboursement actif à l'époque).
     const extraCapitalFixe = extraCapitalFixeActeur(p);
@@ -2434,41 +2460,133 @@ function calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi){
 }
 
 // ---- Suivi du paiement réel de la distribution, acteur par acteur, période par période ----
-// db.distributionPaiements = { [clePeriode]: { [nomActeur]: { paye, montant, modePaiement, datePaiement,
-//   payeParNom, valide, dateValidation, valideParNom } } }
+// db.distributionPaiements = { [clePeriode]: { [nomActeur]: { versements: [ { montant, modePaiement,
+//   datePaiement, payeParNom, payeDepuisCaisseDe, valide, dateValidation, valideParNom } ] } } }
+// Un acteur peut être payé en plusieurs fois (par exemple en partie par Nene Djiba, en partie par
+// Mamadou Alpha, à des moments différents) — chaque versement est confirmable séparément par l'acteur.
 // clePeriode = 'M-AAAA-MM' pour un mois précis, 'A-AAAA' pour une année entière — préfixées pour ne
 // jamais confondre un suivi mensuel et un suivi annuel de la même période.
+// Ancien format (avant les versements multiples) : { paye, montant, modePaiement, datePaiement,
+// payeParNom, payeDepuisCaisseDe, valide, dateValidation, valideParNom } — un seul paiement plat.
+// normaliserPaiementActeur() convertit transparemment l'ancien format en un versement unique, pour que
+// les données historiques restent lisibles sans migration.
 function clePeriodeDistribution(periode, moisChoisi, anneeChoisie){
   return periode === 'mois' ? `M-${moisChoisi}` : `A-${anneeChoisie}`;
 }
-function marquerDistributionPayee(db, cle, nomActeur, montant, mode, payeParNom){
-  const existant = (db.distributionPaiements||{})[cle] || {};
-  const entree = {
-    paye: true,
-    montant,
+function normaliserPaiementActeur(entree){
+  if(!entree) return { versements: [] };
+  if(Array.isArray(entree.versements)) return entree;
+  if(!entree.paye) return { versements: [] };
+  return { versements: [{
+    montant: Number(entree.montant)||0,
+    modePaiement: entree.modePaiement,
+    datePaiement: entree.datePaiement,
+    payeParNom: entree.payeParNom,
+    payeDepuisCaisseDe: entree.payeDepuisCaisseDe || null,
+    valide: !!entree.valide,
+    dateValidation: entree.dateValidation || null,
+    valideParNom: entree.valideParNom || null,
+  }] };
+}
+function montantVerseEntree(entree){
+  return normaliserPaiementActeur(entree).versements.reduce((s,v)=>s+(Number(v.montant)||0), 0);
+}
+// Ajoute un nouveau versement (paiement partiel ou total) pour cet acteur, sur cette période — ne
+// remplace jamais les versements précédents, qui restent dans l'historique.
+function ajouterVersementDistribution(db, cle, nomActeur, montant, mode, payeParNom, payeDepuisCaisseDe){
+  const existantCle = (db.distributionPaiements||{})[cle] || {};
+  const entreeActuelle = normaliserPaiementActeur(existantCle[nomActeur]);
+  const versement = {
+    montant: Number(montant)||0,
     modePaiement: mode,
     datePaiement: new Date().toISOString(),
     payeParNom: payeParNom || 'Gérant',
+    // Qui a physiquement sorti cet argent de sa propre caisse (Nene Djiba ou Mamadou Alpha) — distinct de
+    // payeParNom, qui est juste la personne connectée ayant cliqué le bouton (souvent le gérant pour le
+    // compte d'un autre).
+    payeDepuisCaisseDe: payeDepuisCaisseDe || null,
     valide: false,
     dateValidation: null,
     valideParNom: null,
   };
-  return { ...db, distributionPaiements: { ...(db.distributionPaiements||{}), [cle]: { ...existant, [nomActeur]: entree } } };
+  const nouvelleEntree = { versements: [...entreeActuelle.versements, versement] };
+  return { ...db, distributionPaiements: { ...(db.distributionPaiements||{}), [cle]: { ...existantCle, [nomActeur]: nouvelleEntree } } };
 }
-function validerReceptionDistribution(db, cle, nomActeur, valideParNom){
-  const existant = (db.distributionPaiements||{})[cle] || {};
-  const entreeActuelle = existant[nomActeur];
-  if(!entreeActuelle || !entreeActuelle.paye) return db;
-  return { ...db, distributionPaiements: { ...(db.distributionPaiements||{}), [cle]: { ...existant, [nomActeur]: { ...entreeActuelle, valide: true, dateValidation: new Date().toISOString(), valideParNom } } } };
+function validerReceptionVersement(db, cle, nomActeur, indexVersement, valideParNom){
+  const existantCle = (db.distributionPaiements||{})[cle] || {};
+  const entreeActuelle = normaliserPaiementActeur(existantCle[nomActeur]);
+  const v = entreeActuelle.versements[indexVersement];
+  if(!v || v.valide) return db;
+  const versements = entreeActuelle.versements.map((vv,i) => i===indexVersement ? { ...vv, valide: true, dateValidation: new Date().toISOString(), valideParNom } : vv);
+  return { ...db, distributionPaiements: { ...(db.distributionPaiements||{}), [cle]: { ...existantCle, [nomActeur]: { versements } } } };
+}
+// Attribue (ou corrige) rétroactivement la caisse d'origine d'un versement déjà enregistré — utile pour
+// les versements marqués payés avant l'ajout de cette fonctionnalité, ou saisis sans préciser la caisse
+// (ex: par erreur). Réservé au gérant, qui sait qui a réellement payé.
+function assignerCaisseVersement(db, cle, nomActeur, indexVersement, caisse){
+  const existantCle = (db.distributionPaiements||{})[cle] || {};
+  const entreeActuelle = normaliserPaiementActeur(existantCle[nomActeur]);
+  const v = entreeActuelle.versements[indexVersement];
+  if(!v) return db;
+  const versements = entreeActuelle.versements.map((vv,i) => i===indexVersement ? { ...vv, payeDepuisCaisseDe: caisse } : vv);
+  return { ...db, distributionPaiements: { ...(db.distributionPaiements||{}), [cle]: { ...existantCle, [nomActeur]: { versements } } } };
 }
 // Annule une confirmation de réception faite par erreur (ex: employé a cliqué « J'ai bien reçu » trop
-// vite) — réservé au gérant. Remet la ligne à l'état « payé mais pas encore confirmé », sans toucher au
-// paiement lui-même (montant, mode, date, payeParNom restent inchangés).
-function annulerValidationDistribution(db, cle, nomActeur){
-  const existant = (db.distributionPaiements||{})[cle] || {};
-  const entreeActuelle = existant[nomActeur];
-  if(!entreeActuelle || !entreeActuelle.valide) return db;
-  return { ...db, distributionPaiements: { ...(db.distributionPaiements||{}), [cle]: { ...existant, [nomActeur]: { ...entreeActuelle, valide: false, dateValidation: null, valideParNom: null } } } };
+// vite) — réservé au gérant. Remet ce versement à l'état « payé mais pas encore confirmé », sans toucher
+// au paiement lui-même (montant, mode, date, payeParNom restent inchangés).
+function annulerValidationVersement(db, cle, nomActeur, indexVersement){
+  const existantCle = (db.distributionPaiements||{})[cle] || {};
+  const entreeActuelle = normaliserPaiementActeur(existantCle[nomActeur]);
+  const v = entreeActuelle.versements[indexVersement];
+  if(!v || !v.valide) return db;
+  const versements = entreeActuelle.versements.map((vv,i) => i===indexVersement ? { ...vv, valide: false, dateValidation: null, valideParNom: null } : vv);
+  return { ...db, distributionPaiements: { ...(db.distributionPaiements||{}), [cle]: { ...existantCle, [nomActeur]: { versements } } } };
+}
+// Supprime définitivement un versement erroné (ex: double saisie, montant faux) — réservé au gérant.
+// Contrairement à annulerValidationVersement (qui garde le versement mais annule juste sa confirmation),
+// celui-ci retire complètement l'entrée de l'historique, ce qui réduit d'autant le « Déjà distribué »
+// lifetime de l'acteur concerné.
+function supprimerVersementDistribution(db, cle, nomActeur, indexVersement){
+  const existantCle = (db.distributionPaiements||{})[cle] || {};
+  const entreeActuelle = normaliserPaiementActeur(existantCle[nomActeur]);
+  if(!entreeActuelle.versements[indexVersement]) return db;
+  const versements = entreeActuelle.versements.filter((vv,i) => i !== indexVersement);
+  return { ...db, distributionPaiements: { ...(db.distributionPaiements||{}), [cle]: { ...existantCle, [nomActeur]: { versements } } } };
+}
+// Corrige un versement déjà enregistré SANS le supprimer ni perdre sa date d'origine (contrairement à un
+// supprimer + re-saisir, qui réinitialiserait la date au jour de la correction) — réservé au gérant.
+// champs ne contient que les clés à modifier (montant, modePaiement, payeDepuisCaisseDe, datePaiement) ;
+// tout champ omis reste inchangé.
+function modifierVersementDistribution(db, cle, nomActeur, indexVersement, champs){
+  const existantCle = (db.distributionPaiements||{})[cle] || {};
+  const entreeActuelle = normaliserPaiementActeur(existantCle[nomActeur]);
+  if(!entreeActuelle.versements[indexVersement]) return db;
+  const versements = entreeActuelle.versements.map((vv,i) => i===indexVersement ? { ...vv, ...champs } : vv);
+  return { ...db, distributionPaiements: { ...(db.distributionPaiements||{}), [cle]: { ...existantCle, [nomActeur]: { versements } } } };
+}
+// Libellé lisible d'une clé de période de distribution ('M-AAAA-MM' ou 'A-AAAA') pour affichage.
+function libellePeriodeCleDistribution(cle){
+  if(!cle) return '';
+  if(cle.startsWith('M-')){
+    const [a,m] = cle.slice(2).split('-').map(Number);
+    return new Date(a, m-1, 1).toLocaleDateString('fr-FR', {month:'long', year:'numeric'});
+  }
+  if(cle.startsWith('A-')) return `Année ${cle.slice(2)}`;
+  return cle;
+}
+// Détail, versement par versement, de tout ce qui a été marqué « payé » pour UN acteur, toutes périodes et
+// toutes clés confondues (mensuelles ET annuelles) — sert à comprendre / vérifier ce qui compose
+// totalDistribueLifetime ci-dessous, période par période, plutôt qu'un seul chiffre agrégé opaque. Chaque
+// entrée garde sa clé et son index d'origine pour permettre une correction ciblée (assignerCaisseVersement,
+// annulerValidationVersement, supprimerVersementDistribution).
+function versementsLifetimePourActeur(db, nomActeur){
+  const paiements = db.distributionPaiements || {};
+  const liste = [];
+  Object.entries(paiements).forEach(([cle, parActeur]) => {
+    const entree = normaliserPaiementActeur(parActeur[nomActeur]);
+    entree.versements.forEach((v, index) => { liste.push({ ...v, cle, index }); });
+  });
+  return liste.sort((a,b) => new Date(b.datePaiement||0) - new Date(a.datePaiement||0));
 }
 // Liste des (année, mois) couverte depuis le lancement de l'app (avec 3 ans de marge pour les saisies
 // manuelles antérieures) jusqu'au mois en cours inclus — la même portée que « À ce jour » (Distribution des
@@ -2487,17 +2605,112 @@ function moisCouvertsDepuisDebut(currentYear, currentMonth){
 // indépendamment de la période actuellement affichée à l'écran.
 function totalDistribueLifetime(db, nomActeur){
   const paiements = db.distributionPaiements || {};
-  return Object.values(paiements).reduce((s, parActeur) => {
-    const e = parActeur[nomActeur];
-    return s + (e && e.paye ? (Number(e.montant)||0) : 0);
-  }, 0);
+  return Object.values(paiements).reduce((s, parActeur) => s + montantVerseEntree(parActeur[nomActeur]), 0);
 }
 // Même chose, mais TOUS les acteurs confondus — utilisé pour le Solde de caisse théorique.
 function totalDistribueLifetimeTousActeurs(db){
   const paiements = db.distributionPaiements || {};
   return Object.values(paiements).reduce((s, parActeur) => {
-    return s + Object.values(parActeur).reduce((s2,e)=> s2 + (e && e.paye ? (Number(e.montant)||0) : 0), 0);
+    return s + Object.values(parActeur).reduce((s2,e)=> s2 + montantVerseEntree(e), 0);
   }, 0);
+}
+// Les deux caissiers qui encaissent physiquement l'argent des clients de Maci Pressing Kipé et qui, de ce
+// fait, le détiennent jusqu'à ce qu'il soit reversé aux autres acteurs lors d'une distribution — noms
+// EXACTS tels que saisis dans la fiche employé de Kipé (pas le nom "acteur" utilisé dans Distribution des
+// recettes, qui peut différer, ex: "Nene Djiba" l'employée vs "Nene Djiba Bah" l'acteur).
+const DETENTEURS_CAISSE = ['Nene Djiba', 'Mamadou Alpha'];
+// Le pressing Kipé est le seul concerné par ce plafond : c'est là que Nene Djiba et Mamadou Alpha
+// encaissent et détiennent l'argent des clients.
+function siteKipe(db){
+  return (db.sites||[]).find(s => {
+    const n = (s.nom||'').toLowerCase();
+    return n.includes('kipé') || n.includes('kipe');
+  }) || null;
+}
+// Liste des (année, mois) couverts par une clé de période de distribution ('M-AAAA-MM' → ce seul mois,
+// 'A-AAAA' → les 12 mois de cette année) — sert à savoir sur quels mois calculer le plafond de paiement.
+function moisCouvertsPourCle(cle){
+  if(!cle) return [];
+  if(cle.startsWith('M-')){
+    const [a, m] = cle.slice(2).split('-').map(Number);
+    return [{ annee:a, mois:m }];
+  }
+  if(cle.startsWith('A-')){
+    const a = Number(cle.slice(2));
+    return Array.from({length:12}, (_,i) => ({ annee:a, mois:i+1 }));
+  }
+  return [];
+}
+// Montant net reçu par CETTE personne, en tant que caissière de Maci Pressing Kipé UNIQUEMENT, sur les
+// mois listés (Espèces + Orange Money reçus, moins ses dépenses entreprise ET ses dépenses propres — même
+// formule que « Total par employé » / « Mon total »). C'est le plafond : chacun ne peut payer les acteurs
+// qu'à hauteur de ce qu'il a lui-même net reçu pour la période en cours, pas plus.
+function netRecuCaissierPourMois(db, nomPersonne, moisListe){
+  const site = siteKipe(db);
+  if(!site || !moisListe.length) return 0;
+  const cible = (nomPersonne||'').trim().toLowerCase();
+  const emp = (site.employes||[]).find(e => (e.nom||'').trim().toLowerCase() === cible);
+  if(!emp) return 0;
+  const anneesCouvertes = Array.from(new Set(moisListe.map(mc=>mc.annee)));
+  let total = 0;
+  anneesCouvertes.forEach(a => {
+    const donnees = calculerDonneesMensuellesEmploye(site, a, emp.id);
+    moisListe.forEach(({annee:aa, mois}) => {
+      if(aa !== a) return;
+      const d = donnees[mois-1];
+      total += (d.montantRecuEspeces||0) + (d.montantRecuOrangeMoney||0) - (d.depenses||0) - (d.depensesPropres||0);
+    });
+  });
+  return total;
+}
+// Total déjà versé À D'AUTRES ACTEURS par CETTE personne (depuis sa propre caisse), mais UNIQUEMENT pour
+// cette période de distribution précise (cle) — pas depuis le début : le plafond se réinitialise à chaque
+// mois (ou année) de distribution, en fonction de ce qu'il/elle a net reçu pour CETTE période.
+function totalPayeParDetenteurPourCle(db, nomPersonne, cle){
+  if(!nomPersonne || !cle) return 0;
+  const parActeur = (db.distributionPaiements||{})[cle] || {};
+  return Object.values(parActeur).reduce((s, e) => {
+    const entree = normaliserPaiementActeur(e);
+    return s + entree.versements.reduce((s2,v) => s2 + (v.payeDepuisCaisseDe === nomPersonne ? (Number(v.montant)||0) : 0), 0);
+  }, 0);
+}
+// Liste des clés de db.distributionPaiements à agréger pour afficher correctement une période : pour
+// « Par mois », une seule clé mensuelle ; pour « Par année », la clé annuelle ET les 12 clés mensuelles de
+// cette même année. Sans ça, un acteur payé mois par mois (ex: en septembre) apparaîtrait comme « pas
+// encore payé » en vue « Par année », puisque les deux suivis sont enregistrés sous des clés différentes.
+function clesPourPeriode(periode, moisChoisi, anneeChoisie){
+  if(periode === 'mois') return [`M-${moisChoisi}`];
+  if(periode === 'annee'){
+    const mensuelles = Array.from({length:12}, (_,i) => `M-${anneeChoisie}-${String(i+1).padStart(2,'0')}`);
+    return [`A-${anneeChoisie}`, ...mensuelles];
+  }
+  return [];
+}
+// Version de totalPayeParDetenteurPourCle qui agrège PLUSIEURS clés (voir clesPourPeriode) — utilisée en
+// vue « Par année » pour que le disponible de chaque caissier tienne compte de ce qu'il a déjà payé mois
+// par mois pendant l'année, pas seulement sous la clé annuelle elle-même.
+function totalPayeParDetenteurPourCles(db, nomPersonne, cles){
+  if(!nomPersonne) return 0;
+  return (cles||[]).reduce((s, cle) => s + totalPayeParDetenteurPourCle(db, nomPersonne, cle), 0);
+}
+// Fusionne, pour l'affichage, les paiements de toutes les clés concernées par la période choisie en une
+// seule liste de versements par acteur — chaque versement garde la trace de sa clé et de son index
+// d'origine (_cle, _index) pour que les actions (confirmer, annuler, attribuer une caisse) agissent
+// toujours sur le BON enregistrement sous-jacent, même quand plusieurs mois sont fusionnés en vue annuelle.
+function paiementsAgregesPourPeriode(db, cles){
+  const paiements = db.distributionPaiements || {};
+  const merged = {};
+  (cles||[]).forEach(cle => {
+    const parActeur = paiements[cle] || {};
+    Object.entries(parActeur).forEach(([nomActeur, entree]) => {
+      const normalisee = normaliserPaiementActeur(entree);
+      if(!merged[nomActeur]) merged[nomActeur] = { versements: [] };
+      normalisee.versements.forEach((v, i) => {
+        merged[nomActeur].versements.push({ ...v, _cle: cle, _index: i });
+      });
+    });
+  });
+  return merged;
 }
 // Nom de l'employé (n'importe quel site) correspondant à cet identifiant — utilisé pour savoir si la
 // personne connectée est elle-même l'un des acteurs de la distribution (et peut donc valider sa réception).
@@ -2937,12 +3150,24 @@ function DistributionView({ db, setDb, anneeInitiale }){
     [db, moisCouverts]
   );
   const totalDepensesActeursPeriode = parts.reduce((s,p)=> s + (depensesActeursPeriode[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0), 0);
-  // Remboursements d'avances personnelles effectués PENDANT cette période : reversés aux AUTRES acteurs
-  // (jamais à celui qui rembourse) — voir calculerCreditsRemboursementPourPeriode, identique à Suivi distribution.
+  // Remboursements d'avances personnelles effectués PENDANT cette période : reversés à TOUS les acteurs au
+  // prorata (celui qui rembourse inclus) — voir calculerCreditsRemboursementPourPeriode, identique à Suivi
+  // distribution.
   const creditsRemboursement = useMemo(
     () => calculerCreditsRemboursementPourPeriode(db, parts, anneesCouvertes, moisCouverts.length === 1, moisChoisi),
     [db, parts, anneesCouvertes, moisCouverts, moisChoisi]
   );
+  // ---- Mutualisation des dépenses propres (voir le même mécanisme, commenté en détail, dans
+  // calculerRepartitionActeursPourPeriode) : une avance personnelle n'est plus déduite de la part de celui
+  // qui l'a prise, mais retirée du pot commun et partagée par tous au prorata de ce qu'ils ont gagné.
+  const montantBrutAvantPoolingParActeur = {};
+  parts.forEach(p => { montantBrutAvantPoolingParActeur[p.nom] = partActeur(p.nom, 'recetteNette'); });
+  const sommeMontantBrutAvantPooling = parts.reduce((s,p) => s + montantBrutAvantPoolingParActeur[p.nom], 0);
+  function montantBrutPoolePourActeur(p){
+    const avantPooling = montantBrutAvantPoolingParActeur[p.nom];
+    const poids = sommeMontantBrutAvantPooling !== 0 ? (avantPooling / sommeMontantBrutAvantPooling) : ((Number(p.pct)||0) / 100);
+    return avantPooling - (totalDepensesActeursPeriode * poids);
+  }
 
   // ---- Historique détaillé des paiements individuels (Espèces / Orange Money), pour traçabilité ----
   const [historiquePage, setHistoriquePage] = useState(1);
@@ -2994,14 +3219,12 @@ function DistributionView({ db, setDb, anneeInitiale }){
       return s + (Number(dm.netPercu)||0) * pctActeurMois(db, nom, a, m) / 100;
     }, 0);
   }
-  // Montant que CET acteur verse en plus vers la Conservation du Capital Fixe (20% de sa part éligible,
-  // après déduction de ses dépenses propres déjà prises) — 0 si non concerné, ou si aucun mois de la
-  // période n'avait le remboursement actif à l'époque.
+  // Montant que CET acteur verse en plus vers la Conservation du Capital Fixe (20% de sa part éligible) —
+  // 0 si non concerné, ou si aucun mois de la période n'avait le remboursement actif à l'époque. Plus de
+  // déduction de ses dépenses propres ici : elles sont déjà mutualisées via le pot commun ci-dessus.
   function extraCapitalFixeActeur(p){
     if(!ACTEURS_REMBOURSEMENT_INVESTISSEMENT.includes(p.nom)) return 0;
-    const depensePropreP = (depensesActeursPeriode[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
-    const eligibleApresDepense = Math.max(0, partActeurEligibleRemboursement(p.nom) - depensePropreP);
-    return eligibleApresDepense * 0.2;
+    return Math.max(0, partActeurEligibleRemboursement(p.nom)) * 0.2;
   }
   // Remboursement d'investissement : 20% du net perçu éligible des 4 acteurs concernés est redirigé vers la Conservation du Capital Fixe
   const totalRedirigeVersCapitalFixe = parts.reduce((s,p) => s + extraCapitalFixeActeur(p), 0);
@@ -3010,11 +3233,11 @@ function DistributionView({ db, setDb, anneeInitiale }){
   const lignesRepartitionExport = useMemo(() => {
     return parts.map(p => {
       const impayesPart = partActeur(p.nom, 'impayes');
-      const montantBrut = partActeur(p.nom, 'recetteNette');
       const montantBrutAvantImpayes = partActeur(p.nom, 'recetteBrute');
       const depensePropre = (depensesActeursPeriode[p.nom]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
+      const montantBrut = montantBrutPoolePourActeur(p);
       const creditRemboursement = creditsRemboursement[p.nom] || 0;
-      const montantNet = montantBrut - depensePropre + creditRemboursement;
+      const montantNet = montantBrut + creditRemboursement;
       const extraCapitalFixe = extraCapitalFixeActeur(p);
       const montantAVerser = p.nom === 'Conservation du Capital Fixe'
         ? montantNet + totalRedirigeVersCapitalFixe
@@ -3022,7 +3245,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
       return [p.nom, `${p.pct}%`, Math.round(montantBrutAvantImpayes), Math.round(impayesPart), Math.round(montantBrut), Math.round(depensePropre), Math.round(creditRemboursement), Math.round(montantNet), Math.round(montantAVerser)];
     });
   }, [periodeDonnees, donneesParAnneeMap, moisCouverts, db.partsHistorique, db.partsDistribution, db.remboursementHistorique, depensesActeursPeriode, depensesPropresEmployes, remboursementActif, totalRedirigeVersCapitalFixe, creditsRemboursement]);
-  const REPARTITION_HEADERS = ['Bénéficiaire', 'Part', "Montant brut avant impayés", 'Impayés (part)', 'Net perçu (avant dépenses propres)', 'Dépenses propres', 'Crédit de remboursement', 'Net perçu', 'Montant à verser'];
+  const REPARTITION_HEADERS = ['Bénéficiaire', 'Part', "Montant brut avant impayés", 'Impayés (part)', 'Net perçu (après mutualisation des dépenses)', 'Dépenses propres (solde dû, info)', 'Crédit de remboursement', 'Net perçu', 'Montant à verser'];
 
   return (
     <div>
@@ -3296,8 +3519,8 @@ function DistributionView({ db, setDb, anneeInitiale }){
               <th style={th}>Part</th>
               <th style={th}>Montant brut avant impayés (Part de l'acteur)</th>
               <th style={th}>Impayés (part de l'acteur)</th>
-              <th style={th}>Net perçu (avant dépenses propres)</th>
-              <th style={th}>Dépenses propres</th>
+              <th style={th}>Net perçu (après mutualisation des dépenses)</th>
+              <th style={th}>Dépenses propres (solde dû, info)</th>
               <th style={th}>Crédit de remboursement</th>
               <th style={th}>Net perçu</th>
               <th style={th}>Montant à verser</th>
@@ -3306,11 +3529,11 @@ function DistributionView({ db, setDb, anneeInitiale }){
           <tbody>
             {parts.map(p => {
               const impayesPart = partActeur(p.nom, 'impayes');
-              const montantBrut = partActeur(p.nom, 'recetteNette');
               const montantBrutAvantImpayes = partActeur(p.nom, 'recetteBrute');
               const depensePropre = (depensesActeursPeriode[p.nom]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
+              const montantBrut = montantBrutPoolePourActeur(p);
               const creditRemboursement = creditsRemboursement[p.nom] || 0;
-              const montantNet = montantBrut - depensePropre + creditRemboursement;
+              const montantNet = montantBrut + creditRemboursement;
               const extraCapitalFixe = extraCapitalFixeActeur(p);
               const montantAVerser = p.nom === 'Conservation du Capital Fixe'
                 ? montantNet + totalRedirigeVersCapitalFixe
@@ -3326,7 +3549,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
                   <td style={{...td, fontWeight:600}} className="mono">{fmtGNF(montantBrutAvantImpayes)}</td>
                   <td style={{...td, color: impayesPart>0 ? 'var(--danger)' : 'var(--steam)'}} className="mono">{impayesPart>0 ? fmtGNF(impayesPart) : '—'}</td>
                   <td style={{...td, fontWeight:700, color: montantBrut<0 ? 'var(--danger)' : 'var(--ink)'}} className="mono">{fmtGNF(montantBrut)}</td>
-                  <td style={{...td, color: depensePropre>0 ? 'var(--danger)' : 'var(--steam)'}} className="mono">{depensePropre>0 ? '− '+fmtGNF(depensePropre) : '—'}</td>
+                  <td style={{...td, color: depensePropre>0 ? 'var(--rust)' : 'var(--steam)'}} className="mono">{depensePropre>0 ? fmtGNF(depensePropre) : '—'}</td>
                   <td style={{...td, color: creditRemboursement>0 ? 'var(--ok)' : 'var(--steam)'}} className="mono">{creditRemboursement>0 ? '+ '+fmtGNF(creditRemboursement) : '—'}</td>
                   <td style={{...td, fontWeight:700, color: montantNet<0 ? 'var(--danger)' : 'var(--ink)'}} className="mono">{fmtGNF(montantNet)}</td>
                   <td style={{...td, fontWeight:700, color:'var(--ok)'}} className="mono">
@@ -3410,7 +3633,13 @@ function SuiviDistributionView({ db, setDb, employeId }){
   const [intervalleDebut, setIntervalleDebut] = useState(`${currentYear}-01-01`);
   const [intervalleFin, setIntervalleFin] = useState(todayISO());
   const [modeChoisi, setModeChoisi] = useState({});
-  const [confirmAnnulerValidation, setConfirmAnnulerValidation] = useState(null); // nom de l'acteur dont on veut annuler la confirmation
+  const [detenteurChoisi, setDetenteurChoisi] = useState({}); // { [nomActeur]: 'Nene Djiba' | 'Mamadou Alpha' } — qui paie depuis sa propre caisse
+  const [montantSaisi, setMontantSaisi] = useState({}); // { [nomActeur]: montant } — montant choisi pour CE versement (peut être un paiement partiel)
+  const [caisseAAssigner, setCaisseAAssigner] = useState({}); // { 'nomActeur__index': 'Nene Djiba' | 'Mamadou Alpha' } — pour corriger un vieux versement sans caisse
+  const [confirmAnnulerValidation, setConfirmAnnulerValidation] = useState(null); // { nomActeur, index } du versement dont on veut annuler la confirmation
+  const [detailLifetimeOuvert, setDetailLifetimeOuvert] = useState({}); // { [nomActeur]: true } — affiche le détail versement par versement du « Déjà distribué » depuis le début
+  const [confirmSupprimerVersement, setConfirmSupprimerVersement] = useState(null); // { nomActeur, cle, index } du versement qu'on veut supprimer définitivement
+  const [editionVersement, setEditionVersement] = useState(null); // { nomActeur, cle, index, montant, modePaiement, payeDepuisCaisseDe, datePaiement } — versement en cours d'édition dans le détail « Depuis le début »
 
   const anneesDisponibles = useMemo(() => {
     const arr = [];
@@ -3475,27 +3704,89 @@ function SuiviDistributionView({ db, setDb, employeId }){
   const suiviPaiementDisponible = periode !== 'cumul' && periode !== 'intervalle'; // le suivi payé/validé se fait par mois ou par année, pas sur un cumul glissant ou un intervalle arbitraire
 
   const totalAVerser = lignes.reduce((s,l)=>s+l.montantAVerser, 0);
+  // Base RÉELLE sur laquelle les % de chaque acteur s'appliquent (net perçu du pressing pour la période,
+  // AVANT les dépenses propres / crédits / extra Capital Fixe propres à chaque acteur). C'est ce nombre-là
+  // — pas « Total distribué » — qui doit être comparé à « % × ce nombre » pour un acteur donné : « Total
+  // distribué » est le résultat APRÈS ajustements individuels (dépenses propres de chacun, etc.), qui ne
+  // sont pas répartis au prorata des % — deux acteurs à 30% peuvent donc recevoir des montants différents
+  // de leur part initiale si l'un d'eux a pris des dépenses propres ce mois-là et pas l'autre.
+  const netPercuTotalBaseRepartition = lignes.reduce((s,l)=>s+l.montantBrut, 0);
 
   const cle = suiviPaiementDisponible ? clePeriodeDistribution(periode, moisChoisi, anneeChoisie) : null;
-  const paiementsPeriode = cle ? ((db.distributionPaiements||{})[cle] || {}) : {};
+  // Toutes les clés à prendre en compte pour l'AFFICHAGE de cette période (voir clesPourPeriode) — en vue
+  // « Par année », ça inclut aussi les 12 clés mensuelles de l'année, pour qu'un acteur déjà payé en
+  // septembre (par exemple) n'apparaisse pas comme « pas encore payé » quand on regarde toute l'année.
+  // Les NOUVEAUX paiements continuent d'être enregistrés sous « cle » uniquement (la période exacte choisie).
+  const cles = suiviPaiementDisponible ? clesPourPeriode(periode, moisChoisi, anneeChoisie) : [];
+  const paiementsPeriode = useMemo(() => paiementsAgregesPourPeriode(db, cles), [db, cles.join(',')]);
   // Le gérant (employeId absent) peut toujours valider n'importe quel acteur (beaucoup n'ont pas de compte
   // dans l'app) ; un employé connecté ne peut valider que SA PROPRE part, si son nom correspond à l'acteur.
   const monNom = employeId ? nomEmployeGlobal(db, employeId) : null;
   const estGerant = !employeId;
 
-  function marquerPaye(nomActeur, montant, mode){
-    if(!cle) return;
-    setDb(marquerDistributionPayee(db, cle, nomActeur, montant, mode, estGerant ? 'Gérant' : (monNom || 'Employé')));
+  // Ce qu'il reste disponible dans la caisse de chaque caissier, pour LA PÉRIODE actuellement affichée
+  // (le mois ou l'année choisis ci-dessus) — c'est le plafond : Nene Djiba et Mamadou Alpha ne peuvent payer
+  // les acteurs qu'à hauteur de ce qu'ils ont eux-mêmes net reçu (Kipé uniquement) pour cette période précise,
+  // moins ce qu'ils ont déjà payé sur cette même période (tous mois confondus si on regarde l'année entière).
+  // Ce plafond se réinitialise à chaque nouvelle période.
+  const montantsDisponibles = useMemo(() => {
+    if(!cle) return [];
+    return DETENTEURS_CAISSE.map(nom => {
+      const net = netRecuCaissierPourMois(db, nom, moisCouvertsPourCle(cle));
+      const dejaPaye = totalPayeParDetenteurPourCles(db, nom, cles);
+      return { nom, net, dejaPaye, disponible: net - dejaPaye };
+    });
+  }, [db, cle, cles.join(',')]);
+  function disponiblePourNom(nom){
+    const d = montantsDisponibles.find(x=>x.nom===nom);
+    return d ? Math.max(0, d.disponible) : 0;
   }
-  function validerReception(nomActeur){
+  function marquerPaye(nomActeur, montant, mode, detenteur){
     if(!cle) return;
+    // Sécurité : même si l'UI empêche déjà de dépasser le disponible, on re-plafonne ici au cas où
+    // les données auraient changé entre l'affichage et le clic (ex: un autre paiement vient d'être ajouté).
+    const dispo = disponiblePourNom(detenteur);
+    const montantClampe = Math.max(0, Math.min(Number(montant)||0, dispo));
+    if(montantClampe <= 0) return;
+    setDb(ajouterVersementDistribution(db, cle, nomActeur, montantClampe, mode, estGerant ? 'Gérant' : (monNom || 'Employé'), detenteur));
+    setMontantSaisi(prev => ({ ...prev, [nomActeur]: undefined }));
+  }
+  // nomActeur + cleSource/indexSource identifient le versement EXACT (voir _cle/_index posés par
+  // paiementsAgregesPourPeriode) — indispensable en vue « Par année », où plusieurs mois sont fusionnés à
+  // l'affichage mais restent des enregistrements séparés dans la base.
+  function validerReception(nomActeur, cleSource, indexSource){
     const valideParNom = estGerant ? 'Gérant' : (monNom || 'Employé');
-    setDb(validerReceptionDistribution(db, cle, nomActeur, valideParNom));
+    setDb(validerReceptionVersement(db, cleSource, nomActeur, indexSource, valideParNom));
   }
   function annulerValidation(){
-    if(!cle || !confirmAnnulerValidation) return;
-    setDb(annulerValidationDistribution(db, cle, confirmAnnulerValidation));
+    if(!confirmAnnulerValidation) return;
+    setDb(annulerValidationVersement(db, confirmAnnulerValidation.cleSource, confirmAnnulerValidation.nomActeur, confirmAnnulerValidation.indexSource));
     setConfirmAnnulerValidation(null);
+  }
+  // Pour corriger un versement ancien enregistré sans caisse d'origine (« payé par Gérant », sans savoir
+  // si c'est Nene Djiba ou Mamadou Alpha qui a physiquement payé) — réservé au gérant.
+  function assignerCaisse(nomActeur, cleSource, indexSource, caisse){
+    setDb(assignerCaisseVersement(db, cleSource, nomActeur, indexSource, caisse));
+  }
+  // Supprime définitivement un versement erroné depuis le détail « Depuis le début » (ex: saisi deux fois
+  // par erreur, montant faux) — réservé au gérant, après confirmation.
+  function supprimerVersement(){
+    if(!confirmSupprimerVersement) return;
+    setDb(supprimerVersementDistribution(db, confirmSupprimerVersement.cle, confirmSupprimerVersement.nomActeur, confirmSupprimerVersement.index));
+    setConfirmSupprimerVersement(null);
+  }
+  // Enregistre la correction d'un versement édité depuis le détail « Depuis le début » (montant, mode,
+  // caisse ou date) — la date d'origine du versement est conservée sauf si le gérant la change explicitement.
+  function enregistrerEditionVersement(){
+    if(!editionVersement) return;
+    const { nomActeur, cle, index, montant, modePaiement, payeDepuisCaisseDe, datePaiement } = editionVersement;
+    setDb(modifierVersementDistribution(db, cle, nomActeur, index, {
+      montant: Number(montant)||0,
+      modePaiement,
+      payeDepuisCaisseDe: payeDepuisCaisseDe || null,
+      datePaiement: datePaiement ? new Date(datePaiement).toISOString() : editionVersement.datePaiementOriginale,
+    }));
+    setEditionVersement(null);
   }
 
   return (
@@ -3532,18 +3823,59 @@ function SuiviDistributionView({ db, setDb, employeId }){
         </p>
       )}
 
-      <div style={{marginBottom:20}}>
+      <div style={{display:'flex', gap:10, flexWrap:'wrap', marginBottom:8}}>
         <StatCard label={`Total distribué — ${periodeLabel}`} value={fmtGNF(totalAVerser)} icon="euro" />
+        <StatCard label={`Base de répartition (avant dépenses propres de chacun)`} value={fmtGNF(netPercuTotalBaseRepartition)} icon="chart" />
       </div>
+      <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 20px', lineHeight:1.5}}>
+        Le % de chaque acteur s'applique à la <strong>Base de répartition</strong> ci-dessus, pas directement au « Total distribué ». Les deux diffèrent dès qu'un ou plusieurs acteurs ont des dépenses propres, un crédit de remboursement ou (pour les 4 acteurs concernés) un extra versé à la Conservation du Capital Fixe ce mois-là — ces ajustements sont propres à chacun, pas répartis au prorata des %. Pour vérifier le % d'un acteur sans ajustement personnel ce mois-ci : son % × Base de répartition (pas × Total distribué).
+      </p>
+
+      {suiviPaiementDisponible && (
+        <>
+          <h2 style={{fontSize:16, color:'var(--ink)', margin:'0 0 6px'}}>Montant disponible pour payer — {periodeLabel}</h2>
+          <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
+            {DETENTEURS_CAISSE.join(' et ')} encaissent directement l'argent des clients à Maci Pressing Kipé, donc c'est eux qui le détiennent physiquement. Chacun ne peut payer les acteurs qu'à hauteur de ce qu'il a lui-même net reçu (Espèces + Orange Money, moins ses dépenses) pour <strong>cette période précise</strong> — jamais plus, et ce plafond ne vient pas d'un cumul depuis le début. S'il n'a pas assez pour payer un acteur en entier, il peut payer ce qu'il a, et l'autre caissier peut compléter le reste.
+          </p>
+          <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))', gap:10, marginBottom:20}}>
+            {montantsDisponibles.map(d => {
+              const reste = d.disponible;
+              return (
+                <div key={d.nom} className="card" style={{padding:'1rem 1.1rem'}}>
+                  <div style={{fontWeight:700, fontSize:14, marginBottom:8}}>{d.nom}</div>
+                  <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:4}}>
+                    <span>Net reçu — {periodeLabel}</span>
+                    <span className="mono">{fmtGNF(d.net)}</span>
+                  </div>
+                  <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:8}}>
+                    <span>Déjà payé sur cette période</span>
+                    <span className="mono">{d.dejaPaye>0 ? fmtGNF(d.dejaPaye) : '—'}</span>
+                  </div>
+                  <div style={{display:'flex', justifyContent:'space-between', borderTop:'1px solid var(--line)', paddingTop:8}}>
+                    <span style={{fontSize:13, fontWeight:600}}>Disponible</span>
+                    <span className="mono" style={{fontSize:15, fontWeight:700, color: reste<0 ? 'var(--danger)' : 'var(--pine)'}}>{fmtGNF(reste)}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
 
       {lignes.map(l => {
         const paiement = paiementsPeriode[l.nom];
+        const entreePaiement = normaliserPaiementActeur(paiement);
+        const montantVerse = entreePaiement.versements.reduce((s,v)=>s+(Number(v.montant)||0), 0);
+        const montantRestant = Math.max(0, Math.round(l.montantAVerser) - Math.round(montantVerse));
         // Chacun ne peut agir (marquer payé / confirmer reçu) que sur SA PROPRE ligne ; le gérant peut
         // agir sur toutes les lignes (beaucoup d'acteurs n'ont pas de compte employé dans l'app).
         const peutAgir = estGerant || nomsCorrespondent(monNom||'', l.nom);
         const peutMarquerPaye = peutAgir;
-        const peutValider = paiement && paiement.paye && !paiement.valide && peutAgir;
         const modeSel = modeChoisi[l.nom] || 'Espèces';
+        const detenteurSel = detenteurChoisi[l.nom] || DETENTEURS_CAISSE[0];
+        const dispoDetenteurSel = disponiblePourNom(detenteurSel);
+        const maxSaisissable = Math.min(montantRestant, dispoDetenteurSel);
+        const montantSaisiVal = montantSaisi[l.nom] != null ? montantSaisi[l.nom] : maxSaisissable;
         // « Depuis le début » — indépendant de la période choisie ci-dessus (voir moisCouvertsLifetime).
         const ligneLifetime = lignesLifetime.find(x=>x.nom===l.nom);
         const genereLifetime = ligneLifetime ? ligneLifetime.montantAVerser : 0;
@@ -3564,9 +3896,27 @@ function SuiviDistributionView({ db, setDb, employeId }){
                 <span style={{fontSize:12.5, color:'var(--steam)'}}>Impayés (part)</span>
                 <span className="mono" style={{fontSize:13, fontWeight:600, color: l.impayesPart>0?'var(--danger)':'var(--ink)'}}>{l.impayesPart>0?fmtGNF(l.impayesPart):'—'}</span>
               </div>
+              {(() => {
+                // Part de CET acteur dans les dépenses ENTREPRISE du mois (fournitures, factures, salaires...) —
+                // c'est ce qui manquait à l'affichage et qui explique pourquoi « Montant brut − Impayés » ne
+                // tombait pas sur « Net perçu » : le pourcentage s'applique à la recette NETTE (après impayés
+                // ET après dépenses entreprise), pas juste après impayés. Dérivé par soustraction, sans toucher
+                // au calcul de répartition lui-même : montantBrutAvantImpayes − impayesPart − montantBrut.
+                const depensesEntreprisePart = Math.max(0, Math.round(l.montantBrutAvantImpayes - l.impayesPart - l.montantBrut));
+                return depensesEntreprisePart > 0 ? (
+                  <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                    <span style={{fontSize:12.5, color:'var(--steam)'}}>Dépenses entreprise (part)</span>
+                    <span className="mono" style={{fontSize:13, fontWeight:600, color:'var(--rust)'}}>{fmtGNF(depensesEntreprisePart)}</span>
+                  </div>
+                ) : null;
+              })()}
               <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
-                <span style={{fontSize:12.5, color:'var(--steam)'}}>Dépenses propres</span>
+                <span style={{fontSize:12.5, color:'var(--steam)'}}>Dépenses propres (solde dû, info)</span>
                 <span className="mono" style={{fontSize:13, fontWeight:600, color: l.depensePropre>0?'var(--rust)':'var(--ink)'}}>{l.depensePropre>0?fmtGNF(l.depensePropre):'—'}</span>
+              </div>
+              <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                <span style={{fontSize:12.5, color:'var(--steam)'}}>Montant total à distribuer ({periodeLabel})</span>
+                <span className="mono" style={{fontSize:13, fontWeight:600}}>{fmtGNF(totalAVerser)}</span>
               </div>
               {l.creditRemboursement > 0 && (
                 <div style={{background:'var(--pine-light)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
@@ -3574,6 +3924,10 @@ function SuiviDistributionView({ db, setDb, employeId }){
                   <span className="mono" style={{fontSize:13, fontWeight:600, color:'var(--pine)'}}>+ {fmtGNF(l.creditRemboursement)}</span>
                 </div>
               )}
+              <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                <span style={{fontSize:12.5, color:'var(--steam)'}}>Base de répartition ({l.pct}%)</span>
+                <span className="mono" style={{fontSize:13, fontWeight:600}}>{fmtGNF(l.montantBrut)}</span>
+              </div>
               <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
                 <span style={{fontSize:12.5, color:'var(--steam)'}}>Net perçu</span>
                 <span className="mono" style={{fontSize:13, fontWeight:600}}>{fmtGNF(l.montantNet)}</span>
@@ -3614,45 +3968,166 @@ function SuiviDistributionView({ db, setDb, employeId }){
               </div>
             </div>
 
+            {dejaDistribueLifetime > 0 && (() => {
+              const versementsLifetime = versementsLifetimePourActeur(db, l.nom);
+              const ouvert = !!detailLifetimeOuvert[l.nom];
+              return (
+                <div style={{marginBottom:12}}>
+                  <button type="button" onClick={()=>setDetailLifetimeOuvert(prev=>({...prev, [l.nom]: !prev[l.nom]}))}
+                    style={{background:'none', border:'none', padding:0, color:'var(--pine)', fontSize:12, fontWeight:600, cursor:'pointer', textDecoration:'underline'}}>
+                    {ouvert ? '▾' : '▸'} Détail du « Déjà distribué » ({versementsLifetime.length} versement{versementsLifetime.length>1?'s':''})
+                  </button>
+                  {ouvert && (
+                    <div style={{marginTop:8, display:'flex', flexDirection:'column', gap:6}}>
+                      {versementsLifetime.map((v,i) => {
+                        const enEdition = editionVersement && editionVersement.nomActeur===l.nom && editionVersement.cle===v.cle && editionVersement.index===v.index;
+                        if(enEdition){
+                          return (
+                            <div key={`${v.cle}-${v.index}`} style={{display:'flex', flexDirection:'column', gap:6, padding:'10px 12px', background:'var(--warn-light)', borderRadius:8, fontSize:12.5}}>
+                              <div style={{fontWeight:600}}>Modifier ce versement — {libellePeriodeCleDistribution(v.cle)}</div>
+                              <div style={{display:'flex', gap:8, flexWrap:'wrap'}}>
+                                <input type="number" value={editionVersement.montant} onChange={e=>setEditionVersement(prev=>({...prev, montant:e.target.value}))}
+                                  placeholder="Montant" style={{width:140, padding:'4px 8px'}} />
+                                <select value={editionVersement.modePaiement} onChange={e=>setEditionVersement(prev=>({...prev, modePaiement:e.target.value}))} style={{padding:'4px 8px'}}>
+                                  <option value="Espèces">Espèces</option>
+                                  <option value="Orange Money">Orange Money</option>
+                                </select>
+                                <select value={editionVersement.payeDepuisCaisseDe || ''} onChange={e=>setEditionVersement(prev=>({...prev, payeDepuisCaisseDe:e.target.value}))} style={{padding:'4px 8px'}}>
+                                  <option value="">Caisse non précisée</option>
+                                  {DETENTEURS_CAISSE.map(nom => <option key={nom} value={nom}>{nom}</option>)}
+                                </select>
+                                <input type="date" value={editionVersement.datePaiement} onChange={e=>setEditionVersement(prev=>({...prev, datePaiement:e.target.value}))}
+                                  style={{padding:'4px 8px'}} />
+                              </div>
+                              <div style={{display:'flex', gap:8}}>
+                                <button type="button" onClick={enregistrerEditionVersement}
+                                  style={{background:'var(--pine)', color:'var(--white)', border:'none', borderRadius:6, padding:'5px 12px', fontSize:12, fontWeight:600, cursor:'pointer'}}>
+                                  Enregistrer
+                                </button>
+                                <button type="button" onClick={()=>setEditionVersement(null)}
+                                  style={{background:'none', border:'1px solid var(--line)', borderRadius:6, padding:'5px 12px', fontSize:12, cursor:'pointer'}}>
+                                  Annuler
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        }
+                        return (
+                        <div key={`${v.cle}-${v.index}`} style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, flexWrap:'wrap', padding:'8px 10px', background:'var(--paper-2)', borderRadius:8, fontSize:12.5}}>
+                          <div>
+                            <span style={{fontWeight:600}}>{libellePeriodeCleDistribution(v.cle)}</span>
+                            <span style={{color:'var(--steam)'}}> · {fmtGNF(v.montant)} ({v.modePaiement}) {v.payeDepuisCaisseDe ? `payé par ${v.payeDepuisCaisseDe}` : (v.payeParNom || '')} le {fmtDate((v.datePaiement||'').slice(0,10))}</span>
+                            {v.valide && <span style={{color:'var(--pine)'}}> · confirmé</span>}
+                          </div>
+                          {estGerant && (
+                            <div style={{display:'flex', gap:6}}>
+                              <button type="button" onClick={()=>setEditionVersement({ nomActeur: l.nom, cle: v.cle, index: v.index, montant: v.montant, modePaiement: v.modePaiement, payeDepuisCaisseDe: v.payeDepuisCaisseDe || '', datePaiement: (v.datePaiement||'').slice(0,10), datePaiementOriginale: v.datePaiement })}
+                                style={{background:'none', border:'1px solid var(--line)', borderRadius:6, padding:'3px 8px', fontSize:11.5, color:'var(--ink)', cursor:'pointer'}}>
+                                Éditer
+                              </button>
+                              <button type="button" onClick={()=>setConfirmSupprimerVersement({ nomActeur: l.nom, cle: v.cle, index: v.index, montant: v.montant, cleLabel: libellePeriodeCleDistribution(v.cle) })}
+                                style={{background:'none', border:'1px solid var(--line)', borderRadius:6, padding:'3px 8px', fontSize:11.5, color:'var(--danger)', cursor:'pointer'}}>
+                                Supprimer
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             <div style={{fontSize:12, color:'var(--steam)', marginBottom:6, fontWeight:600, textTransform:'uppercase'}}>Paiement — {periodeLabel}</div>
 
             {!suiviPaiementDisponible ? (
               <div style={{padding:'10px 12px', background:'var(--paper-2)', borderRadius:8, fontSize:12.5, color:'var(--steam)'}}>
                 Le suivi payé / confirmé se fait mois par mois ou année par année — choisissez « Par mois » ou « Par année » pour marquer un paiement.
               </div>
-            ) : !paiement || !paiement.paye ? (
-              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, padding:'10px 12px', background:'var(--warn-light)', borderRadius:8, flexWrap:'wrap'}}>
-                <div style={{fontSize:13}}>Pas encore marqué payé pour cette période.</div>
-                {peutMarquerPaye ? (
-                  <div style={{display:'flex', alignItems:'center', gap:6}}>
-                    <select value={modeSel} onChange={e=>setModeChoisi(prev=>({...prev, [l.nom]: e.target.value}))} style={{width:'auto', fontSize:12.5, padding:'4px 8px'}}>
-                      <option value="Espèces">Espèces</option>
-                      <option value="Orange Money">Orange Money</option>
-                    </select>
-                    <button className="btn btn-rust btn-sm" onClick={()=>marquerPaye(l.nom, l.montantAVerser, modeSel)}>Marquer payé</button>
-                  </div>
-                ) : (
-                  <span style={{fontSize:12, color:'var(--steam)'}}>Seul {l.nom} ou le gérant peut marquer ce paiement.</span>
-                )}
-              </div>
-            ) : paiement.valide ? (
-              <div style={{display:'flex', alignItems:'center', gap:8, flexWrap:'wrap'}}>
-                <span className="tag" style={{background:'var(--pine-light)', color:'var(--pine)'}}>✓✓ Reçu et confirmé par {paiement.valideParNom}</span>
-                <span style={{fontSize:12, color:'var(--steam)'}}>Payé {fmtGNF(paiement.montant)} ({paiement.modePaiement}) le {fmtDate(paiement.datePaiement.slice(0,10))}</span>
-                {estGerant && (
-                  <button className="btn btn-ghost btn-sm" onClick={()=>setConfirmAnnulerValidation(l.nom)} title="Si l'employé a cliqué « J'ai bien reçu » par erreur">
-                    Annuler cette confirmation
-                  </button>
-                )}
-              </div>
             ) : (
-              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, padding:'10px 12px', background:'var(--paper-2)', borderRadius:8, flexWrap:'wrap'}}>
-                <div style={{fontSize:13}}>
-                  <span className="tag" style={{background:'var(--pine-light)', color:'var(--pine)', marginRight:8}}>✓ Payé</span>
-                  {fmtGNF(paiement.montant)} ({paiement.modePaiement}) par {paiement.payeParNom} le {fmtDate(paiement.datePaiement.slice(0,10))}
-                </div>
-                {peutValider && <button className="btn btn-sm" onClick={()=>validerReception(l.nom)}>J'ai bien reçu</button>}
-              </div>
+              <>
+                {entreePaiement.versements.length > 0 && (
+                  <div style={{display:'flex', flexDirection:'column', gap:6, marginBottom: montantRestant>0 ? 10 : 0}}>
+                    {entreePaiement.versements.map((v, idx) => {
+                      const cleAssign = `${l.nom}__${idx}`;
+                      const caisseChoisieAssign = caisseAAssigner[cleAssign] || DETENTEURS_CAISSE[0];
+                      return (
+                      <div key={idx} style={{display:'flex', flexDirection:'column', gap:6, padding:'10px 12px', background: v.valide ? 'var(--pine-light)' : 'var(--paper-2)', borderRadius:8}}>
+                        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, flexWrap:'wrap'}}>
+                          <div style={{fontSize:13}}>
+                            <span className="tag" style={{background: v.valide ? 'var(--pine)' : 'var(--pine-light)', color: v.valide ? 'var(--white)' : 'var(--pine)', marginRight:8}}>{v.valide ? '✓✓ Confirmé' : '✓ Payé'}</span>
+                            {fmtGNF(v.montant)} ({v.modePaiement}) payé par {v.payeDepuisCaisseDe || v.payeParNom} le {fmtDate((v.datePaiement||'').slice(0,10))}{(v.payeDepuisCaisseDe && v.payeParNom && v.payeParNom !== v.payeDepuisCaisseDe) ? ` (enregistré par ${v.payeParNom})` : ''}
+                            {v.valide && <span style={{color:'var(--steam)'}}> · confirmé par {v.valideParNom}</span>}
+                          </div>
+                          {v.valide ? (
+                            estGerant && (
+                              <button className="btn btn-ghost btn-sm" onClick={()=>setConfirmAnnulerValidation({nomActeur:l.nom, cleSource:v._cle, indexSource:v._index, montant:v.montant})} title="Si l'employé a cliqué « J'ai bien reçu » par erreur">
+                                Annuler cette confirmation
+                              </button>
+                            )
+                          ) : (
+                            peutAgir && <button className="btn btn-sm" onClick={()=>validerReception(l.nom, v._cle, v._index)}>J'ai bien reçu</button>
+                          )}
+                        </div>
+                        {!v.payeDepuisCaisseDe && estGerant && (
+                          <div style={{display:'flex', alignItems:'center', gap:6, flexWrap:'wrap', paddingTop:4, borderTop:'1px dashed var(--line)'}}>
+                            <span style={{fontSize:11.5, color:'var(--steam)'}}>Caisse d'origine non précisée — c'est qui qui a payé ?</span>
+                            <select value={caisseChoisieAssign} onChange={e=>setCaisseAAssigner(prev=>({...prev, [cleAssign]: e.target.value}))} style={{width:'auto', fontSize:12, padding:'3px 6px'}}>
+                              {DETENTEURS_CAISSE.map(nom => <option key={nom} value={nom}>{nom}</option>)}
+                            </select>
+                            <button className="btn btn-sm" onClick={()=>assignerCaisse(l.nom, v._cle, v._index, caisseChoisieAssign)}>Attribuer</button>
+                          </div>
+                        )}
+                      </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {montantRestant <= 0 && montantVerse <= 0 && l.montantAVerser <= 0 && (
+                  <div style={{padding:'10px 12px', background:'var(--paper-2)', borderRadius:8, fontSize:12.5, color:'var(--steam)'}}>
+                    Aucun montant à payer pour cette période (montant net nul ou négatif) — impossible de marquer un paiement.
+                  </div>
+                )}
+                {montantRestant > 0 && (
+                  <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, padding:'10px 12px', background:'var(--warn-light)', borderRadius:8, flexWrap:'wrap'}}>
+                    <div style={{fontSize:13}}>
+                      {montantVerse > 0 ? `Payé partiellement — reste ${fmtGNF(montantRestant)} à payer pour cette période.` : 'Pas encore marqué payé pour cette période.'}
+                    </div>
+                    {peutMarquerPaye ? (
+                      <div style={{display:'flex', alignItems:'center', gap:6, flexWrap:'wrap'}}>
+                        <select value={modeSel} onChange={e=>setModeChoisi(prev=>({...prev, [l.nom]: e.target.value}))} style={{width:'auto', fontSize:12.5, padding:'4px 8px'}}>
+                          <option value="Espèces">Espèces</option>
+                          <option value="Orange Money">Orange Money</option>
+                        </select>
+                        <select value={detenteurSel} onChange={e=>setDetenteurChoisi(prev=>({...prev, [l.nom]: e.target.value}))} style={{width:'auto', fontSize:12.5, padding:'4px 8px'}} title="Qui paie, depuis sa propre caisse">
+                          {DETENTEURS_CAISSE.map(nom => <option key={nom} value={nom}>Payé par {nom}</option>)}
+                        </select>
+                        <input type="number" min={0} max={maxSaisissable} value={montantSaisiVal}
+                          onChange={e=>{
+                            let v = Number(e.target.value)||0;
+                            if(v>maxSaisissable) v = maxSaisissable;
+                            if(v<0) v = 0;
+                            setMontantSaisi(prev=>({...prev, [l.nom]: v}));
+                          }}
+                          style={{width:110, fontSize:12.5, padding:'4px 8px'}} title="Montant à payer (peut être partiel)" />
+                        <button className="btn btn-rust btn-sm" disabled={maxSaisissable<=0 || montantSaisiVal<=0}
+                          onClick={()=>marquerPaye(l.nom, Math.min(montantSaisiVal, maxSaisissable), modeSel, detenteurSel)}>
+                          Marquer payé
+                        </button>
+                        {dispoDetenteurSel <= 0 ? (
+                          <span style={{fontSize:11.5, color:'var(--danger)'}}>Aucun montant disponible dans la caisse de {detenteurSel} pour cette période.</span>
+                        ) : (
+                          <span style={{fontSize:11.5, color:'var(--steam)'}}>Disponible chez {detenteurSel} : {fmtGNF(dispoDetenteurSel)}</span>
+                        )}
+                      </div>
+                    ) : (
+                      <span style={{fontSize:12, color:'var(--steam)'}}>Seul {l.nom} ou le gérant peut marquer ce paiement.</span>
+                    )}
+                  </div>
+                )}
+              </>
             )}
           </div>
         );
@@ -3662,9 +4137,19 @@ function SuiviDistributionView({ db, setDb, employeId }){
         <ConfirmDelete db={db}
           title="Annuler la confirmation de réception"
           actionLabel="Annuler la confirmation"
-          message={`Annuler la confirmation « J'ai bien reçu » de ${confirmAnnulerValidation} pour ${periodeLabel} ? Le paiement restera marqué « payé » (${fmtGNF((paiementsPeriode[confirmAnnulerValidation]||{}).montant||0)}), mais redeviendra en attente de confirmation — utile si ${confirmAnnulerValidation} a cliqué par erreur.`}
+          message={`Annuler la confirmation « J'ai bien reçu » de ${confirmAnnulerValidation.nomActeur} pour ${periodeLabel} ? Ce versement restera marqué « payé » (${fmtGNF(confirmAnnulerValidation.montant||0)}), mais redeviendra en attente de confirmation — utile si ${confirmAnnulerValidation.nomActeur} a cliqué par erreur.`}
           onConfirm={annulerValidation}
           onCancel={()=>setConfirmAnnulerValidation(null)}
+        />
+      )}
+
+      {confirmSupprimerVersement && (
+        <ConfirmDelete db={db}
+          title="Supprimer ce versement"
+          actionLabel="Supprimer définitivement"
+          message={`Supprimer définitivement ce versement de ${fmtGNF(confirmSupprimerVersement.montant||0)} enregistré pour ${confirmSupprimerVersement.nomActeur} (${confirmSupprimerVersement.cleLabel}) ? Cette action réduit immédiatement son « Déjà distribué » depuis le début et ne peut pas être annulée — à utiliser uniquement si ce versement a été saisi par erreur (ex: en double).`}
+          onConfirm={supprimerVersement}
+          onCancel={()=>setConfirmSupprimerVersement(null)}
         />
       )}
     </div>
@@ -13964,7 +14449,7 @@ function DepensesPropresEmployeView({ db, setDb, monProfil }){
       <PageHeader title="Dépenses propres" subtitle="Déclarez une avance personnelle prise à la caisse, pour vous ou pour un autre associé" />
       <div className="card" style={{padding:'1.5rem', marginBottom:20}}>
         <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 16px', lineHeight:1.5}}>
-          Cette dépense sera déduite de la part de l'associé bénéficiaire dans la Distribution des recettes — elle ne touche pas la recette de l'entreprise. Si vous rendez cet argent plus tard, le gérant peut enregistrer le remboursement dans « Dépenses propres de chaque acteur ».
+          Cette dépense sera retirée du pot commun avant la répartition entre tous les acteurs, au prorata de leur part — elle ne touche pas la recette de l'entreprise, et elle n'est pas déduite seulement de la part du bénéficiaire. C'est à lui de la rembourser ; quand il le fait, le remboursement est lui aussi reversé à tous les acteurs au prorata (le gérant l'enregistre dans « Dépenses propres de chaque acteur »).
         </p>
         {confirmation && (
           <div style={{padding:'8px 12px', background:'var(--pine-light)', color:'var(--pine)', borderRadius:8, fontSize:13, fontWeight:600, marginBottom:12}}>
