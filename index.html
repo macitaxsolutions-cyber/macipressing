@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-20-15">
+<meta name="app-version" content="2026-10-21-3">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-20-15';
+  const APP_VERSION_ACTUELLE = '2026-10-21-3';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -2641,27 +2641,66 @@ function moisCouvertsPourCle(cle){
   }
   return [];
 }
-// Montant net reçu par CETTE personne, en tant que caissière de Maci Pressing Kipé UNIQUEMENT, sur les
-// mois listés (Espèces + Orange Money reçus, moins ses dépenses entreprise ET ses dépenses propres — même
-// formule que « Total par employé » / « Mon total »). C'est le plafond : chacun ne peut payer les acteurs
-// qu'à hauteur de ce qu'il a lui-même net reçu pour la période en cours, pas plus.
-function netRecuCaissierPourMois(db, nomPersonne, moisListe){
+// Total décaissé PHYSIQUEMENT par CETTE personne, depuis sa propre caisse de Kipé, via « Dépenses propres
+// de chaque acteur » (page « Dépenses propres », champ « Décaissé par ») — distinct des dépenses propres
+// saisies par caissier dans Détail mensuel (déjà comptées dans detailRecuCaissierPourMois ci-dessous). Ce
+// genre d'avance personnelle est mutualisé/pooled au niveau de toute l'entreprise pour calculer la Base de
+// répartition (voir calculerRepartitionActeursPourPeriode), mais appauvrit quand même RÉELLEMENT la caisse
+// physique de la personne qui l'a décaissée — sans cette déduction, « Montant disponible pour payer »
+// surestimerait ce qu'elle a vraiment en main.
+function totalDecaisseParPersonnePourMois(db, nomPersonne, moisListe){
+  const cible = (nomPersonne||'').trim().toLowerCase();
+  if(!cible || !moisListe.length) return 0;
+  const moisSet = new Set(moisListe.map(({annee, mois}) => `${annee}-${String(mois).padStart(2,'0')}`));
+  let total = 0;
+  Object.values(db.historiqueAnnuel||{}).forEach(anneeData => {
+    Object.values((anneeData||{}).depensesActeurs || {}).forEach(liste => {
+      (liste||[]).forEach(e => {
+        if((e.decaissePar||'').trim().toLowerCase() !== cible) return;
+        if(!e.date || !moisSet.has(e.date.slice(0,7))) return;
+        total += Number(e.montant)||0;
+      });
+    });
+  });
+  return total;
+}
+// Détail (Espèces reçues / Orange Money reçu / dépenses / dépenses propres / avances décaissées pour
+// d'autres acteurs / net) pour CETTE personne, en tant que caissière de Maci Pressing Kipé UNIQUEMENT, sur
+// les mois listés — sert à afficher la répartition Espèces vs Orange Money dans « Montant disponible pour
+// payer » (le compte Orange Money étant partagé par les deux caissiers, savoir ce que chacun y a
+// personnellement encaissé aide à comprendre d'où vient le solde). Même source de données que « Total par
+// employé » / « Mon total », plus les avances décaissées via la page Dépenses propres (voir
+// totalDecaisseParPersonnePourMois ci-dessus).
+function detailRecuCaissierPourMois(db, nomPersonne, moisListe){
+  const vide = { especes:0, orangeMoney:0, depenses:0, depensesPropres:0, avancesDecaissees:0, net:0 };
   const site = siteKipe(db);
-  if(!site || !moisListe.length) return 0;
+  if(!site || !moisListe.length) return vide;
   const cible = (nomPersonne||'').trim().toLowerCase();
   const emp = (site.employes||[]).find(e => (e.nom||'').trim().toLowerCase() === cible);
-  if(!emp) return 0;
+  if(!emp) return vide;
   const anneesCouvertes = Array.from(new Set(moisListe.map(mc=>mc.annee)));
-  let total = 0;
+  const total = { ...vide };
   anneesCouvertes.forEach(a => {
     const donnees = calculerDonneesMensuellesEmploye(site, a, emp.id);
     moisListe.forEach(({annee:aa, mois}) => {
       if(aa !== a) return;
       const d = donnees[mois-1];
-      total += (d.montantRecuEspeces||0) + (d.montantRecuOrangeMoney||0) - (d.depenses||0) - (d.depensesPropres||0);
+      total.especes += d.montantRecuEspeces||0;
+      total.orangeMoney += d.montantRecuOrangeMoney||0;
+      total.depenses += d.depenses||0;
+      total.depensesPropres += d.depensesPropres||0;
     });
   });
+  total.avancesDecaissees = totalDecaisseParPersonnePourMois(db, nomPersonne, moisListe);
+  total.net = total.especes + total.orangeMoney - total.depenses - total.depensesPropres - total.avancesDecaissees;
   return total;
+}
+// Montant net reçu par CETTE personne, en tant que caissière de Maci Pressing Kipé UNIQUEMENT, sur les
+// mois listés (Espèces + Orange Money reçus, moins ses dépenses entreprise ET ses dépenses propres — même
+// formule que « Total par employé » / « Mon total »). C'est le plafond : chacun ne peut payer les acteurs
+// qu'à hauteur de ce qu'il a lui-même net reçu pour la période en cours, pas plus.
+function netRecuCaissierPourMois(db, nomPersonne, moisListe){
+  return detailRecuCaissierPourMois(db, nomPersonne, moisListe).net;
 }
 // Total déjà versé À D'AUTRES ACTEURS par CETTE personne (depuis sa propre caisse), mais UNIQUEMENT pour
 // cette période de distribution précise (cle) — pas depuis le début : le plafond se réinitialise à chaque
@@ -3718,6 +3757,17 @@ function SuiviDistributionView({ db, setDb, employeId }){
   // septembre (par exemple) n'apparaisse pas comme « pas encore payé » quand on regarde toute l'année.
   // Les NOUVEAUX paiements continuent d'être enregistrés sous « cle » uniquement (la période exacte choisie).
   const cles = suiviPaiementDisponible ? clesPourPeriode(periode, moisChoisi, anneeChoisie) : [];
+  // Clés à additionner pour calculer « Déjà payé » dans le bloc Montant disponible — contrairement à
+  // « cles » ci-dessus (réservé au suivi payé/confirmé, qui n'existe qu'en vue Par mois / Par année), ce
+  // calcul doit aussi fonctionner en Intervalle et À ce jour : on additionne simplement la clé mensuelle
+  // 'M-AAAA-MM' de chaque mois couvert par la période choisie (voir moisCouverts ci-dessus). On ne peut pas
+  // inclure de clé annuelle 'A-AAAA' ici pour Intervalle (une année partiellement couverte ne doit pas
+  // compter un paiement enregistré sous la clé annuelle complète), donc seule la vue « Par année » garde ce
+  // cas via clesPourPeriode.
+  const clesPourDisponible = useMemo(() => {
+    if(periode === 'mois' || periode === 'annee') return cles;
+    return moisCouverts.map(({annee, mois}) => `M-${annee}-${String(mois).padStart(2,'0')}`);
+  }, [periode, cles, moisCouverts]);
   const paiementsPeriode = useMemo(() => paiementsAgregesPourPeriode(db, cles), [db, cles.join(',')]);
   // Le gérant (employeId absent) peut toujours valider n'importe quel acteur (beaucoup n'ont pas de compte
   // dans l'app) ; un employé connecté ne peut valider que SA PROPRE part, si son nom correspond à l'acteur.
@@ -3730,13 +3780,13 @@ function SuiviDistributionView({ db, setDb, employeId }){
   // moins ce qu'ils ont déjà payé sur cette même période (tous mois confondus si on regarde l'année entière).
   // Ce plafond se réinitialise à chaque nouvelle période.
   const montantsDisponibles = useMemo(() => {
-    if(!cle) return [];
+    if(!moisCouverts.length) return [];
     return DETENTEURS_CAISSE.map(nom => {
-      const net = netRecuCaissierPourMois(db, nom, moisCouvertsPourCle(cle));
-      const dejaPaye = totalPayeParDetenteurPourCles(db, nom, cles);
-      return { nom, net, dejaPaye, disponible: net - dejaPaye };
+      const detail = detailRecuCaissierPourMois(db, nom, moisCouverts);
+      const dejaPaye = totalPayeParDetenteurPourCles(db, nom, clesPourDisponible);
+      return { nom, detail, net: detail.net, dejaPaye, disponible: detail.net - dejaPaye };
     });
-  }, [db, cle, cles.join(',')]);
+  }, [db, moisCouverts, clesPourDisponible]);
   function disponiblePourNom(nom){
     const d = montantsDisponibles.find(x=>x.nom===nom);
     return d ? Math.max(0, d.disponible) : 0;
@@ -3831,35 +3881,60 @@ function SuiviDistributionView({ db, setDb, employeId }){
         Le % de chaque acteur s'applique à la <strong>Base de répartition</strong> ci-dessus, pas directement au « Total distribué ». Les deux diffèrent dès qu'un ou plusieurs acteurs ont des dépenses propres, un crédit de remboursement ou (pour les 4 acteurs concernés) un extra versé à la Conservation du Capital Fixe ce mois-là — ces ajustements sont propres à chacun, pas répartis au prorata des %. Pour vérifier le % d'un acteur sans ajustement personnel ce mois-ci : son % × Base de répartition (pas × Total distribué).
       </p>
 
-      {suiviPaiementDisponible && (
-        <>
-          <h2 style={{fontSize:16, color:'var(--ink)', margin:'0 0 6px'}}>Montant disponible pour payer — {periodeLabel}</h2>
-          <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
-            {DETENTEURS_CAISSE.join(' et ')} encaissent directement l'argent des clients à Maci Pressing Kipé, donc c'est eux qui le détiennent physiquement. Chacun ne peut payer les acteurs qu'à hauteur de ce qu'il a lui-même net reçu (Espèces + Orange Money, moins ses dépenses) pour <strong>cette période précise</strong> — jamais plus, et ce plafond ne vient pas d'un cumul depuis le début. S'il n'a pas assez pour payer un acteur en entier, il peut payer ce qu'il a, et l'autre caissier peut compléter le reste.
-          </p>
-          <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))', gap:10, marginBottom:20}}>
-            {montantsDisponibles.map(d => {
-              const reste = d.disponible;
-              return (
-                <div key={d.nom} className="card" style={{padding:'1rem 1.1rem'}}>
-                  <div style={{fontWeight:700, fontSize:14, marginBottom:8}}>{d.nom}</div>
-                  <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:4}}>
-                    <span>Net reçu — {periodeLabel}</span>
-                    <span className="mono">{fmtGNF(d.net)}</span>
-                  </div>
-                  <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:8}}>
-                    <span>Déjà payé sur cette période</span>
-                    <span className="mono">{d.dejaPaye>0 ? fmtGNF(d.dejaPaye) : '—'}</span>
-                  </div>
-                  <div style={{display:'flex', justifyContent:'space-between', borderTop:'1px solid var(--line)', paddingTop:8}}>
-                    <span style={{fontSize:13, fontWeight:600}}>Disponible</span>
-                    <span className="mono" style={{fontSize:15, fontWeight:700, color: reste<0 ? 'var(--danger)' : 'var(--pine)'}}>{fmtGNF(reste)}</span>
-                  </div>
+      <h2 style={{fontSize:16, color:'var(--ink)', margin:'0 0 6px'}}>Montant disponible pour payer — {periodeLabel}</h2>
+      <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
+        {DETENTEURS_CAISSE.join(' et ')} encaissent directement l'argent des clients à Maci Pressing Kipé, donc c'est eux qui le détiennent physiquement. Chacun ne peut payer les acteurs qu'à hauteur de ce qu'il a lui-même net reçu (Espèces + Orange Money, moins ses dépenses et ses avances décaissées) pour <strong>cette période précise</strong> — jamais plus, et ce plafond ne vient pas d'un cumul depuis le début. S'il n'a pas assez pour payer un acteur en entier, il peut payer ce qu'il a, et l'autre caissier peut compléter le reste. Le compte Orange Money est partagé par les deux — le détail ci-dessous montre ce que chacun y a personnellement encaissé.
+        {!suiviPaiementDisponible && <> En « {periode==='intervalle'?'Intervalle':'À ce jour'} », ces montants sont calculés pour information : pour marquer un paiement, utilisez « Par mois » ou « Par année ».</>}
+      </p>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(240px, 1fr))', gap:10, marginBottom:20}}>
+        {montantsDisponibles.map(d => {
+          const reste = d.disponible;
+          const det = d.detail;
+          return (
+            <div key={d.nom} className="card" style={{padding:'1rem 1.1rem'}}>
+              <div style={{fontWeight:700, fontSize:14, marginBottom:8}}>{d.nom}</div>
+              <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:4}}>
+                <span>Espèces reçues</span>
+                <span className="mono">{fmtGNF(det.especes)}</span>
+              </div>
+              <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:4}}>
+                <span>Orange Money reçu</span>
+                <span className="mono">{fmtGNF(det.orangeMoney)}</span>
+              </div>
+              {(det.depenses>0 || det.depensesPropres>0) && (
+                <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:4}}>
+                  <span>Dépenses (entreprise + propres)</span>
+                  <span className="mono">− {fmtGNF(det.depenses + det.depensesPropres)}</span>
                 </div>
-              );
-            })}
-          </div>
-        </>
+              )}
+              {det.avancesDecaissees>0 && (
+                <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:4}}>
+                  <span>Avances décaissées pour d'autres acteurs</span>
+                  <span className="mono">− {fmtGNF(det.avancesDecaissees)}</span>
+                </div>
+              )}
+              <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--ink)', fontWeight:600, borderTop:'1px dashed var(--line)', paddingTop:6, marginTop:2, marginBottom:8}}>
+                <span>Total net reçu — {periodeLabel}</span>
+                <span className="mono">{fmtGNF(d.net)}</span>
+              </div>
+              <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:8}}>
+                <span>Déjà payé sur cette période</span>
+                <span className="mono">{d.dejaPaye>0 ? fmtGNF(d.dejaPaye) : '—'}</span>
+              </div>
+              <div style={{display:'flex', justifyContent:'space-between', borderTop:'1px solid var(--line)', paddingTop:8}}>
+                <span style={{fontSize:13, fontWeight:600}}>Disponible</span>
+                <span className="mono" style={{fontSize:15, fontWeight:700, color: reste<0 ? 'var(--danger)' : 'var(--pine)'}}>{fmtGNF(reste)}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {montantsDisponibles.length>0 && (
+        <div style={{display:'flex', gap:24, flexWrap:'wrap', fontSize:12.5, color:'var(--steam)', margin:'-8px 0 20px', padding:'8px 12px', background:'var(--paper-2)', borderRadius:8}}>
+          <span><strong style={{color:'var(--ink)'}}>Espèces (les deux) :</strong> {fmtGNF(montantsDisponibles.reduce((s,d)=>s+d.detail.especes,0))}</span>
+          <span><strong style={{color:'var(--ink)'}}>Orange Money (les deux, compte partagé) :</strong> {fmtGNF(montantsDisponibles.reduce((s,d)=>s+d.detail.orangeMoney,0))}</span>
+          <span><strong style={{color:'var(--ink)'}}>Total net reçu (les deux) :</strong> {fmtGNF(montantsDisponibles.reduce((s,d)=>s+d.net,0))}</span>
+        </div>
       )}
 
       {lignes.map(l => {
