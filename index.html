@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-21-3">
+<meta name="app-version" content="2026-10-22-1">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-21-3';
+  const APP_VERSION_ACTUELLE = '2026-10-22-1';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -12892,10 +12892,18 @@ function ListePaiementsView({ site, employeId }){
   }
 
   // Un paiement client = une ligne, qu'il vienne d'une commande (ticket) ou d'un « Encaisser sans commande »
+  // dateOrigine = date de création de la DETTE que ce paiement règle (date de la commande elle-même pour un
+  // ticket normal ; « date de la commande d'origine » pour un « Encaisser sans commande », qui sert
+  // justement à solder un vieux solde papier reçu plus tard — voir dateCommandeOrigineHorsCommande). C'est
+  // CETTE date, pas la date du paiement, qui dit si ce paiement règle une dette d'avant ou d'après le
+  // lancement de l'app (01/09/2026) — un client qui paie aujourd'hui un solde de juillet règle une dette
+  // d'avant lancement, même si l'argent est compté, lui, dans le mois où il est réellement reçu.
+  const DATE_LANCEMENT = '2026-09-01';
   const paiements = useMemo(() => {
     const liste = [];
     (site.commandes||[]).forEach(c => {
       const client = (site.clients||[]).find(cl => cl.id === c.clientId);
+      const dateOrigine = (c.dateCreation || '').slice(0,10);
       getPaiementsCommande(c).forEach(pmt => {
         if(!pmt.date) return;
         const employeAttribue = pmt.employeId != null ? pmt.employeId : (c.caissierEmpId || null);
@@ -12910,13 +12918,16 @@ function ListePaiementsView({ site, employeId }){
           client: client ? client.nom : 'Client inconnu',
           employeNom: nomEmploye(employeAttribue),
           mode: pmt.mode || 'Espèces',
-          montant: Number(pmt.montant)||0
+          montant: Number(pmt.montant)||0,
+          dateOrigine: dateOrigine || pmt.date.slice(0,10),
+          avantLancement: (dateOrigine || pmt.date.slice(0,10)) < DATE_LANCEMENT,
         });
       });
     });
     (site.paiementsHorsCommande||[]).forEach(p => {
       const datePaiement = dateEncaissementHorsCommande(p);
       if(!datePaiement) return;
+      const dateOrigine = (dateCommandeOrigineHorsCommande(p) || datePaiement).slice(0,10);
       liste.push({
         id: p.id,
         date: datePaiement,
@@ -12927,7 +12938,9 @@ function ListePaiementsView({ site, employeId }){
         client: p.clientNom || 'Client non précisé',
         employeNom: nomEmploye(p.employeId || null),
         mode: p.mode || 'Espèces',
-        montant: Number(p.montant)||0
+        montant: Number(p.montant)||0,
+        dateOrigine,
+        avantLancement: dateOrigine < DATE_LANCEMENT,
       });
     });
     return liste;
@@ -12995,6 +13008,26 @@ function ListePaiementsView({ site, employeId }){
     return Object.entries(map).sort((a,b)=>b[1]-a[1]).map(([mode,total])=>({mode,total}));
   }, [paiementsFiltres]);
 
+  // Avant / après lancement (01/09/2026), par mode de paiement, sur la période filtrée — sert à suivre
+  // combien de ce qui est encaissé règle en fait de VIEILLES dettes papier (impayés d'avant le lancement),
+  // par opposition à l'activité normale d'après lancement. Basé sur dateOrigine (voir plus haut), pas sur la
+  // date du paiement : un règlement reçu aujourd'hui pour une commande papier de juillet compte « avant
+  // lancement », même si l'argent lui-même tombe dans le mois en cours.
+  const totauxLancement = useMemo(() => {
+    function resume(liste){
+      const parMode = {};
+      liste.forEach(p => { parMode[p.mode] = (parMode[p.mode]||0) + p.montant; });
+      return {
+        nb: liste.length,
+        total: liste.reduce((s,p)=>s+p.montant,0),
+        parMode: Object.entries(parMode).sort((a,b)=>b[1]-a[1]).map(([mode,total])=>({mode,total})),
+      };
+    }
+    const avant = paiementsFiltres.filter(p=>p.avantLancement);
+    const apres = paiementsFiltres.filter(p=>!p.avantLancement);
+    return { avant: resume(avant), apres: resume(apres) };
+  }, [paiementsFiltres]);
+
   function flecheTri(col){ return triCol !== col ? '' : (triDir === 'asc' ? ' ▲' : ' ▼'); }
   const thTri = { ...th, cursor:'pointer', userSelect:'none' };
 
@@ -13038,6 +13071,34 @@ function ListePaiementsView({ site, employeId }){
         ))}
       </div>
 
+      <h2 style={{fontSize:16, color:'var(--ink)', margin:'0 0 6px'}}>Origine des paiements — avant / après lancement</h2>
+      <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 12px', lineHeight:1.5}}>
+        Classé par date de la DETTE réglée (date de la commande, ou « date de la commande d'origine » pour un « Encaisser sans commande »), pas par date du paiement lui-même — un règlement reçu aujourd'hui pour une vieille commande papier compte ici « avant lancement », même si l'argent tombe dans le mois en cours. Sert à suivre ce qui reste à récupérer sur les impayés d'avant le 01/09/2026.
+      </p>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(260px, 1fr))', gap:10, marginBottom:20}}>
+        {[['avant','Avant lancement (dettes papier)'],['apres','Après lancement']].map(([cle, titre]) => {
+          const r = totauxLancement[cle];
+          return (
+            <div key={cle} className="card" style={{padding:'1rem 1.1rem'}}>
+              <div style={{fontWeight:700, fontSize:14, marginBottom:8}}>{titre}</div>
+              <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:4}}>
+                <span>{r.nb} paiement(s)</span>
+              </div>
+              {r.parMode.map(({mode,total}) => (
+                <div key={mode} style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:4}}>
+                  <span>{mode}</span>
+                  <span className="mono">{fmtGNF(total)}</span>
+                </div>
+              ))}
+              <div style={{display:'flex', justifyContent:'space-between', borderTop:'1px solid var(--line)', paddingTop:8, marginTop:4}}>
+                <span style={{fontSize:13, fontWeight:600}}>Total</span>
+                <span className="mono" style={{fontSize:15, fontWeight:700, color:'var(--pine)'}}>{fmtGNF(r.total)}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
       {paiementsTries.length === 0 ? (
         <div className="card" style={{padding:'1.25rem', textAlign:'center', color:'var(--steam)', fontSize:13}}>
           Aucun paiement sur cette période{recherche.trim() ? ' pour cette recherche' : ''}.
@@ -13058,7 +13119,14 @@ function ListePaiementsView({ site, employeId }){
             <tbody>
               {paiementsTries.map(p => (
                 <tr key={p.id} style={{borderTop:'1px solid var(--line)'}}>
-                  <td style={td}>{fmtDate(p.jour)}</td>
+                  <td style={td}>
+                    {fmtDate(p.jour)}
+                    {p.avantLancement && (
+                      <span title={`Règle une dette du ${fmtDate(p.dateOrigine)}, avant le lancement de l'app`} style={{marginLeft:6, fontSize:10.5, fontWeight:700, color:'var(--warn)', background:'var(--warn-light)', padding:'1px 6px', borderRadius:999}}>
+                        avant lancement
+                      </span>
+                    )}
+                  </td>
                   <td style={{...td, fontWeight:600}}>{p.client}</td>
                   <td style={td}>{p.mode}</td>
                   <td style={td}>{p.employeNom}</td>
