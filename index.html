@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-23-1">
+<meta name="app-version" content="2026-10-23-4">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-23-1';
+  const APP_VERSION_ACTUELLE = '2026-10-23-4';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -2361,23 +2361,36 @@ function calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi){
   anneesCouvertes.forEach(a => { donneesParAnneeMap[a] = calculerDonneesMensuellesMultiSites(db.sites, a); });
   const surUnSeulMois = moisCouverts.length === 1;
 
+  // Net perçu « plafonné » (voir netPercuPlafonnePourMois) de chaque mois couvert — remplace le net perçu
+  // brut comme Base de répartition : un caissier (ou site) en déficit ce mois-là contribue 0 au pot commun
+  // au lieu d'un montant négatif qui réduirait la part de tous les autres acteurs.
+  const netPercuPlafonneParCle = {};
+  moisCouverts.forEach(({annee:a, mois:m}) => {
+    const dm = (donneesParAnneeMap[a]||[]).find(x=>x.mois===m);
+    if(!dm) return;
+    netPercuPlafonneParCle[`${a}-${m}`] = netPercuPlafonnePourMois(db, a, m, dm.netPercu);
+  });
+
   function partActeur(nom, champ){
     const cle = champ === 'recetteBrute' ? 'recetteBrute' : champ === 'impayes' ? 'impayesReel' : 'netPercu';
     return moisCouverts.reduce((s,{annee:a, mois:m}) => {
       const dm = (donneesParAnneeMap[a]||[]).find(x=>x.mois===m);
       if(!dm) return s;
-      return s + (Number(dm[cle])||0) * pctActeurMois(db, nom, a, m) / 100;
+      const valeur = cle === 'netPercu' ? (netPercuPlafonneParCle[`${a}-${m}`] ?? dm.netPercu) : (Number(dm[cle])||0);
+      return s + valeur * pctActeurMois(db, nom, a, m) / 100;
     }, 0);
   }
 
   // Part du net perçu de CE mois éligible au remboursement (0 pour les mois où le bouton était désactivé
-  // à l'époque, même s'il est réactivé aujourd'hui) — voir remboursementActifPourMois ci-dessus.
+  // à l'époque, même s'il est réactivé aujourd'hui) — voir remboursementActifPourMois ci-dessus. Utilise
+  // aussi le net perçu plafonné, par cohérence avec la Base de répartition ci-dessus.
   function partActeurEligibleRemboursement(nom){
     return moisCouverts.reduce((s,{annee:a, mois:m}) => {
       if(!remboursementActifPourMois(db, a, m)) return s;
       const dm = (donneesParAnneeMap[a]||[]).find(x=>x.mois===m);
       if(!dm) return s;
-      return s + (Number(dm.netPercu)||0) * pctActeurMois(db, nom, a, m) / 100;
+      const valeur = netPercuPlafonneParCle[`${a}-${m}`] ?? dm.netPercu;
+      return s + valeur * pctActeurMois(db, nom, a, m) / 100;
     }, 0);
   }
 
@@ -2731,6 +2744,91 @@ function clesPourPeriode(periode, moisChoisi, anneeChoisie){
 function totalPayeParDetenteurPourCles(db, nomPersonne, cles){
   if(!nomPersonne) return 0;
   return (cles||[]).reduce((s, cle) => s + totalPayeParDetenteurPourCle(db, nomPersonne, cle), 0);
+}
+// Déficit reporté d'un caissier AVANT la période actuellement affichée — ex: si Mamadou Alpha a fini mai à
+// -545 000 GNF (plus dépensé que reçu, sans rien payer à personne ce mois-là, impossible de toute façon),
+// ce déficit n'est pas effacé le 1er juin : il doit continuer à réduire son plafond « disponible » tant
+// qu'il n'est pas résorbé par un mois où il reçoit davantage, sans limite de temps (même d'une année sur
+// l'autre). Seul le déficit (négatif) se reporte ainsi — un solde positif non dépensé un mois donné ne
+// s'ajoute PAS au mois suivant : chaque mois où un caissier a de l'argent disponible, il peut déjà
+// l'utiliser en entier ce mois-là (voir montantsDisponibles), donc rien à reporter dans ce sens-là.
+//
+// IMPORTANT : ceci doit être calculé mois par mois, EN CHAÎNE (pas comme une simple somme de tout
+// l'historique) — sinon un mois largement positif loin dans le passé (ex: janvier) viendrait
+// silencieusement « éponger » un déficit plus récent (ex: mai) avant même qu'il soit visible le mois
+// suivant (juin), alors que ce surplus de janvier était déjà entièrement disponible/utilisé pour janvier
+// lui-même. Le report ne doit donc porter QUE sur un déficit qui existait encore à la fin du mois
+// précédent, jamais ressuscité par un surplus plus ancien déjà « consommé » dans son propre mois.
+//
+// premierMoisPeriode = { annee, mois } du premier mois couvert par la période actuellement affichée (quel
+// que soit le mode : mois / année / intervalle / à ce jour) — tout ce qui est strictement AVANT compte.
+function soldeReporteAvantPeriode(db, nomPersonne, premierMoisPeriode, currentYear, currentMonth){
+  if(!nomPersonne || !premierMoisPeriode) return 0;
+  const tousLesMoisJusquaMaintenant = moisCouvertsDepuisDebut(currentYear, currentMonth);
+  const moisAvant = tousLesMoisJusquaMaintenant.filter(({annee, mois}) =>
+    annee < premierMoisPeriode.annee || (annee === premierMoisPeriode.annee && mois < premierMoisPeriode.mois)
+  );
+  if(!moisAvant.length) return 0;
+  const site = siteKipe(db);
+  if(!site) return 0;
+  const cible = (nomPersonne||'').trim().toLowerCase();
+  const emp = (site.employes||[]).find(e => (e.nom||'').trim().toLowerCase() === cible);
+  if(!emp) return 0;
+  const anneesAvant = Array.from(new Set(moisAvant.map(m=>m.annee)));
+  const donneesParAnnee = {};
+  anneesAvant.forEach(a => { donneesParAnnee[a] = calculerDonneesMensuellesEmploye(site, a, emp.id); });
+  let report = 0; // toujours <= 0 : solde du déficit encore ouvert, propagé mois après mois
+  moisAvant.forEach(({annee, mois}, idx) => {
+    const d = donneesParAnnee[annee][mois-1];
+    const net = (d.montantRecuEspeces||0) + (d.montantRecuOrangeMoney||0) - (d.depenses||0) - (d.depensesPropres||0)
+      - totalDecaisseParPersonnePourMois(db, nomPersonne, [{annee, mois}]);
+    let dejaPaye = totalPayeParDetenteurPourCle(db, nomPersonne, `M-${annee}-${String(mois).padStart(2,'0')}`);
+    // Un paiement enregistré sous la clé ANNUELLE (suivi « Par année ») est ajouté une seule fois, au
+    // dernier mois de cette année-là dans la liste, pour ne jamais le compter plusieurs fois ni l'oublier.
+    const dernierMoisDeCetteAnneeDansLaListe = !moisAvant[idx+1] || moisAvant[idx+1].annee !== annee;
+    if(dernierMoisDeCetteAnneeDansLaListe) dejaPaye += totalPayeParDetenteurPourCle(db, nomPersonne, `A-${annee}`);
+    report = Math.min(0, net - dejaPaye + report);
+  });
+  return report;
+}
+// Net BRUT (avant déficit reporté, avant « déjà payé ») d'UN caissier détenteur de caisse pour un seul
+// mois précis — même formule que celle utilisée dans soldeReporteAvantPeriode et dans « Montant
+// disponible », extraite ici pour être réutilisée dans le calcul de la Base de répartition ci-dessous.
+function netBrutCaissierPourMoisPrecis(db, nomPersonne, annee, mois){
+  const site = siteKipe(db);
+  if(!site) return 0;
+  const cible = (nomPersonne||'').trim().toLowerCase();
+  const emp = (site.employes||[]).find(e => (e.nom||'').trim().toLowerCase() === cible);
+  if(!emp) return 0;
+  const d = calculerDonneesMensuellesEmploye(site, annee, emp.id)[mois-1];
+  return (d.montantRecuEspeces||0) + (d.montantRecuOrangeMoney||0) - (d.depenses||0) - (d.depensesPropres||0)
+    - totalDecaisseParPersonnePourMois(db, nomPersonne, [{annee, mois}]);
+}
+// Net perçu « plafonné » de l'ENTREPRISE ENTIÈRE pour un seul mois précis, utilisé comme Base de
+// répartition / Total distribué à la place du net perçu brut : un acteur/caissier dont le mois est
+// négatif (ou toujours déficitaire après report de son déficit des mois précédents) contribue 0 au pot
+// commun partagé par tous les acteurs ce mois-là — jamais un montant négatif. Son déficit personnel
+// continue d'être suivi uniquement contre ses propres mois futurs (soldeReporteAvantPeriode /
+// « Montant disponible »), sans jamais réduire la part des autres acteurs. S'applique en premier lieu aux
+// deux caissiers détenteurs de caisse de Kipé (avec report de déficit, comme pour « Montant disponible »)
+// puis, par cohérence, à tout le reste de l'entreprise (autres sites/employés, sans mécanisme de report
+// pour l'instant puisqu'ils n'ont pas de caisse physique attitrée comme Nene Djiba/Mamadou Alpha) :
+// `dmRawNetPercu` est le net perçu brut déjà calculé pour ce mois par calculerDonneesMensuellesMultiSites.
+function netPercuPlafonnePourMois(db, annee, mois, dmRawNetPercu){
+  let cashierRawSum = 0, cashierPlafonneSum = 0;
+  DETENTEURS_CAISSE.forEach(nom => {
+    const netBrut = netBrutCaissierPourMoisPrecis(db, nom, annee, mois);
+    // On réutilise soldeReporteAvantPeriode en passant CE mois comme « période » et comme « maintenant » :
+    // le filtrage interne ne garde que les mois strictement AVANT ce mois, donc le résultat est le même
+    // quelle que soit la date réelle d'aujourd'hui, tant qu'elle n'est pas antérieure à ce mois.
+    const report = soldeReporteAvantPeriode(db, nom, {annee, mois}, annee, mois);
+    const netAjuste = netBrut + report;
+    cashierRawSum += netBrut;
+    cashierPlafonneSum += Math.max(0, netAjuste);
+  });
+  const resteRaw = (Number(dmRawNetPercu)||0) - cashierRawSum;
+  const restePlafonne = Math.max(0, resteRaw);
+  return cashierPlafonneSum + restePlafonne;
 }
 // Fusionne, pour l'affichage, les paiements de toutes les clés concernées par la période choisie en une
 // seule liste de versements par acteur — chaque versement garde la trace de sa clé et de son index
@@ -3777,16 +3875,20 @@ function SuiviDistributionView({ db, setDb, employeId }){
   // Ce qu'il reste disponible dans la caisse de chaque caissier, pour LA PÉRIODE actuellement affichée
   // (le mois ou l'année choisis ci-dessus) — c'est le plafond : Nene Djiba et Mamadou Alpha ne peuvent payer
   // les acteurs qu'à hauteur de ce qu'ils ont eux-mêmes net reçu (Kipé uniquement) pour cette période précise,
-  // moins ce qu'ils ont déjà payé sur cette même période (tous mois confondus si on regarde l'année entière).
-  // Ce plafond se réinitialise à chaque nouvelle période.
+  // moins ce qu'ils ont déjà payé sur cette même période (tous mois confondus si on regarde l'année entière),
+  // PLUS un éventuel déficit reporté des mois précédents (voir soldeReporteAvantPeriode : si un caissier a
+  // fini un mois avec moins reçu que dépensé, ce trou continue de réduire son plafond jusqu'à résorption,
+  // même des mois ou années plus tard — un solde positif non dépensé, lui, ne se reporte pas).
   const montantsDisponibles = useMemo(() => {
     if(!moisCouverts.length) return [];
+    const premierMoisPeriode = moisCouverts[0];
     return DETENTEURS_CAISSE.map(nom => {
       const detail = detailRecuCaissierPourMois(db, nom, moisCouverts);
       const dejaPaye = totalPayeParDetenteurPourCles(db, nom, clesPourDisponible);
-      return { nom, detail, net: detail.net, dejaPaye, disponible: detail.net - dejaPaye };
+      const deficitReporte = soldeReporteAvantPeriode(db, nom, premierMoisPeriode, currentYear, currentMonth);
+      return { nom, detail, net: detail.net, dejaPaye, deficitReporte, disponible: detail.net - dejaPaye + deficitReporte };
     });
-  }, [db, moisCouverts, clesPourDisponible]);
+  }, [db, moisCouverts, clesPourDisponible, currentYear, currentMonth]);
   function disponiblePourNom(nom){
     const d = montantsDisponibles.find(x=>x.nom===nom);
     return d ? Math.max(0, d.disponible) : 0;
@@ -3878,12 +3980,12 @@ function SuiviDistributionView({ db, setDb, employeId }){
         <StatCard label={`Base de répartition (avant dépenses propres de chacun)`} value={fmtGNF(netPercuTotalBaseRepartition)} icon="chart" />
       </div>
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 20px', lineHeight:1.5}}>
-        Le % de chaque acteur s'applique à la <strong>Base de répartition</strong> ci-dessus, pas directement au « Total distribué ». Les deux diffèrent dès qu'un ou plusieurs acteurs ont des dépenses propres, un crédit de remboursement ou (pour les 4 acteurs concernés) un extra versé à la Conservation du Capital Fixe ce mois-là — ces ajustements sont propres à chacun, pas répartis au prorata des %. Pour vérifier le % d'un acteur sans ajustement personnel ce mois-ci : son % × Base de répartition (pas × Total distribué).
+        Le % de chaque acteur s'applique à la <strong>Base de répartition</strong> ci-dessus, pas directement au « Total distribué ». Les deux diffèrent dès qu'un ou plusieurs acteurs ont des dépenses propres, un crédit de remboursement ou (pour les 4 acteurs concernés) un extra versé à la Conservation du Capital Fixe ce mois-là — ces ajustements sont propres à chacun, pas répartis au prorata des %. Pour vérifier le % d'un acteur sans ajustement personnel ce mois-ci : son % × Base de répartition (pas × Total distribué). Si un caissier (ou un site) finit un mois en déficit, ce déficit ne réduit plus la Base de répartition partagée par tous : il contribue 0 ce mois-là, et son déficit personnel continue d'être suivi séparément contre ses propres mois futurs (voir « Montant disponible pour payer », dans Suivi distribution).
       </p>
 
       <h2 style={{fontSize:16, color:'var(--ink)', margin:'0 0 6px'}}>Montant disponible pour payer — {periodeLabel}</h2>
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
-        {DETENTEURS_CAISSE.join(' et ')} encaissent directement l'argent des clients à Maci Pressing Kipé, donc c'est eux qui le détiennent physiquement. Chacun ne peut payer les acteurs qu'à hauteur de ce qu'il a lui-même net reçu (Espèces + Orange Money, moins ses dépenses et ses avances décaissées) pour <strong>cette période précise</strong> — jamais plus, et ce plafond ne vient pas d'un cumul depuis le début. S'il n'a pas assez pour payer un acteur en entier, il peut payer ce qu'il a, et l'autre caissier peut compléter le reste. Le compte Orange Money est partagé par les deux — le détail ci-dessous montre ce que chacun y a personnellement encaissé.
+        {DETENTEURS_CAISSE.join(' et ')} encaissent directement l'argent des clients à Maci Pressing Kipé, donc c'est eux qui le détiennent physiquement. Chacun ne peut payer les acteurs qu'à hauteur de ce qu'il a lui-même net reçu (Espèces + Orange Money, moins ses dépenses et ses avances décaissées) pour <strong>cette période précise</strong> — jamais plus. S'il n'a pas assez pour payer un acteur en entier, il peut payer ce qu'il a, et l'autre caissier peut compléter le reste. Le compte Orange Money est partagé par les deux — le détail ci-dessous montre ce que chacun y a personnellement encaissé. Si un caissier finit une période avec moins reçu que dépensé, ce déficit n'est pas effacé : il continue de réduire son disponible des périodes suivantes jusqu'à résorption (un solde positif non utilisé, lui, ne se reporte pas — il reste disponible tel quel pour la période où il a été reçu).
         {!suiviPaiementDisponible && <> En « {periode==='intervalle'?'Intervalle':'À ce jour'} », ces montants sont calculés pour information : pour marquer un paiement, utilisez « Par mois » ou « Par année ».</>}
       </p>
       <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(240px, 1fr))', gap:10, marginBottom:20}}>
@@ -3921,6 +4023,12 @@ function SuiviDistributionView({ db, setDb, employeId }){
                 <span>Déjà payé sur cette période</span>
                 <span className="mono">{d.dejaPaye>0 ? fmtGNF(d.dejaPaye) : '—'}</span>
               </div>
+              {d.deficitReporte < 0 && (
+                <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--danger)', marginBottom:8}}>
+                  <span>Déficit reporté des mois précédents</span>
+                  <span className="mono">{fmtGNF(d.deficitReporte)}</span>
+                </div>
+              )}
               <div style={{display:'flex', justifyContent:'space-between', borderTop:'1px solid var(--line)', paddingTop:8}}>
                 <span style={{fontSize:13, fontWeight:600}}>Disponible</span>
                 <span className="mono" style={{fontSize:15, fontWeight:700, color: reste<0 ? 'var(--danger)' : 'var(--pine)'}}>{fmtGNF(reste)}</span>
