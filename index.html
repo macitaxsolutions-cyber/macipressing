@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-23-5">
+<meta name="app-version" content="2026-10-23-6">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-23-5';
+  const APP_VERSION_ACTUELLE = '2026-10-23-6';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -422,6 +422,154 @@ function numeroCommandeLibre(commandes, numeroSaisi){
     candidat = `${base}_${i}`;
   }
   return candidat;
+}
+
+/* ===================== REGISTRE DES NUMÉROS DE REÇU (v2026-10-23-6) =====================
+   Problème corrigé : le prochain numéro de reçu venait uniquement du compteur site.seq, stocké DANS la base
+   principale. Si une commande disparaît (perte de données, ancienne copie qui revient, suppression qui recule
+   le compteur), le compteur revient en arrière et l'app redonne à un nouveau client un numéro déjà remis à un
+   autre (ex. KIPE-2610-0160 donné à deux clientes).
+   Nouveau mécanisme, en 3 couches indépendantes :
+   1) Avant de donner un numéro, l'app saute tout numéro déjà vu : commandes actuelles + corbeille + registre.
+   2) Registre local (localStorage de chaque appareil) : chaque appareil garde la trace de tous les numéros
+      qu'il a émis — il survit à un retour en arrière de la base en ligne.
+   3) Registre en ligne séparé (nœud Firebase 'numeros-recus-v1', hors de la base principale) : réservation
+      atomique du numéro (transaction). Une restauration/écrasement de la base principale ne l'efface pas.
+      Si ce nœud est inaccessible (hors ligne, règles Firebase), les couches 1 et 2 continuent de protéger.
+   Le registre garde aussi client/téléphone/montant/lien PDF : une commande qui disparaît plus tard reste
+   visible dans Paramètres → « Numéros de reçu » → « Reçus émis introuvables », pour la ressaisir. */
+
+const REGISTRE_NUMEROS_KEY = 'numeros-recus-v1';
+
+function cleRegistreNumero(numero){
+  // Firebase interdit . # $ [ ] / dans les clés
+  return String(numero||'').replace(/[.#$\[\]\/]/g, '_');
+}
+
+function registreLocalLire(siteId){
+  try{
+    const raw = localStorage.getItem(`maci-numeros-emis-${siteId}`);
+    const obj = raw ? JSON.parse(raw) : {};
+    return (obj && typeof obj === 'object') ? obj : {};
+  }catch(e){ return {}; }
+}
+
+function registreLocalEcrire(siteId, numero, infos){
+  try{
+    const reg = registreLocalLire(siteId);
+    reg[cleRegistreNumero(numero)] = { ...(reg[cleRegistreNumero(numero)]||{}), ...infos, numero };
+    localStorage.setItem(`maci-numeros-emis-${siteId}`, JSON.stringify(reg));
+  }catch(e){ /* stockage local indisponible : les autres couches protègent */ }
+}
+
+function registreLocalSupprimer(siteId, numero, cmdId){
+  try{
+    const reg = registreLocalLire(siteId);
+    const k = cleRegistreNumero(numero);
+    if(reg[k] && (!cmdId || reg[k].cmdId === cmdId)){ delete reg[k]; localStorage.setItem(`maci-numeros-emis-${siteId}`, JSON.stringify(reg)); }
+  }catch(e){}
+}
+
+function avecDelai(promise, ms){
+  return Promise.race([promise, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+}
+
+// Lit le registre en ligne d'un site. Renvoie { ok, entrees } — ok=false si inaccessible (on ne bloque jamais).
+async function registreEnLigneLire(siteId){
+  try{
+    const snap = await avecDelai(firebaseDB.ref(`${REGISTRE_NUMEROS_KEY}/${siteId}`).get(), 4000);
+    return { ok:true, entrees: (snap && snap.exists()) ? (snap.val() || {}) : {} };
+  }catch(e){ return { ok:false, entrees:{} }; }
+}
+
+// Réserve atomiquement un numéro pour une commande. Renvoie 'ok' | 'pris' | 'indisponible'.
+async function registreEnLigneReserver(siteId, numero, infos){
+  try{
+    const ref = firebaseDB.ref(`${REGISTRE_NUMEROS_KEY}/${siteId}/${cleRegistreNumero(numero)}`);
+    const res = await avecDelai(ref.transaction((courant) => {
+      if(courant && courant.cmdId && courant.cmdId !== infos.cmdId) return; // déjà pris par une autre commande
+      return { ...(courant||{}), ...infos, numero };
+    }), 4000);
+    return res.committed ? 'ok' : 'pris';
+  }catch(e){ return 'indisponible'; }
+}
+
+async function registreEnLigneCompleter(siteId, numero, infos){
+  try{ await avecDelai(firebaseDB.ref(`${REGISTRE_NUMEROS_KEY}/${siteId}/${cleRegistreNumero(numero)}`).update(infos), 4000); }catch(e){}
+}
+
+async function registreEnLigneLiberer(siteId, numero, cmdId){
+  try{
+    const ref = firebaseDB.ref(`${REGISTRE_NUMEROS_KEY}/${siteId}/${cleRegistreNumero(numero)}`);
+    await avecDelai(ref.transaction((courant) => {
+      if(!courant) return courant;
+      if(cmdId && courant.cmdId !== cmdId) return; // n'appartient pas à cette commande : on ne touche à rien
+      return null;
+    }), 4000);
+  }catch(e){}
+}
+
+// Toutes les commandes encore connues du site : actuelles + corbeille (supprimées une à une ou par réinitialisation).
+// Les commandes dont le numéro a été volontairement libéré (suppression immédiate d'une erreur de saisie) sont exclues.
+function commandesConnuesDuSite(site){
+  const out = [...(site.commandes||[])];
+  (site.corbeille||[]).forEach(e => {
+    if(!e) return;
+    if(e.type === 'commande' && e.data && !e.numeroLibere) out.push(e.data);
+    if(e.type === 'commandes_reset' && Array.isArray(e.data)) e.data.forEach(c => c && out.push(c));
+  });
+  return out;
+}
+
+// Ensemble de tous les numéros déjà utilisés (base + corbeille + registre local + registre en ligne lu).
+function numerosDejaUtilises(site, registreEnLigne){
+  const set = new Set();
+  commandesConnuesDuSite(site).forEach(c => { if(c && c.numero) set.add(c.numero); });
+  Object.values(registreLocalLire(site.id)).forEach(e => { if(e && e.numero) set.add(e.numero); });
+  Object.values(registreEnLigne||{}).forEach(e => { if(e && e.numero) set.add(e.numero); });
+  return set;
+}
+
+// Plus grande séquence automatique jamais vue (numéros auto seulement : les numéros saisis à la main
+// depuis d'anciens reçus papier ne doivent pas faire sauter le compteur).
+function plusGrandeSequenceVue(site, registreEnLigne){
+  const prefixe = `${site.code}-`;
+  let max = 0;
+  const voir = (numero, manuel) => {
+    if(manuel || !numero || !String(numero).startsWith(prefixe)) return;
+    const m = String(numero).match(/-(\d{4,})$/);
+    if(m) max = Math.max(max, Number(m[1]));
+  };
+  commandesConnuesDuSite(site).forEach(c => c && voir(c.numero, c.numeroSaisiManuellement));
+  Object.values(registreLocalLire(site.id)).forEach(e => e && voir(e.numero, e.manuel));
+  Object.values(registreEnLigne||{}).forEach(e => e && voir(e.numero, e.manuel));
+  return max;
+}
+
+// Prochain numéro automatique libre (sans réservation). Renvoie { numero, seq }.
+function prochainNumeroLibre(site, registreEnLigne, utilisesEnPlus){
+  const utilises = numerosDejaUtilises(site, registreEnLigne);
+  (utilisesEnPlus||[]).forEach(n => utilises.add(n));
+  let s = Math.max(Number(site.seq)||1, plusGrandeSequenceVue(site, registreEnLigne) + 1);
+  while(utilises.has(ticketNumber(site.code, s))) s++;
+  return { numero: ticketNumber(site.code, s), seq: s };
+}
+
+// Choisit ET réserve un numéro automatique pour une commande. Renvoie { numero, seq, registreEnLigneActif }.
+async function attribuerNumeroAutomatique(site, infos){
+  const lu = await registreEnLigneLire(site.id);
+  const rejetes = [];
+  for(let essai = 0; essai < 20; essai++){
+    const { numero, seq } = prochainNumeroLibre(site, lu.entrees, rejetes);
+    const res = lu.ok ? await registreEnLigneReserver(site.id, numero, { ...infos, manuel:false }) : 'indisponible';
+    if(res === 'pris'){ rejetes.push(numero); continue; }
+    registreLocalEcrire(site.id, numero, { ...infos, manuel:false });
+    return { numero, seq, registreEnLigneActif: res === 'ok' };
+  }
+  // Ne devrait jamais arriver : on retombe sur le calcul local
+  const { numero, seq } = prochainNumeroLibre(site, lu.entrees, rejetes);
+  registreLocalEcrire(site.id, numero, { ...infos, manuel:false });
+  return { numero, seq, registreEnLigneActif:false };
 }
 
 function siteCodeFromName(nom){
@@ -7032,10 +7180,20 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
     // récente n'a encore été créée depuis), on recule le compteur pour que ce même numéro soit réutilisé
     // par la prochaine commande au lieu d'être perdu — utile quand un employé se trompe et reprend tout
     // de suite : le client garde le même numéro de reçu que celui déjà annoncé/imprimé.
+    // v2026-10-23-6 : ce recul n'est plus autorisé que si la commande a été supprimée dans les 15 minutes
+    // suivant sa création (vraie erreur de saisie corrigée tout de suite). Au-delà, le client a pu partir
+    // avec son reçu : réutiliser son numéro créerait un doublon (cas KIPE-2610-0160).
     let nouveauSeq = site.seq;
     if(cmd && !cmd.numeroSaisiManuellement){
       const m = (cmd.numero||'').match(/-(\d{4})$/);
-      if(m && Number(m[1]) === site.seq - 1) nouveauSeq = site.seq - 1;
+      const ageMinutes = (Date.now() - new Date(cmd.dateCreation).getTime()) / 60000;
+      const creeeAujourdhui = (cmd.dateCreation||'').slice(0,10) === todayISO();
+      if(m && Number(m[1]) === site.seq - 1 && creeeAujourdhui && ageMinutes >= 0 && ageMinutes <= 15){
+        nouveauSeq = site.seq - 1;
+        entry.numeroLibere = true;
+        registreLocalSupprimer(site.id, cmd.numero, cmd.id);
+        registreEnLigneLiberer(site.id, cmd.numero, cmd.id);
+      }
     }
     updateSite({ ...site, commandes: site.commandes.filter(c=>c.id!==id), seq: nouveauSeq, corbeille: [entry, ...(site.corbeille||[])] });
   }
@@ -7451,6 +7609,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
   const [lignes, setLignes] = useState([]);
   const [dateDepot, setDateDepot] = useState(todayISO());
   const [numeroManuel, setNumeroManuel] = useState('');
+  const [afficherNumeroManuel, setAfficherNumeroManuel] = useState(false);
   const [dateRetrait, setDateRetrait] = useState('');
   const [notes, setNotes] = useState('');
   const [dateRdv, setDateRdv] = useState('');
@@ -7524,9 +7683,23 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
     // (en évitant tout doublon — voir numeroCommandeLibre) au lieu du numéro auto-généré, et on ne consomme
     // pas la séquence auto (site.seq) puisqu'elle ne sert que pour les numéros générés par l'app.
     const numeroSaisi = (numeroManuel||'').trim();
-    const numeroFinal = numeroSaisi ? numeroCommandeLibre(site.commandes, numeroSaisi) : ticketNumber(site.code, seq);
+    const cmdIdNouveau = uid('cmd_');
+    const clientPourRegistre = workingClients.find(c=>c.id===finalClientId);
+    const infosRegistre = { cmdId: cmdIdNouveau, date: dateCreationFinale, client: clientPourRegistre ? clientPourRegistre.nom : '', tel: clientPourRegistre ? (clientPourRegistre.tel||'') : '', total, emisLe: new Date().toISOString(), employeId: employeId || null };
+    // Numéro automatique : on ne se fie plus au seul compteur site.seq (qui peut reculer après une perte de
+    // données) — voir attribuerNumeroAutomatique : saute tout numéro déjà vu et le réserve dans le registre.
+    let numeroFinal, seqUtilisee = seq;
+    if(numeroSaisi){
+      numeroFinal = numeroCommandeLibre(commandesConnuesDuSite(site), numeroSaisi);
+      registreLocalEcrire(site.id, numeroFinal, { ...infosRegistre, manuel:true });
+      registreEnLigneReserver(site.id, numeroFinal, { ...infosRegistre, manuel:true });
+    } else {
+      const attrib = await attribuerNumeroAutomatique(site, infosRegistre);
+      numeroFinal = attrib.numero;
+      seqUtilisee = attrib.seq;
+    }
     const cmd = {
-      id: uid('cmd_'),
+      id: cmdIdNouveau,
       numero: numeroFinal,
       numeroSaisiManuellement: !!numeroSaisi,
       clientId: finalClientId,
@@ -7565,6 +7738,8 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
       const url = await Promise.race([uploadReceiptPDF(site.id, cmd, pdfBlob), timeout]);
       msgDepose += `\n\n📄 Reçu PDF : ${url}`;
       cmd.receiptPdfUrl = url;
+      registreLocalEcrire(site.id, cmd.numero, { pdf: url });
+      registreEnLigneCompleter(site.id, cmd.numero, { pdf: url });
     } catch(e) {
       console.error('Erreur génération/envoi du reçu PDF', e);
     }
@@ -7573,7 +7748,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
 
     updateSite({
       ...site,
-      seq: numeroSaisi ? seq : seq+1,
+      seq: numeroSaisi ? seq : Math.max(seq, seqUtilisee + 1),
       clients: workingClients,
       commandes: [cmd, ...site.commandes],
       notifications: [notif, ...site.notifications].slice(0,300),
@@ -7630,10 +7805,17 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
 
         <div>
           <label>Date de dépôt</label>
-          <input type="date" value={dateDepot} onChange={e=>{ setDateDepot(e.target.value); if(e.target.value === todayISO()) setNumeroManuel(''); }} max={todayISO()} style={{maxWidth:200}} />
-          {dateDepot !== todayISO() && (
+          <input type="date" value={dateDepot} onChange={e=>{ setDateDepot(e.target.value); if(e.target.value === todayISO() && !afficherNumeroManuel) setNumeroManuel(''); }} max={todayISO()} style={{maxWidth:200}} />
+          {dateDepot === todayISO() && !afficherNumeroManuel && (
+            <button type="button" className="btn btn-sm" style={{marginTop:6, marginLeft:8}} onClick={()=>setAfficherNumeroManuel(true)}>
+              🔁 Ressaisir un reçu déjà remis (garder son numéro)
+            </button>
+          )}
+          {(dateDepot !== todayISO() || afficherNumeroManuel) && (
             <>
-              <p style={{fontSize:11.5, color:'var(--warn)', margin:'4px 0 0'}}>⚠️ Date antérieure à aujourd'hui — utile pour rattraper une commande papier prise avant le lancement de l'app.</p>
+              {dateDepot !== todayISO()
+                ? <p style={{fontSize:11.5, color:'var(--warn)', margin:'4px 0 0'}}>⚠️ Date antérieure à aujourd'hui — utile pour rattraper une commande papier prise avant le lancement de l'app.</p>
+                : <p style={{fontSize:11.5, color:'var(--warn)', margin:'4px 0 0'}}>⚠️ Ressaisie d'une commande déjà facturée aujourd'hui (ex. commande disparue) : saisissez le numéro inscrit sur le reçu du client.</p>}
               <div style={{marginTop:10}}>
                 <label>Numéro de reçu déjà remis au client (optionnel)</label>
                 <input type="text" value={numeroManuel} onChange={e=>setNumeroManuel(e.target.value.toUpperCase())} placeholder="Ex : KIPE-2609-0042" style={{maxWidth:280}} />
@@ -11137,6 +11319,273 @@ function SelectionManuellePanel({ items, getId, renderLabel, selection, setSelec
   );
 }
 
+/* ===================== Paramètres → Numéros de reçu (v2026-10-23-6) =====================
+   Outil gérant : voir le prochain numéro, ajuster le compteur, repérer et corriger les numéros en double,
+   modifier le numéro d'une commande, retrouver les reçus émis dont la commande a disparu. */
+function NumerosRecusCard({ site, updateSite }){
+  const [ouvert, setOuvert] = useState(false);
+  const [registre, setRegistre] = useState({});
+  const [registreOk, setRegistreOk] = useState(null); // null = en cours, true/false
+  const [message, setMessage] = useState('');
+  const [enCours, setEnCours] = useState(false);
+  const [compteurSaisi, setCompteurSaisi] = useState('');
+  const [edition, setEdition] = useState(null); // { cmdId, valeur }
+  const [recherche, setRecherche] = useState('');
+  const [aRenvoyer, setARenvoyer] = useState(null); // { tel, texte, numero }
+  const [orphelins, setOrphelins] = useState(null); // null | 'chargement' | { ok, liste } 
+
+  async function chargerRegistre(){
+    setRegistreOk(null);
+    const lu = await registreEnLigneLire(site.id);
+    if(!lu.ok){ setRegistreOk(false); setRegistre({}); return; }
+    // Inscrit au registre en ligne tous les numéros actuels qui n'y sont pas encore (protège aussi les numéros
+    // émis avant cette version, ou par un appareil qui n'a jamais réservé en ligne).
+    const manquants = {};
+    commandesConnuesDuSite(site).forEach(c => {
+      if(!c || !c.numero) return;
+      const k = cleRegistreNumero(c.numero);
+      if(!lu.entrees[k] && !manquants[k]){
+        const cli = (site.clients||[]).find(x => x.id === c.clientId);
+        manquants[k] = { numero: c.numero, cmdId: c.id, date: c.dateCreation || '', client: cli ? cli.nom : '', tel: cli ? (cli.tel||'') : '', total: calcCommandeTotal(c, site.services), manuel: !!c.numeroSaisiManuellement, pdf: c.receiptPdfUrl || '', inscritRattrapage: true };
+      }
+    });
+    Object.values(registreLocalLire(site.id)).forEach(e => {
+      if(!e || !e.numero) return;
+      const k = cleRegistreNumero(e.numero);
+      if(!lu.entrees[k] && !manquants[k]) manquants[k] = { ...e };
+    });
+    let entrees = lu.entrees;
+    if(Object.keys(manquants).length){
+      try{
+        await avecDelai(firebaseDB.ref(`${REGISTRE_NUMEROS_KEY}/${site.id}`).update(manquants), 6000);
+        entrees = { ...manquants, ...lu.entrees };
+      }catch(e){ /* l'écriture a échoué : on garde la lecture */ }
+    }
+    setRegistre(entrees);
+    setRegistreOk(true);
+  }
+
+  useEffect(() => { if(ouvert) chargerRegistre(); }, [ouvert, site.id]);
+
+  const prochain = useMemo(() => prochainNumeroLibre(site, registre), [site, registre]);
+  const plusGrande = useMemo(() => plusGrandeSequenceVue(site, registre), [site, registre]);
+
+  const doublons = useMemo(() => {
+    const groupes = {};
+    (site.commandes||[]).forEach(c => { if(c.numero){ (groupes[c.numero] = groupes[c.numero] || []).push(c); } });
+    return Object.entries(groupes).filter(([, l]) => l.length > 1).map(([numero, liste]) => ({ numero, liste: [...liste].sort((a,b) => (a.dateCreation||'').localeCompare(b.dateCreation||'')) }));
+  }, [site.commandes]);
+
+  const introuvables = useMemo(() => {
+    const idsConnus = new Set();
+    (site.commandes||[]).forEach(c => idsConnus.add(c.id));
+    (site.corbeille||[]).forEach(e => {
+      if(e && e.type === 'commande' && e.data) idsConnus.add(e.data.id);
+      if(e && e.type === 'commandes_reset' && Array.isArray(e.data)) e.data.forEach(c => c && idsConnus.add(c.id));
+    });
+    const numerosActuels = new Set((site.commandes||[]).map(c => c.numero));
+    const tous = { ...registreLocalLire(site.id), ...registre };
+    return Object.values(tous)
+      .filter(e => e && e.cmdId && !idsConnus.has(e.cmdId))
+      .map(e => ({ ...e, numeroReprisParAutre: numerosActuels.has(e.numero) }))
+      .sort((a,b) => (b.date||'').localeCompare(a.date||''));
+  }, [site.commandes, site.corbeille, registre]);
+
+  const resultatsRecherche = useMemo(() => {
+    const q = recherche.trim().toLowerCase();
+    if(q.length < 2) return [];
+    return (site.commandes||[]).filter(c => {
+      const cli = (site.clients||[]).find(x => x.id === c.clientId);
+      return (c.numero||'').toLowerCase().includes(q) || (cli && (cli.nom||'').toLowerCase().includes(q));
+    }).slice(0, 15);
+  }, [recherche, site.commandes, site.clients]);
+
+  function nomClient(c){ const cli = (site.clients||[]).find(x => x.id === c.clientId); return cli ? cli.nom : '—'; }
+
+  async function renumeroter(cmd, nouveauNumeroSaisi){
+    setMessage(''); setEnCours(true);
+    try{
+      const cli = (site.clients||[]).find(x => x.id === cmd.clientId);
+      const total = calcCommandeTotal(cmd, site.services);
+      const infos = { cmdId: cmd.id, date: cmd.dateCreation || '', client: cli ? cli.nom : '', tel: cli ? (cli.tel||'') : '', total, emisLe: new Date().toISOString(), renumerote: true, ancienNumero: cmd.numero };
+      let nouveau, seqNouvelle = null;
+      if(nouveauNumeroSaisi){
+        nouveau = nouveauNumeroSaisi.trim().toUpperCase();
+        if(!nouveau){ setEnCours(false); return; }
+        const utilises = numerosDejaUtilises(site, registre);
+        const estASoi = (site.commandes||[]).filter(c => c.numero === nouveau).every(c => c.id === cmd.id) && (!registre[cleRegistreNumero(nouveau)] || registre[cleRegistreNumero(nouveau)].cmdId === cmd.id);
+        if(utilises.has(nouveau) && !estASoi){ setMessage(`❌ Le numéro ${nouveau} est déjà utilisé (commande actuelle, corbeille ou reçu déjà émis). Choisissez-en un autre.`); setEnCours(false); return; }
+        const res = await registreEnLigneReserver(site.id, nouveau, { ...infos, manuel:true });
+        if(res === 'pris'){ setMessage(`❌ Le numéro ${nouveau} vient d'être pris sur un autre appareil.`); setEnCours(false); return; }
+        registreLocalEcrire(site.id, nouveau, { ...infos, manuel:true });
+      } else {
+        const attrib = await attribuerNumeroAutomatique(site, infos);
+        nouveau = attrib.numero; seqNouvelle = attrib.seq;
+      }
+      const ancien = cmd.numero;
+      let cmdMaj = { ...cmd, numero: nouveau, numeroSaisiManuellement: !!nouveauNumeroSaisi, numeroAvantCorrection: ancien, numeroCorrigeLe: new Date().toISOString() };
+      // Nouveau reçu PDF avec le bon numéro (si possible)
+      try{
+        const acompte = Number(cmd.acompte) || 0;
+        const blob = generateReceiptPDFBlob(cmdMaj, site, cli, total, acompte, total - acompte);
+        const url = await avecDelai(uploadReceiptPDF(site.id, cmdMaj, blob), 8000);
+        cmdMaj = { ...cmdMaj, receiptPdfUrl: url };
+        registreLocalEcrire(site.id, nouveau, { pdf: url });
+        registreEnLigneCompleter(site.id, nouveau, { pdf: url });
+      }catch(e){ console.error('Régénération du reçu PDF impossible', e); }
+      // L'ancien numéro reste réservé à l'AUTRE commande qui le porte (on ne libère que s'il était à celle-ci
+      // ET qu'aucune autre commande ne le porte encore).
+      const autreGardeAncien = (site.commandes||[]).some(c => c.id !== cmd.id && c.numero === ancien);
+      if(!autreGardeAncien){ registreLocalSupprimer(site.id, ancien, cmd.id); registreEnLigneLiberer(site.id, ancien, cmd.id); }
+      updateSite({
+        ...site,
+        seq: seqNouvelle != null ? Math.max(Number(site.seq)||1, seqNouvelle + 1) : site.seq,
+        commandes: (site.commandes||[]).map(c => c.id === cmd.id ? cmdMaj : c),
+      });
+      setEdition(null);
+      setMessage(`✅ ${ancien} → ${nouveau} pour ${cli ? cli.nom : 'le client'}. Pensez à envoyer le nouveau reçu au client.`);
+      if(cli && cli.tel){
+        const solde = total - (Number(cmd.acompte)||0);
+        setARenvoyer({ numero: nouveau, tel: cli.tel.replace(/\D/g,''), texte: `Bonjour ${cli.nom}, correction de votre reçu ${site.nom} : votre numéro de commande est désormais ${nouveau} (au lieu de ${ancien}).\nTotal : ${fmtGNF(total)}${solde > 0 ? `\nSolde restant : ${fmtGNF(solde)}` : ' (Payé)'}${cmdMaj.receiptPdfUrl ? `\n\n📄 Nouveau reçu PDF : ${cmdMaj.receiptPdfUrl}` : ''}\nMerci et désolé pour la gêne.` });
+      } else setARenvoyer(null);
+      chargerRegistre();
+    } finally { setEnCours(false); }
+  }
+
+  function appliquerCompteur(){
+    const n = parseInt(compteurSaisi, 10);
+    if(!n || n < 1){ setMessage('❌ Entrez un nombre valide (ex : 161).'); return; }
+    updateSite({ ...site, seq: n });
+    setCompteurSaisi('');
+    setMessage(n <= plusGrande
+      ? `ℹ️ Compteur réglé à ${n}, mais ${ticketNumber(site.code, plusGrande)} a déjà été émis : l'app sautera automatiquement les numéros déjà utilisés.`
+      : `✅ Le prochain numéro sera ${ticketNumber(site.code, n)} (sauf s'il est déjà pris).`);
+  }
+
+  async function chercherPdfOrphelins(){
+    setOrphelins('chargement');
+    try{
+      const idsConnus = new Set((site.commandes||[]).map(c => c.id));
+      (site.corbeille||[]).forEach(e => {
+        if(e && e.type === 'commande' && e.data) idsConnus.add(e.data.id);
+        if(e && e.type === 'commandes_reset' && Array.isArray(e.data)) e.data.forEach(c => c && idsConnus.add(c.id));
+      });
+      const res = await avecDelai(firebaseStorage.ref().child(`receipts/${site.id}`).listAll(), 15000);
+      const items = res.items.filter(it => !idsConnus.has(it.name.replace(/\.pdf$/i,'')));
+      const liste = [];
+      for(const it of items.slice(0, 60)){
+        try{
+          const [url, meta] = await Promise.all([it.getDownloadURL(), it.getMetadata()]);
+          liste.push({ nom: it.name, url, date: meta.timeCreated || '' });
+        }catch(e){}
+      }
+      liste.sort((a,b) => (b.date||'').localeCompare(a.date||''));
+      setOrphelins({ ok:true, liste, total: items.length });
+    }catch(e){
+      console.error('Liste des PDF impossible', e);
+      setOrphelins({ ok:false, liste:[] });
+    }
+  }
+
+  const ligneCmd = (c, avecBoutons) => (
+    <div key={c.id} style={{display:'flex', flexWrap:'wrap', gap:8, alignItems:'center', justifyContent:'space-between', padding:'8px 0', borderTop:'1px solid var(--line)'}}>
+      <div style={{fontSize:13, lineHeight:1.5}}>
+        <span className="mono" style={{fontWeight:700}}>{c.numero}</span> — {nomClient(c)}<br/>
+        <span style={{color:'var(--steam)', fontSize:12}}>{fmtDate((c.dateCreation||'').slice(0,10))} {(c.dateCreation||'').slice(11,16)} · {fmtGNF(calcCommandeTotal(c, site.services))} · {c.statut}{c.numeroAvantCorrection ? ` · ancien n° ${c.numeroAvantCorrection}` : ''}</span>
+      </div>
+      {avecBoutons && (edition && edition.cmdId === c.id ? (
+        <div style={{display:'flex', gap:6, flexWrap:'wrap'}}>
+          <input type="text" value={edition.valeur} onChange={e=>setEdition({ cmdId:c.id, valeur:e.target.value.toUpperCase() })} style={{maxWidth:190}} />
+          <button className="btn btn-sm btn-rust" disabled={enCours} onClick={()=>renumeroter(c, edition.valeur)}>Enregistrer</button>
+          <button className="btn btn-sm" onClick={()=>setEdition(null)}>Annuler</button>
+        </div>
+      ) : (
+        <div style={{display:'flex', gap:6, flexWrap:'wrap'}}>
+          <button className="btn btn-sm" disabled={enCours} onClick={()=>renumeroter(c, null)}>🔢 Nouveau numéro auto</button>
+          <button className="btn btn-sm btn-ghost" disabled={enCours} onClick={()=>setEdition({ cmdId:c.id, valeur:c.numero })}>✏️ Modifier</button>
+        </div>
+      ))}
+    </div>
+  );
+
+  return (
+    <div className="card" style={{padding:'1.5rem', marginTop:18, borderColor: doublons.length ? 'var(--danger)' : undefined}}>
+      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10}}>
+        <h3 style={{margin:0, fontSize:15, display:'flex', alignItems:'center', gap:8}}>
+          🔢 Numéros de reçu {doublons.length > 0 && <span style={{fontSize:12, background:'var(--danger)', color:'var(--white)', padding:'2px 8px', borderRadius:100}}>{doublons.length} en double</span>}
+        </h3>
+        <button className="btn btn-sm" onClick={()=>setOuvert(!ouvert)}>{ouvert ? 'Fermer' : 'Ouvrir'}</button>
+      </div>
+      {!ouvert && <p style={{fontSize:13, color:'var(--steam)', margin:'8px 0 0'}}>Prochain numéro, numéros en double, correction d'un numéro, reçus émis dont la commande a disparu.</p>}
+      {ouvert && (
+        <div style={{display:'grid', gap:18, marginTop:14}}>
+          {message && <p style={{fontSize:13, margin:0, fontWeight:600}}>{message}</p>}
+          {aRenvoyer && (
+            <a className="btn btn-sm btn-rust" style={{justifySelf:'start'}} href={`https://wa.me/${aRenvoyer.tel}?text=${encodeURIComponent(aRenvoyer.texte)}`} target="_blank" rel="noopener noreferrer">📱 Envoyer le reçu corrigé {aRenvoyer.numero} par WhatsApp</a>
+          )}
+
+          <div>
+            <div style={{fontSize:13}}>Prochain numéro qui sera donné : <span className="mono" style={{fontWeight:700}}>{prochain.numero}</span></div>
+            <div style={{fontSize:12, color:'var(--steam)', marginTop:4}}>
+              Registre en ligne : {registreOk === null ? 'vérification…' : registreOk ? '✅ actif (les numéros sont réservés même si la base principale revient en arrière)' : '⚠️ inaccessible sur cet appareil — protection par la base + le registre local seulement'}
+            </div>
+            <div style={{display:'flex', gap:8, marginTop:10, flexWrap:'wrap', alignItems:'center'}}>
+              <input type="number" min={1} value={compteurSaisi} onChange={e=>setCompteurSaisi(e.target.value)} placeholder={`ex : ${prochain.seq}`} style={{maxWidth:140}} />
+              <button className="btn btn-sm" onClick={appliquerCompteur}>Ajuster le compteur</button>
+            </div>
+            <p style={{fontSize:11.5, color:'var(--steam)', margin:'5px 0 0'}}>Le compteur ne peut jamais redonner un numéro déjà émis : l'app saute automatiquement tout numéro déjà vu.</p>
+          </div>
+
+          <div>
+            <h4 style={{margin:'0 0 6px', fontSize:14}}>Numéros en double</h4>
+            {doublons.length === 0 ? <p style={{fontSize:13, color:'var(--ok)', margin:0}}>✅ Aucun numéro en double.</p> : doublons.map(g => (
+              <div key={g.numero} style={{marginBottom:10}}>
+                <div style={{fontSize:12.5, color:'var(--danger)', fontWeight:700}}>{g.numero} — {g.liste.length} commandes. Gardez le numéro du client qui a le reçu d'origine, donnez un nouveau numéro à l'autre.</div>
+                {g.liste.map(c => ligneCmd(c, true))}
+              </div>
+            ))}
+          </div>
+
+          <div>
+            <h4 style={{margin:'0 0 6px', fontSize:14}}>Modifier le numéro d'une commande</h4>
+            <input type="text" value={recherche} onChange={e=>setRecherche(e.target.value)} placeholder="Numéro ou nom du client…" style={{maxWidth:320}} />
+            {resultatsRecherche.map(c => ligneCmd(c, true))}
+          </div>
+
+          <div>
+            <h4 style={{margin:'0 0 6px', fontSize:14}}>Reçus émis introuvables</h4>
+            <p style={{fontSize:12, color:'var(--steam)', margin:'0 0 6px', lineHeight:1.5}}>Numéros remis à un client mais dont la commande n'existe plus (ni dans les commandes, ni dans la corbeille). Pour la remettre : Nouvelle commande → « 🔁 Ressaisir un reçu déjà remis » → saisir ce numéro.</p>
+            {introuvables.length === 0 ? <p style={{fontSize:13, margin:0}}>Aucun.</p> : introuvables.map(e => (
+              <div key={e.numero + e.cmdId} style={{fontSize:13, padding:'6px 0', borderTop:'1px solid var(--line)', lineHeight:1.5}}>
+                <span className="mono" style={{fontWeight:700}}>{e.numero}</span> — {e.client || '—'} {e.tel ? `(${e.tel})` : ''} · {e.date ? fmtDate(e.date.slice(0,10)) : ''} · {e.total != null ? fmtGNF(e.total) : ''}
+                {e.pdf && <> · <a href={e.pdf} target="_blank" rel="noopener noreferrer">📄 reçu PDF</a></>}
+                {e.numeroReprisParAutre && <div style={{color:'var(--danger)', fontSize:12}}>⚠️ Ce numéro est aujourd'hui porté par une autre commande : renumérotez celle-ci ou ressaisissez avec un suffixe.</div>}
+              </div>
+            ))}
+            <button className="btn btn-sm" style={{marginTop:10}} onClick={chercherPdfOrphelins} disabled={orphelins === 'chargement'}>
+              {orphelins === 'chargement' ? 'Recherche…' : '🔎 Chercher les reçus PDF sans commande (stockage)'}
+            </button>
+            {orphelins && orphelins !== 'chargement' && (
+              !orphelins.ok
+                ? <p style={{fontSize:12.5, color:'var(--warn)', margin:'6px 0 0'}}>Impossible de lister le stockage depuis cet appareil (règles Firebase Storage).</p>
+                : orphelins.liste.length === 0
+                  ? <p style={{fontSize:12.5, margin:'6px 0 0'}}>Aucun reçu PDF orphelin.</p>
+                  : <div style={{marginTop:6}}>
+                      <p style={{fontSize:12, color:'var(--steam)', margin:'0 0 4px'}}>{orphelins.total} PDF dont la commande n'existe plus{orphelins.total > orphelins.liste.length ? ` (60 plus récents affichés)` : ''}. Ouvrez-les pour retrouver client, articles et numéro.</p>
+                      {orphelins.liste.map(o => (
+                        <div key={o.nom} style={{fontSize:13, padding:'4px 0'}}>
+                          <a href={o.url} target="_blank" rel="noopener noreferrer">📄 Reçu du {o.date ? new Date(o.date).toLocaleString('fr-FR') : '?'}</a>
+                        </div>
+                      ))}
+                    </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ParametresView({ site, updateSite, db, setDb }){
   const [nom, setNom] = useState(site.nom);
   const [adresse, setAdresse] = useState(site.adresse);
@@ -11466,6 +11915,8 @@ function ParametresView({ site, updateSite, db, setDb }){
           <Icon name="plus" size={14}/> Ajouter / réajuster un salaire journalier
         </button>
       </div>
+
+      <NumerosRecusCard site={site} updateSite={updateSite} />
 
       {showAjusterSalaire && (
         <AjusterSalaireJournalierModal site={site} updateSite={updateSite} onClose={()=>setShowAjusterSalaire(false)} />
