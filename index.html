@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-23-4">
+<meta name="app-version" content="2026-10-23-5">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-23-4';
+  const APP_VERSION_ACTUELLE = '2026-10-23-5';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -4003,10 +4003,16 @@ function SuiviDistributionView({ db, setDb, employeId }){
                 <span>Orange Money reçu</span>
                 <span className="mono">{fmtGNF(det.orangeMoney)}</span>
               </div>
-              {(det.depenses>0 || det.depensesPropres>0) && (
+              {det.depenses>0 && (
                 <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:4}}>
-                  <span>Dépenses (entreprise + propres)</span>
-                  <span className="mono">− {fmtGNF(det.depenses + det.depensesPropres)}</span>
+                  <span>Dépenses entreprise</span>
+                  <span className="mono">− {fmtGNF(det.depenses)}</span>
+                </div>
+              )}
+              {det.depensesPropres>0 && (
+                <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:4}}>
+                  <span>Dépenses propres</span>
+                  <span className="mono">− {fmtGNF(det.depensesPropres)}</span>
                 </div>
               )}
               {det.avancesDecaissees>0 && (
@@ -5220,7 +5226,7 @@ function DetailMensuelConsolideView({ db, updateSite }){
                 <div style={{fontWeight:700, fontSize:14.5}}>{site.nom}</div>
                 <span style={{fontSize:12, color:'var(--steam)'}}>{ouvert ? '▲ Masquer le détail par employé' : '▼ Voir le détail par employé'}</span>
               </div>
-              <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:8}}>
+              <div style={{display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:8}}>
                 <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
                   <span style={{fontSize:12.5, color:'var(--steam)'}}>Espèces</span>
                   <span className="mono" style={{fontSize:13, fontWeight:600}}>{fmtGNF(totalSite.especes)}</span>
@@ -5230,8 +5236,12 @@ function DetailMensuelConsolideView({ db, updateSite }){
                   <span className="mono" style={{fontSize:13, fontWeight:600}}>{fmtGNF(totalSite.orangeMoney)}</span>
                 </div>
                 <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
-                  <span style={{fontSize:12.5, color:'var(--steam)'}}>Dépenses (entreprise + propres)</span>
-                  <span className="mono" style={{fontSize:13, fontWeight:600, color:'var(--danger)'}}>{fmtGNF(totalSite.depenses + totalSite.depensesPropres)}</span>
+                  <span style={{fontSize:12.5, color:'var(--steam)'}}>Dépenses entreprise</span>
+                  <span className="mono" style={{fontSize:13, fontWeight:600, color:'var(--danger)'}}>{fmtGNF(totalSite.depenses)}</span>
+                </div>
+                <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                  <span style={{fontSize:12.5, color:'var(--steam)'}}>Dépenses propres</span>
+                  <span className="mono" style={{fontSize:13, fontWeight:600, color:'var(--danger)'}}>{fmtGNF(totalSite.depensesPropres)}</span>
                 </div>
                 <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
                   <span style={{fontSize:12.5, color:'var(--steam)'}}>Net perçu</span>
@@ -14538,7 +14548,7 @@ function DetailMensuelSiteView({ site, updateSite, employeId, db }){
       </p>
       <div className="card" style={{padding:'1.1rem 1.25rem', marginBottom:24}}>
         <div style={{fontWeight:700, fontSize:14.5, marginBottom:10}}>{site.nom} — {monNom}</div>
-        <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:8, marginBottom:14}}>
+        <div style={{display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:8, marginBottom:14}}>
           <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
             <span style={{fontSize:12.5, color:'var(--steam)'}}>Espèces</span>
             <span className="mono" style={{fontSize:13, fontWeight:600}}>{fmtGNF(totalEspeces)}</span>
@@ -14548,8 +14558,12 @@ function DetailMensuelSiteView({ site, updateSite, employeId, db }){
             <span className="mono" style={{fontSize:13, fontWeight:600}}>{fmtGNF(totalOrangeMoney)}</span>
           </div>
           <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
-            <span style={{fontSize:12.5, color:'var(--steam)'}}>Dépenses (entreprise + propres)</span>
-            <span className="mono" style={{fontSize:13, fontWeight:600, color:'var(--danger)'}}>{fmtGNF(totalDepenses + totalDepensesPropres)}</span>
+            <span style={{fontSize:12.5, color:'var(--steam)'}}>Dépenses entreprise</span>
+            <span className="mono" style={{fontSize:13, fontWeight:600, color:'var(--danger)'}}>{fmtGNF(totalDepenses)}</span>
+          </div>
+          <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+            <span style={{fontSize:12.5, color:'var(--steam)'}}>Dépenses propres</span>
+            <span className="mono" style={{fontSize:13, fontWeight:600, color:'var(--danger)'}}>{fmtGNF(totalDepensesPropres)}</span>
           </div>
           <div style={{background:'var(--paper-2)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
             <span style={{fontSize:12.5, color:'var(--steam)'}}>Net perçu</span>
