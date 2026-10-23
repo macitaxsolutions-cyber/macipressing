@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-22-1">
+<meta name="app-version" content="2026-10-23-1">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-22-1';
+  const APP_VERSION_ACTUELLE = '2026-10-23-1';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -4008,13 +4008,13 @@ function SuiviDistributionView({ db, setDb, employeId }){
                 <span className="mono" style={{fontSize:13, fontWeight:600}}>{fmtGNF(l.montantNet)}</span>
               </div>
               {l.soldeDu > 0 && (
-                <div style={{background:'var(--warn-light)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                <div style={{background:'var(--warn-light)', borderRadius:8, padding:'8px 10px', display:'flex', flexDirection:'column', gap:2}}>
                   <span style={{fontSize:12.5, color:'#7a5c00'}}>Solde dû (cumul)</span>
                   <span className="mono" style={{fontSize:13, fontWeight:600, color:'#7a5c00'}}>{fmtGNF(l.soldeDu)}</span>
                 </div>
               )}
               {l.extraCapitalFixe > 0 && (
-                <div style={{background:'var(--warn-light)', borderRadius:8, padding:'8px 10px', display:'flex', justifyContent:'space-between'}}>
+                <div style={{background:'var(--warn-light)', borderRadius:8, padding:'8px 10px', display:'flex', flexDirection:'column', gap:2}}>
                   <span style={{fontSize:12.5, color:'#7a5c00'}}>Extra versé — Capital Fixe</span>
                   <span className="mono" style={{fontSize:13, fontWeight:600, color:'#7a5c00'}}>{fmtGNF(l.extraCapitalFixe)}</span>
                 </div>
@@ -7897,6 +7897,21 @@ function HistoriqueConnexionsView({ db }){
     });
   }, [connexions, recherche, periode, today, week.start, week.end]);
 
+  // Nombre de connexions par personne, sur la période et la recherche actuellement affichées — une personne
+  // peut se connecter à plusieurs pressings (ex: le gérant), donc on groupe uniquement par nom+rôle, pas par
+  // pressing, et on garde un décompte séparé par pressing entre parenthèses quand il y en a plus d'un.
+  const comptesParPersonne = useMemo(() => {
+    const map = {};
+    connexionsFiltrees.forEach(c => {
+      const cle = `${c.nom}__${c.role}`;
+      if(!map[cle]) map[cle] = { nom: c.nom, role: c.role, total: 0, parSite: {} };
+      map[cle].total += 1;
+      const site = c.siteNom || '—';
+      map[cle].parSite[site] = (map[cle].parSite[site]||0) + 1;
+    });
+    return Object.values(map).sort((a,b) => b.total - a.total);
+  }, [connexionsFiltrees]);
+
   return (
     <div>
       <PageHeader title="Historique des connexions" subtitle="Chaque connexion au gérant ou à un espace employé, tous pressings confondus" />
@@ -7908,6 +7923,21 @@ function HistoriqueConnexionsView({ db }){
         ))}
       </div>
       <input type="text" placeholder="🔎 Rechercher par nom ou pressing…" value={recherche} onChange={e=>setRecherche(e.target.value)} style={{marginBottom:14, maxWidth:360}} />
+
+      {comptesParPersonne.length > 0 && (
+        <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(180px, 1fr))', gap:10, marginBottom:16}}>
+          {comptesParPersonne.map(p => {
+            const sites = Object.entries(p.parSite);
+            return (
+              <div key={`${p.nom}__${p.role}`} className="card" style={{padding:'0.85rem 1rem'}}>
+                <div style={{fontSize:12.5, color:'var(--steam)', marginBottom:2}}>{p.nom} <span style={{fontWeight:400}}>({p.role})</span></div>
+                <div className="mono" style={{fontSize:20, fontWeight:700, color:'var(--pine)'}}>{p.total}</div>
+                <div style={{fontSize:11.5, color:'var(--steam)'}}>connexion(s){sites.length>1 ? ' — ' + sites.map(([s,n])=>`${s}: ${n}`).join(', ') : ''}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
       <div className="card" style={{overflow:'hidden'}}>
         <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
           <thead>
