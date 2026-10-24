@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-24-4">
+<meta name="app-version" content="2026-10-24-5">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-24-4';
+  const APP_VERSION_ACTUELLE = '2026-10-24-5';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -422,154 +422,6 @@ function numeroCommandeLibre(commandes, numeroSaisi){
     candidat = `${base}_${i}`;
   }
   return candidat;
-}
-
-/* ===================== REGISTRE DES NUMÉROS DE REÇU (v2026-10-23-6) =====================
-   Problème corrigé : le prochain numéro de reçu venait uniquement du compteur site.seq, stocké DANS la base
-   principale. Si une commande disparaît (perte de données, ancienne copie qui revient, suppression qui recule
-   le compteur), le compteur revient en arrière et l'app redonne à un nouveau client un numéro déjà remis à un
-   autre (ex. KIPE-2610-0160 donné à deux clientes).
-   Nouveau mécanisme, en 3 couches indépendantes :
-   1) Avant de donner un numéro, l'app saute tout numéro déjà vu : commandes actuelles + corbeille + registre.
-   2) Registre local (localStorage de chaque appareil) : chaque appareil garde la trace de tous les numéros
-      qu'il a émis — il survit à un retour en arrière de la base en ligne.
-   3) Registre en ligne séparé (nœud Firebase 'numeros-recus-v1', hors de la base principale) : réservation
-      atomique du numéro (transaction). Une restauration/écrasement de la base principale ne l'efface pas.
-      Si ce nœud est inaccessible (hors ligne, règles Firebase), les couches 1 et 2 continuent de protéger.
-   Le registre garde aussi client/téléphone/montant/lien PDF : une commande qui disparaît plus tard reste
-   visible dans Paramètres → « Numéros de reçu » → « Reçus émis introuvables », pour la ressaisir. */
-
-const REGISTRE_NUMEROS_KEY = 'numeros-recus-v1';
-
-function cleRegistreNumero(numero){
-  // Firebase interdit . # $ [ ] / dans les clés
-  return String(numero||'').replace(/[.#$\[\]\/]/g, '_');
-}
-
-function registreLocalLire(siteId){
-  try{
-    const raw = localStorage.getItem(`maci-numeros-emis-${siteId}`);
-    const obj = raw ? JSON.parse(raw) : {};
-    return (obj && typeof obj === 'object') ? obj : {};
-  }catch(e){ return {}; }
-}
-
-function registreLocalEcrire(siteId, numero, infos){
-  try{
-    const reg = registreLocalLire(siteId);
-    reg[cleRegistreNumero(numero)] = { ...(reg[cleRegistreNumero(numero)]||{}), ...infos, numero };
-    localStorage.setItem(`maci-numeros-emis-${siteId}`, JSON.stringify(reg));
-  }catch(e){ /* stockage local indisponible : les autres couches protègent */ }
-}
-
-function registreLocalSupprimer(siteId, numero, cmdId){
-  try{
-    const reg = registreLocalLire(siteId);
-    const k = cleRegistreNumero(numero);
-    if(reg[k] && (!cmdId || reg[k].cmdId === cmdId)){ delete reg[k]; localStorage.setItem(`maci-numeros-emis-${siteId}`, JSON.stringify(reg)); }
-  }catch(e){}
-}
-
-function avecDelai(promise, ms){
-  return Promise.race([promise, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
-}
-
-// Lit le registre en ligne d'un site. Renvoie { ok, entrees } — ok=false si inaccessible (on ne bloque jamais).
-async function registreEnLigneLire(siteId){
-  try{
-    const snap = await avecDelai(firebaseDB.ref(`${REGISTRE_NUMEROS_KEY}/${siteId}`).get(), 4000);
-    return { ok:true, entrees: (snap && snap.exists()) ? (snap.val() || {}) : {} };
-  }catch(e){ return { ok:false, entrees:{} }; }
-}
-
-// Réserve atomiquement un numéro pour une commande. Renvoie 'ok' | 'pris' | 'indisponible'.
-async function registreEnLigneReserver(siteId, numero, infos){
-  try{
-    const ref = firebaseDB.ref(`${REGISTRE_NUMEROS_KEY}/${siteId}/${cleRegistreNumero(numero)}`);
-    const res = await avecDelai(ref.transaction((courant) => {
-      if(courant && courant.cmdId && courant.cmdId !== infos.cmdId) return; // déjà pris par une autre commande
-      return { ...(courant||{}), ...infos, numero };
-    }), 4000);
-    return res.committed ? 'ok' : 'pris';
-  }catch(e){ return 'indisponible'; }
-}
-
-async function registreEnLigneCompleter(siteId, numero, infos){
-  try{ await avecDelai(firebaseDB.ref(`${REGISTRE_NUMEROS_KEY}/${siteId}/${cleRegistreNumero(numero)}`).update(infos), 4000); }catch(e){}
-}
-
-async function registreEnLigneLiberer(siteId, numero, cmdId){
-  try{
-    const ref = firebaseDB.ref(`${REGISTRE_NUMEROS_KEY}/${siteId}/${cleRegistreNumero(numero)}`);
-    await avecDelai(ref.transaction((courant) => {
-      if(!courant) return courant;
-      if(cmdId && courant.cmdId !== cmdId) return; // n'appartient pas à cette commande : on ne touche à rien
-      return null;
-    }), 4000);
-  }catch(e){}
-}
-
-// Toutes les commandes encore connues du site : actuelles + corbeille (supprimées une à une ou par réinitialisation).
-// Les commandes dont le numéro a été volontairement libéré (suppression immédiate d'une erreur de saisie) sont exclues.
-function commandesConnuesDuSite(site){
-  const out = [...(site.commandes||[])];
-  (site.corbeille||[]).forEach(e => {
-    if(!e) return;
-    if(e.type === 'commande' && e.data && !e.numeroLibere) out.push(e.data);
-    if(e.type === 'commandes_reset' && Array.isArray(e.data)) e.data.forEach(c => c && out.push(c));
-  });
-  return out;
-}
-
-// Ensemble de tous les numéros déjà utilisés (base + corbeille + registre local + registre en ligne lu).
-function numerosDejaUtilises(site, registreEnLigne){
-  const set = new Set();
-  commandesConnuesDuSite(site).forEach(c => { if(c && c.numero) set.add(c.numero); });
-  Object.values(registreLocalLire(site.id)).forEach(e => { if(e && e.numero) set.add(e.numero); });
-  Object.values(registreEnLigne||{}).forEach(e => { if(e && e.numero) set.add(e.numero); });
-  return set;
-}
-
-// Plus grande séquence automatique jamais vue (numéros auto seulement : les numéros saisis à la main
-// depuis d'anciens reçus papier ne doivent pas faire sauter le compteur).
-function plusGrandeSequenceVue(site, registreEnLigne){
-  const prefixe = `${site.code}-`;
-  let max = 0;
-  const voir = (numero, manuel) => {
-    if(manuel || !numero || !String(numero).startsWith(prefixe)) return;
-    const m = String(numero).match(/-(\d{4,})$/);
-    if(m) max = Math.max(max, Number(m[1]));
-  };
-  commandesConnuesDuSite(site).forEach(c => c && voir(c.numero, c.numeroSaisiManuellement));
-  Object.values(registreLocalLire(site.id)).forEach(e => e && voir(e.numero, e.manuel));
-  Object.values(registreEnLigne||{}).forEach(e => e && voir(e.numero, e.manuel));
-  return max;
-}
-
-// Prochain numéro automatique libre (sans réservation). Renvoie { numero, seq }.
-function prochainNumeroLibre(site, registreEnLigne, utilisesEnPlus){
-  const utilises = numerosDejaUtilises(site, registreEnLigne);
-  (utilisesEnPlus||[]).forEach(n => utilises.add(n));
-  let s = Math.max(Number(site.seq)||1, plusGrandeSequenceVue(site, registreEnLigne) + 1);
-  while(utilises.has(ticketNumber(site.code, s))) s++;
-  return { numero: ticketNumber(site.code, s), seq: s };
-}
-
-// Choisit ET réserve un numéro automatique pour une commande. Renvoie { numero, seq, registreEnLigneActif }.
-async function attribuerNumeroAutomatique(site, infos){
-  const lu = await registreEnLigneLire(site.id);
-  const rejetes = [];
-  for(let essai = 0; essai < 20; essai++){
-    const { numero, seq } = prochainNumeroLibre(site, lu.entrees, rejetes);
-    const res = lu.ok ? await registreEnLigneReserver(site.id, numero, { ...infos, manuel:false }) : 'indisponible';
-    if(res === 'pris'){ rejetes.push(numero); continue; }
-    registreLocalEcrire(site.id, numero, { ...infos, manuel:false });
-    return { numero, seq, registreEnLigneActif: res === 'ok' };
-  }
-  // Ne devrait jamais arriver : on retombe sur le calcul local
-  const { numero, seq } = prochainNumeroLibre(site, lu.entrees, rejetes);
-  registreLocalEcrire(site.id, numero, { ...infos, manuel:false });
-  return { numero, seq, registreEnLigneActif:false };
 }
 
 function siteCodeFromName(nom){
@@ -1628,25 +1480,6 @@ function ConflitBanner({ onFermer }){
 
 // Employés concernés par le salaire journalier automatique (50 000 GNF/jour, jamais le dimanche).
 const EMPLOYES_SALAIRE_JOURNALIER = ['mamadou alpha', 'nene djiba'];
-// « Décaissé par » est enregistré sous deux formes selon l'écran : la clé ('nene djiba') depuis la page
-// gérant « Dépenses propres de chaque acteur », ou le NOM COMPLET de l'employé ('Nene Djiba', 'Néné Djiba…')
-// depuis l'écran employé « Dépenses propres ». cleDecaisseur ramène les deux à la même clé (sans accents,
-// sans majuscules) pour que les totaux par caissier et la déduction de son net perçu soient toujours justes.
-function sansAccentsMin(v){ return String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase().replace(/\s+/g,' '); }
-function cleDecaisseur(v){
-  const n = sansAccentsMin(v);
-  if(!n) return '';
-  return EMPLOYES_SALAIRE_JOURNALIER.find(c => n.includes(c)) || '';
-}
-// Ramène une date saisie à AAAA-MM-JJ (accepte aussi JJ/MM/AAAA ou une date avec heure). '' si illisible.
-function normaliserDateISO(d){
-  const t = String(d||'').trim();
-  let m = t.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if(m) return `${m[1]}-${m[2]}-${m[3]}`;
-  m = t.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/);
-  if(m) return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
-  return '';
-}
 function estEmployeSalaireJournalier(emp){
   const nom = (emp.nom||'').trim().toLowerCase();
   return EMPLOYES_SALAIRE_JOURNALIER.some(cible => nom.includes(cible));
@@ -2829,19 +2662,15 @@ function moisCouvertsPourCle(cle){
 // physique de la personne qui l'a décaissée — sans cette déduction, « Montant disponible pour payer »
 // surestimerait ce qu'elle a vraiment en main.
 function totalDecaisseParPersonnePourMois(db, nomPersonne, moisListe){
-  const cible = sansAccentsMin(nomPersonne);
+  const cible = (nomPersonne||'').trim().toLowerCase();
   if(!cible || !moisListe.length) return 0;
-  const cleCible = cleDecaisseur(nomPersonne);
   const moisSet = new Set(moisListe.map(({annee, mois}) => `${annee}-${String(mois).padStart(2,'0')}`));
   let total = 0;
   Object.values(db.historiqueAnnuel||{}).forEach(anneeData => {
     Object.values((anneeData||{}).depensesActeurs || {}).forEach(liste => {
       (liste||[]).forEach(e => {
-        // Même personne si même clé de caissier (« nene djiba » = « Nene Djiba » = « Néné Djiba »), sinon nom identique.
-        const memePersonne = cleCible ? cleDecaisseur(e.decaissePar) === cleCible : sansAccentsMin(e.decaissePar) === cible;
-        if(!memePersonne) return;
-        const dateE = normaliserDateISO(e.date);
-        if(!dateE || !moisSet.has(dateE.slice(0,7))) return;
+        if((e.decaissePar||'').trim().toLowerCase() !== cible) return;
+        if(!e.date || !moisSet.has(e.date.slice(0,7))) return;
         total += Number(e.montant)||0;
       });
     });
@@ -4518,120 +4347,6 @@ function SuiviDistributionView({ db, setDb, employeId }){
 
 /* ===================== DÉPENSES PROPRES DE CHAQUE ACTEUR (menu autonome) ===================== */
 
-// Déplace / corrige une dépense propre saisie manuellement : la retire de son année de rangement d'origine
-// et la range dans l'année de sa (nouvelle) date, sous le (nouveau) bénéficiaire. Fonction pure (testable).
-function deplacerDepenseActeur(db, anneeSource, ancienNomActeur, entryId, anneeCible, nomActeur, changements){
-  const histo = { ...(db.historiqueAnnuel||{}) };
-  const src = histo[anneeSource] || {};
-  const srcDA = { ...(src.depensesActeurs||{}) };
-  const ancienneListe = srcDA[ancienNomActeur] || [];
-  const entryExistante = ancienneListe.find(e=>e.id===entryId);
-  if(!entryExistante) return db;
-  srcDA[ancienNomActeur] = ancienneListe.filter(e=>e.id!==entryId);
-  histo[anneeSource] = { ...src, depensesActeurs: srcDA };
-  const cible = histo[anneeCible] || {};
-  const cibleDA = { ...(cible.depensesActeurs||{}) };
-  cibleDA[nomActeur] = [...(cibleDA[nomActeur]||[]), { ...entryExistante, ...changements }];
-  histo[anneeCible] = { ...cible, depensesActeurs: cibleDA };
-  return { ...db, historiqueAnnuel: histo };
-}
-
-// Rassemble TOUTES les dépenses propres, toutes années confondues : celles saisies dans cet écran
-// (historiqueAnnuel[année].depensesActeurs) + celles saisies par les caissiers dans « Détail mensuel ».
-// Chaque entrée garde son année de rangement (anneeStockage) mais est placée par sa DATE réelle.
-function collecterToutesDepensesPropres(db, acteurs){
-  const toutes = [];
-  Object.entries(db.historiqueAnnuel||{}).forEach(([y, anneeData]) => {
-    Object.entries((anneeData||{}).depensesActeurs||{}).forEach(([nomActeur, liste]) => {
-      if(!acteurs.some(p => p.nom === nomActeur)) return;
-      (liste||[]).forEach(e => {
-        const dateISO = normaliserDateISO(e.date);
-        toutes.push({ ...e, nomActeur, anneeStockage: Number(y), dateSaisie: e.date || '', date: dateISO || `${y}-01-01`, sansDate: !dateISO,
-          decaisseCle: cleDecaisseur(e.decaissePar), source: 'page' });
-      });
-    });
-  });
-  (db.sites||[]).forEach(site => {
-    Object.entries(site.detailMensuelManuel||{}).forEach(([y, manuelAnnee]) => {
-      for(let m=1; m<=12; m++){
-        const parEmploye = normaliserMoisManuel((manuelAnnee||{})[m]) || {};
-        Object.entries(parEmploye).forEach(([empId, v]) => {
-          const montantDp = Number(v.depensesPropres)||0;
-          if(montantDp <= 0 || empId === '_legacy') return;
-          const emp = (site.employes||[]).find(e => e.id === empId);
-          if(!emp) return;
-          // Bénéficiaire : celui choisi dans Détail mensuel, sinon le caissier lui-même s'il est aussi acteur.
-          const acteurCorrespondant = acteurs.find(p => nomsCorrespondent(emp.nom, p.nom));
-          const nomBeneficiaire = v.depensesPropresBeneficiaire || (acteurCorrespondant && acteurCorrespondant.nom);
-          if(!nomBeneficiaire) return;
-          const moisStr = String(m).padStart(2,'0');
-          const descriptionSaisie = (v.depensesPropresDescription||'').trim();
-          // Décaissé par : le caissier dont c'est la ligne de saisie (l'argent est sorti de sa caisse).
-          const cle = cleDecaisseur(emp.nom);
-          // Une saisie Détail mensuel est TOUJOURS placée dans le mois où elle a été saisie (sa date ne peut
-          // pas sortir de ce mois).
-          const dateSaisie = normaliserDateISO(v.depensesPropresDate);
-          const dateOk = dateSaisie && dateSaisie.slice(0,7) === `${y}-${moisStr}`;
-          toutes.push({
-            id: `dm_${site.id}_${y}_${m}_${empId}`,
-            date: dateOk ? dateSaisie : `${y}-${moisStr}-01`,
-            dateApproximative: !dateOk,
-            description: descriptionSaisie || `Dépenses propres — ${site.nom}`,
-            montant: montantDp,
-            nomActeur: nomBeneficiaire,
-            decaissePar: cle || emp.nom,
-            decaisseCle: cle,
-            depuisDetailMensuel: true,
-            source: 'detailMensuel', siteId: site.id, siteNom: site.nom, empId, empNom: emp.nom, slotAnnee: Number(y), slotMois: m,
-            anneeStockage: Number(y),
-          });
-        });
-      }
-    });
-  });
-  return toutes;
-}
-
-// Déplace la dépense propre saisie par un caissier dans Détail mensuel d'un mois vers un autre (ex. saisie
-// par erreur en décembre 2026 au lieu de décembre 2025). Seuls les champs « dépenses propres » bougent ; la
-// recette, les dépenses entreprise, etc. du mois d'origine restent en place. Renvoie null si le mois cible
-// contient déjà une dépense propre pour un AUTRE bénéficiaire (on ne mélange pas deux bénéficiaires).
-function deplacerDepensePropreDetailMensuel(db, siteId, anneeSrc, moisSrc, empId, anneeCible, moisCible){
-  const site = (db.sites||[]).find(s => s.id === siteId);
-  if(!site) return null;
-  const dm = { ...(site.detailMensuelManuel||{}) };
-  const srcAnnee = { ...(dm[anneeSrc]||{}) };
-  const srcMois = { ...(normaliserMoisManuel(srcAnnee[moisSrc])||{}) };
-  const v = srcMois[empId];
-  if(!v || !(Number(v.depensesPropres) > 0)) return null;
-  if(String(anneeSrc) === String(anneeCible) && Number(moisSrc) === Number(moisCible)) return db;
-  srcMois[empId] = { ...v, depensesPropres: 0, depensesPropresDescription: '', depensesPropresBeneficiaire: '', depensesPropresDate: '' };
-  srcAnnee[moisSrc] = srcMois;
-  dm[anneeSrc] = srcAnnee;
-  const cibleAnnee = { ...(dm[anneeCible]||{}) };
-  const cibleMois = { ...(normaliserMoisManuel(cibleAnnee[moisCible])||{}) };
-  const existant = cibleMois[empId] || { recetteBrute: 0, depenses: 0, impayes: 0, depensesPropres: 0, montantRecuEspeces: 0, montantRecuOrangeMoney: 0 };
-  const dejaDp = Number(existant.depensesPropres)||0;
-  if(dejaDp > 0 && (existant.depensesPropresBeneficiaire||'') !== (v.depensesPropresBeneficiaire||'')) return null;
-  const mmC = String(moisCible).padStart(2,'0');
-  let nouvelleDate = '';
-  const dSrc = normaliserDateISO(v.depensesPropresDate);
-  if(dSrc){
-    const dernierJour = new Date(Number(anneeCible), Number(moisCible), 0).getDate();
-    nouvelleDate = `${anneeCible}-${mmC}-${String(Math.min(Number(dSrc.slice(8,10)), dernierJour)).padStart(2,'0')}`;
-  }
-  cibleMois[empId] = {
-    ...existant,
-    depensesPropres: dejaDp + (Number(v.depensesPropres)||0),
-    depensesPropresDescription: [existant.depensesPropresDescription, v.depensesPropresDescription].filter(x => (x||'').trim()).join(' + '),
-    depensesPropresBeneficiaire: v.depensesPropresBeneficiaire || existant.depensesPropresBeneficiaire || '',
-    depensesPropresDate: dejaDp > 0 ? (existant.depensesPropresDate || nouvelleDate) : nouvelleDate,
-  };
-  cibleAnnee[moisCible] = cibleMois;
-  dm[anneeCible] = cibleAnnee;
-  return { ...db, sites: db.sites.map(s => s.id === siteId ? { ...s, detailMensuelManuel: dm } : s) };
-}
-
 function DepensesPropresActeursView({ db, setDb }){
   const currentYear = Number(todayISO().slice(0,4));
   const anneesDisponibles = useMemo(() => {
@@ -4648,11 +4363,6 @@ function DepensesPropresActeursView({ db, setDb }){
   const [depensesPropresPeriode, setDepensesPropresPeriode] = useState('annee');
   const [depensesPropresJour, setDepensesPropresJour] = useState(todayISO());
   const [depensesPropresMois, setDepensesPropresMois] = useState(todayISO().slice(0,7));
-  const [filtreNomDp, setFiltreNomDp] = useState('');
-  const [correctionDate, setCorrectionDate] = useState({}); // id → nouvelle date (anomalies, saisies de la page)
-  const [correctionAnnee, setCorrectionAnnee] = useState({}); // id → année cible (anomalies, saisies Détail mensuel)
-  const [messageCorrection, setMessageCorrection] = useState('');
-  const [filtreDecaisseDp, setFiltreDecaisseDp] = useState('');
   const [acteurAjout, setActeurAjout] = useState('');
   const [decaisseurAjout, setDecaisseurAjout] = useState('');
   const [editingId, setEditingId] = useState(null);
@@ -4702,21 +4412,16 @@ function DepensesPropresActeursView({ db, setDb }){
   // aux deux employés qui manipulent réellement l'argent (EMPLOYES_SALAIRE_JOURNALIER, déjà utilisé pour
   // le planning caisse du salaire journalier) — sert à documenter que ce manque de caisse est un crédit
   // pris par l'acteur bénéficiaire, pas une faute ou une dépense du caissier qui a payé.
-  // Année de rangement = année de la DATE de la dépense (et non l'année affichée à l'écran) : chaque dépense
-  // propre est ainsi comptée dans le mois / l'année où la dette a réellement été prise.
-  function anneeDeDate(d){ const y = Number((d||'').slice(0,4)); return y || annee; }
-
   function ajouterDepenseActeur(nomActeur, decaissePar){
     const desc = (draftDesc['_form']||'').trim();
     const montant = Number(draftMontant['_form'])||0;
     const date = draftDate['_form'] || todayISO();
     if(!desc || montant<=0 || !nomActeur || !decaissePar) return;
     const entry = { id: uid('depact_'), description: desc, montant, date, decaissePar };
-    const anneeCible = anneeDeDate(date);
-    const anneeActuelle = (db.historiqueAnnuel||{})[anneeCible] || {};
+    const anneeActuelle = (db.historiqueAnnuel||{})[annee] || {};
     const listeActuelle = (anneeActuelle.depensesActeurs||{})[nomActeur] || [];
     const nextDepensesActeurs = { ...(anneeActuelle.depensesActeurs||{}), [nomActeur]: [...listeActuelle, entry] };
-    setDb({ ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [anneeCible]: { ...anneeActuelle, depensesActeurs: nextDepensesActeurs } } });
+    setDb({ ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [annee]: { ...anneeActuelle, depensesActeurs: nextDepensesActeurs } } });
     setDraftDesc({...draftDesc, _form: ''});
     setDraftMontant({...draftMontant, _form: ''});
     setDraftDate({...draftDate, _form: todayISO()});
@@ -4724,21 +4429,18 @@ function DepensesPropresActeursView({ db, setDb }){
     setDecaisseurAjout('');
   }
 
-  // anneeStockage : année sous laquelle l'entrée est rangée dans historiqueAnnuel (peut différer de l'année
-  // affichée, puisque la liste rassemble désormais toutes les années).
-  function supprimerDepenseActeur(nomActeur, entryId, anneeStockage){
-    const a = anneeStockage || annee;
-    const anneeActuelle = (db.historiqueAnnuel||{})[a] || {};
+  function supprimerDepenseActeur(nomActeur, entryId){
+    const anneeActuelle = (db.historiqueAnnuel||{})[annee] || {};
     const listeActuelle = (anneeActuelle.depensesActeurs||{})[nomActeur] || [];
     const nextDepensesActeurs = { ...(anneeActuelle.depensesActeurs||{}), [nomActeur]: listeActuelle.filter(e=>e.id!==entryId) };
-    setDb({ ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [a]: { ...anneeActuelle, depensesActeurs: nextDepensesActeurs } } });
+    setDb({ ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [annee]: { ...anneeActuelle, depensesActeurs: nextDepensesActeurs } } });
   }
 
   // Le gérant peut corriger une dépense propre saisie manuellement (description, montant, date,
   // bénéficiaire, décaisseur) après coup — utile en cas d'erreur de saisie.
   function commencerModificationDepenseActeur(e){
     setEditingId(e.id);
-    setEditDraft({ description: e.description, montant: e.montant, date: e.date, nomActeur: e.nomActeur, decaissePar: e.decaisseCle || e.decaissePar || '' });
+    setEditDraft({ description: e.description, montant: e.montant, date: e.date, nomActeur: e.nomActeur, decaissePar: e.decaissePar || '' });
   }
 
   function annulerModificationDepenseActeur(){
@@ -4746,7 +4448,7 @@ function DepensesPropresActeursView({ db, setDb }){
     setEditDraft(null);
   }
 
-  function enregistrerModificationDepenseActeur(ancienNomActeur, entryId, anneeStockage){
+  function enregistrerModificationDepenseActeur(ancienNomActeur, entryId){
     if(!editDraft) return;
     const desc = (editDraft.description||'').trim();
     const montant = Number(editDraft.montant)||0;
@@ -4754,17 +4456,25 @@ function DepensesPropresActeursView({ db, setDb }){
     const nomActeur = editDraft.nomActeur || ancienNomActeur;
     const decaissePar = editDraft.decaissePar || '';
     if(!desc || montant<=0 || !nomActeur || !decaissePar) return;
-    setDb(deplacerDepenseActeur(db, anneeStockage || annee, ancienNomActeur, entryId, anneeDeDate(date), nomActeur, { description: desc, montant, date, decaissePar }));
+    const anneeActuelle = (db.historiqueAnnuel||{})[annee] || {};
+    const depensesActeurs = { ...(anneeActuelle.depensesActeurs||{}) };
+    const ancienneListe = depensesActeurs[ancienNomActeur] || [];
+    const entryExistante = ancienneListe.find(e=>e.id===entryId);
+    if(!entryExistante) return;
+    depensesActeurs[ancienNomActeur] = ancienneListe.filter(e=>e.id!==entryId);
+    const nouvelleEntry = { ...entryExistante, description: desc, montant, date, decaissePar };
+    const listeCible = depensesActeurs[nomActeur] || [];
+    depensesActeurs[nomActeur] = [...listeCible, nouvelleEntry];
+    setDb({ ...db, historiqueAnnuel: { ...(db.historiqueAnnuel||{}), [annee]: { ...anneeActuelle, depensesActeurs } } });
     setEditingId(null);
     setEditDraft(null);
   }
 
-  const aujourdhuiDp = todayISO();
   function estDansPeriode(dateStr){
+    if(!dateStr) return depensesPropresPeriode === 'annee';
     if(depensesPropresPeriode === 'jour') return dateStr === depensesPropresJour;
-    if(depensesPropresPeriode === 'mois') return (dateStr||'').slice(0,7) === depensesPropresMois;
-    if(depensesPropresPeriode === 'aCeJour') return (dateStr||'') <= aujourdhuiDp;
-    return (dateStr||'').slice(0,4) === String(annee);
+    if(depensesPropresPeriode === 'mois') return dateStr.slice(0,7) === depensesPropresMois;
+    return dateStr.slice(0,4) === String(annee);
   }
 
   return (
@@ -4783,53 +4493,47 @@ function DepensesPropresActeursView({ db, setDb }){
 
         {(() => {
           const acteursSansCapitalFixe = parts.filter(p => p.nom !== 'Conservation du Capital Fixe');
-          const toutesEntrees = collecterToutesDepensesPropres(db, acteursSansCapitalFixe);
-          // Filtres Nom / Décaissé par (s'appliquent aux totaux, au tableau mensuel et à la liste)
-          const passeFiltres = e => {
-            if(filtreNomDp && e.nomActeur !== filtreNomDp) return false;
-            if(filtreDecaisseDp === '_aucun') return !e.decaisseCle;
-            if(filtreDecaisseDp && e.decaisseCle !== filtreDecaisseDp) return false;
-            return true;
-          };
-          const entreesBase = toutesEntrees.filter(passeFiltres);
-          const entreesPeriode = toutesEntrees.filter(e => estDansPeriode(e.date));
-          const entreesFiltrees = entreesBase.filter(e => estDansPeriode(e.date)).sort((a,b) => (b.date||'').localeCompare(a.date||''));
+          const toutesEntrees = [];
+          acteursSansCapitalFixe.forEach(p => {
+            (depensesActeursActuel[p.nom]||[]).forEach(e => toutesEntrees.push({ ...e, nomActeur: p.nom }));
+          });
+          // Ajoute les « dépenses propres » saisies par chaque caissier dans Détail mensuel (par pressing)
+          db.sites.forEach(site => {
+            const manuelAnnee = (site.detailMensuelManuel||{})[annee] || {};
+            for(let m=1; m<=12; m++){
+              const parEmploye = normaliserMoisManuel(manuelAnnee[m]) || {};
+              Object.entries(parEmploye).forEach(([empId, v]) => {
+                const montantDp = Number(v.depensesPropres)||0;
+                if(montantDp <= 0 || empId === '_legacy') return;
+                const emp = site.employes.find(e => e.id === empId);
+                if(!emp) return;
+                // Bénéficiaire : celui choisi explicitement dans Détail mensuel (peut être différent du
+                // caissier qui a saisi, s'il a décaissé pour un autre acteur), sinon on retombe sur l'ancien
+                // comportement (auto-correspondance nom caissier ↔ nom acteur, cas le plus courant).
+                const acteurCorrespondant = acteursSansCapitalFixe.find(p => nomsCorrespondent(emp.nom, p.nom));
+                const nomBeneficiaire = v.depensesPropresBeneficiaire || (acteurCorrespondant && acteurCorrespondant.nom);
+                if(!nomBeneficiaire) return;
+                const moisStr = String(m).padStart(2,'0');
+                const descriptionSaisie = (v.depensesPropresDescription||'').trim();
+                // Décaissé par : toujours le caissier dont c'est la ligne de saisie (l'argent est sorti de
+                // sa caisse), à condition que ce soit bien l'un des deux employés qui manipulent l'argent.
+                const decaisseurTrouve = EMPLOYES_SALAIRE_JOURNALIER.find(cible => (emp.nom||'').trim().toLowerCase().includes(cible));
+                toutesEntrees.push({
+                  id: `dm_${site.id}_${m}_${empId}`,
+                  date: v.depensesPropresDate || `${annee}-${moisStr}-01`,
+                  dateApproximative: !v.depensesPropresDate,
+                  description: descriptionSaisie || `Dépenses propres — ${site.nom}`,
+                  montant: montantDp,
+                  nomActeur: nomBeneficiaire,
+                  decaissePar: decaisseurTrouve || null,
+                  depuisDetailMensuel: true,
+                });
+              });
+            }
+          });
+          const entreesFiltrees = toutesEntrees.filter(e => estDansPeriode(e.date)).sort((a,b) => new Date(b.date||0) - new Date(a.date||0));
           const totalFiltre = entreesFiltrees.reduce((s,e)=>s+(Number(e.montant)||0),0);
-          const sommeDp = liste => liste.reduce((s,e)=>s+(Number(e.montant)||0),0);
-          const anneeStr = String(annee);
-          const moisCourant = aujourdhuiDp.slice(0,7);
-          const totalAnnee = sommeDp(entreesBase.filter(e => (e.date||'').slice(0,4) === anneeStr));
-          const totalAnneeACeJour = sommeDp(entreesBase.filter(e => (e.date||'').slice(0,4) === anneeStr && (e.date||'') <= aujourdhuiDp));
-          const moisCarte = depensesPropresPeriode === 'mois' ? depensesPropresMois : moisCourant;
-          const totalMoisCarte = sommeDp(entreesBase.filter(e => (e.date||'').slice(0,7) === moisCarte));
-          const totalCumulACeJour = sommeDp(entreesBase.filter(e => (e.date||'') <= aujourdhuiDp));
-          // Tableau mensuel (comme Détail mensuel) : une ligne par mois de l'année choisie
-          const acteursColonnes = filtreNomDp ? acteursSansCapitalFixe.filter(p => p.nom === filtreNomDp) : acteursSansCapitalFixe;
-          const nomsMoisDp = ['janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre','novembre','décembre'];
-          const lignesMois = nomsMoisDp.map((label, i) => {
-            const cle = `${annee}-${String(i+1).padStart(2,'0')}`;
-            const entreesMois = entreesBase.filter(e => (e.date||'').slice(0,7) === cle);
-            const parActeur = {};
-            acteursColonnes.forEach(p => { parActeur[p.nom] = sommeDp(entreesMois.filter(e => e.nomActeur === p.nom)); });
-            const parDecaisseur = {};
-            EMPLOYES_SALAIRE_JOURNALIER.forEach(c => { parDecaisseur[c] = sommeDp(entreesMois.filter(e => e.decaisseCle === c)); });
-            return { cle, label, nb: entreesMois.length, parActeur, parDecaisseur, total: sommeDp(entreesMois), futur: cle > moisCourant };
-          });
-          // Résumé par année (toutes les années qui ont au moins une dépense propre)
-          const anneesAvecDonnees = Array.from(new Set(entreesBase.map(e => Number((e.date||'').slice(0,4))).filter(Boolean).concat([currentYear]))).sort((a,b)=>a-b);
-          const lignesAnnees = anneesAvecDonnees.map(y => {
-            const ent = entreesBase.filter(e => (e.date||'').slice(0,4) === String(y));
-            const parActeur = {};
-            acteursColonnes.forEach(p => { parActeur[p.nom] = sommeDp(ent.filter(e => e.nomActeur === p.nom)); });
-            return { annee: y, parActeur, total: sommeDp(ent), aCeJour: sommeDp(ent.filter(e => (e.date||'') <= aujourdhuiDp)), futur: sommeDp(ent.filter(e => (e.date||'') > aujourdhuiDp)) };
-          });
-          // Saisies à vérifier : date dans le futur, date illisible, ou date d'une autre année que celle où
-          // la dépense est rangée — c'est ce qui crée un écart entre « Total année » et « À ce jour ».
-          const anomalies = toutesEntrees.filter(e =>
-            (e.date||'') > aujourdhuiDp || e.sansDate ||
-            (e.source === 'page' && String(e.anneeStockage) !== (e.date||'').slice(0,4))
-          ).sort((a,b) => (b.date||'').localeCompare(a.date||''));
-          const periodeDepensesPropresLabel = depensesPropresPeriode === 'jour' ? fmtDate(depensesPropresJour) : depensesPropresPeriode === 'mois' ? formatMoisAnnee(depensesPropresMois) : depensesPropresPeriode === 'aCeJour' ? `à ce jour (${fmtDate(aujourdhuiDp)})` : `année ${annee}`;
+          const periodeDepensesPropresLabel = depensesPropresPeriode === 'jour' ? fmtDate(depensesPropresJour) : depensesPropresPeriode === 'mois' ? formatMoisAnnee(depensesPropresMois) : `année ${annee}`;
 
           // Cumulé toutes années, tous pressings confondus, par acteur
           const cumuleToutesAnneesParActeur = {};
@@ -4859,84 +4563,11 @@ function DepensesPropresActeursView({ db, setDb }){
 
           return (
             <>
-              {/* Saisies à vérifier */}
-              {anomalies.length > 0 && (
-                <div className="card" style={{padding:'0.9rem 1.1rem', marginBottom:16, border:'1px solid var(--danger)', background:'var(--danger-light)'}}>
-                  <strong style={{color:'var(--danger)', fontSize:13.5}}>⚠️ {anomalies.length} dépense{anomalies.length>1?'s':''} propre{anomalies.length>1?'s':''} à vérifier</strong>
-                  <p style={{fontSize:11.5, color:'var(--ink)', margin:'4px 0 8px', lineHeight:1.45}}>
-                    Date dans le futur, date illisible ou date d'une autre année que celle où la dépense est rangée. C'est ce qui rend le « Total année » plus élevé que « À ce jour ». Corrigez la date (ou l'année) ci-dessous. ⚠️ Déplacer une dépense vers un mois déjà distribué change le calcul de la distribution de ce mois.
-                  </p>
-                  {messageCorrection && <p style={{fontSize:12.5, margin:'0 0 8px', fontWeight:600}}>{messageCorrection}</p>}
-                  <div style={{display:'grid', gap:8}}>
-                    {anomalies.map(e => (
-                      <div key={e.id} style={{display:'flex', flexWrap:'wrap', gap:8, alignItems:'center', fontSize:12.5, background:'var(--white)', borderRadius:6, padding:'6px 10px'}}>
-                        <span style={{minWidth:200}}>
-                          <b>{e.nomActeur}</b> · <span className="mono">{fmtGNF(e.montant)}</span> · {e.description}
-                          <div style={{fontSize:11, color:'var(--steam)'}}>
-                            {e.source === 'detailMensuel'
-                              ? <>Saisie dans Détail mensuel ({e.siteNom}) par {e.empNom}, mois de <b style={{textTransform:'capitalize'}}>{formatMoisAnnee(`${e.slotAnnee}-${String(e.slotMois).padStart(2,'0')}`)}</b></>
-                              : <>Saisie page Dépenses propres · date <b>{e.sansDate ? (e.dateSaisie || 'aucune') : fmtDate(e.date)}</b> · rangée en {e.anneeStockage}{e.decaisseCle ? ` · décaissé par ${e.decaisseCle}` : ''}</>}
-                            {(e.date||'') > aujourdhuiDp && <span style={{color:'var(--danger)', fontWeight:600}}> · date future</span>}
-                          </div>
-                        </span>
-                        {e.source === 'page' ? (
-                          <>
-                            <input type="date" max={aujourdhuiDp} value={correctionDate[e.id] ?? (e.sansDate ? '' : e.date)} onChange={ev=>setCorrectionDate({...correctionDate, [e.id]: ev.target.value})} style={{width:'auto', fontSize:12.5}} />
-                            <button className="btn btn-sm" disabled={!correctionDate[e.id]} onClick={()=>{
-                              const d = correctionDate[e.id];
-                              setDb(deplacerDepenseActeur(db, e.anneeStockage, e.nomActeur, e.id, Number(d.slice(0,4)), e.nomActeur, { date: d }));
-                              setMessageCorrection(`✅ Dépense de ${e.nomActeur} (${fmtGNF(e.montant)}) déplacée au ${fmtDate(d)}.`);
-                            }}>Corriger la date</button>
-                          </>
-                        ) : (
-                          <>
-                            <select value={correctionAnnee[e.id] ?? String(e.slotAnnee - 1)} onChange={ev=>setCorrectionAnnee({...correctionAnnee, [e.id]: ev.target.value})} style={{width:'auto', fontSize:12.5}}>
-                              {anneesDisponibles.filter(y => y !== e.slotAnnee).map(y => <option key={y} value={y}>{y}</option>)}
-                            </select>
-                            <button className="btn btn-sm" onClick={()=>{
-                              const cible = Number(correctionAnnee[e.id] ?? (e.slotAnnee - 1));
-                              const res = deplacerDepensePropreDetailMensuel(db, e.siteId, e.slotAnnee, e.slotMois, e.empId, cible, e.slotMois);
-                              if(!res){ setMessageCorrection(`❌ Impossible : ${e.empNom} a déjà une dépense propre pour un autre bénéficiaire en ${formatMoisAnnee(`${cible}-${String(e.slotMois).padStart(2,'0')}`)}. Corrigez-la dans Détail mensuel.`); return; }
-                              setDb(res);
-                              setMessageCorrection(`✅ Dépense de ${e.nomActeur} (${fmtGNF(e.montant)}) déplacée en ${formatMoisAnnee(`${cible}-${String(e.slotMois).padStart(2,'0')}`)} (Détail mensuel ${e.siteNom}).`);
-                            }}>Déplacer en {formatMoisAnnee(`${correctionAnnee[e.id] ?? (e.slotAnnee - 1)}-${String(e.slotMois).padStart(2,'0')}`)}</button>
-                          </>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Cartes de synthèse (comme en haut de « Détail mensuel ») */}
-              <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(150px, 1fr))', gap:8, marginBottom:8}}>
-                {[
-                  { label: `Total année ${annee}`, value: totalAnnee },
-                  { label: `${annee} à ce jour`, value: totalAnneeACeJour, sub: Number(annee) === currentYear ? `1er janv. → ${fmtDate(aujourdhuiDp)}` : `année ${annee}` },
-                  { label: depensesPropresPeriode === 'mois' ? 'Mois choisi' : 'Mois en cours', value: totalMoisCarte, sub: formatMoisAnnee(moisCarte) },
-                  { label: 'Cumul à ce jour', value: totalCumulACeJour, sub: 'toutes années' },
-                  { label: 'Période affichée', value: totalFiltre, sub: periodeDepensesPropresLabel },
-                ].map((c,i) => (
-                  <div key={i} className="card" style={{padding:'0.7rem 0.8rem'}}>
-                    <div style={{fontSize:10, color:'var(--steam)', textTransform:'uppercase', letterSpacing:'0.02em', fontWeight:600, lineHeight:1.3, marginBottom:4}}>{c.label}</div>
-                    <div className="mono" style={{fontSize:14.5, fontWeight:700, color: c.value>0 ? 'var(--danger)' : 'var(--pine)'}}>{fmtGNF(c.value)}</div>
-                    {c.sub && <div style={{fontSize:10.5, color:'var(--steam)', marginTop:2, textTransform:'capitalize'}}>{c.sub}</div>}
-                  </div>
-                ))}
-              </div>
-              {(filtreNomDp || filtreDecaisseDp) && (
-                <p style={{fontSize:11.5, color:'var(--rust)', margin:'0 0 12px'}}>
-                  Filtres actifs : {filtreNomDp && <>Nom = <b>{filtreNomDp}</b> </>}{filtreDecaisseDp && <>· Décaissé par = <b style={{textTransform:'capitalize'}}>{filtreDecaisseDp === '_aucun' ? 'non renseigné' : filtreDecaisseDp}</b></>}
-                  {' '}<button className="btn btn-ghost btn-sm" style={{padding:'1px 8px', fontSize:11}} onClick={()=>{ setFiltreNomDp(''); setFiltreDecaisseDp(''); }}>Effacer les filtres</button>
-                </p>
-              )}
-
-              {/* Filtres */}
-              <div style={{display:'flex', gap:8, margin:'12px 0 14px', flexWrap:'wrap', alignItems:'center'}}>
-                {['jour','mois','annee','aCeJour'].map(v => (
+              <div style={{display:'flex', gap:8, marginBottom:14, flexWrap:'wrap', alignItems:'center'}}>
+                {['jour','mois','annee'].map(v => (
                   <button key={v} className="btn btn-sm" onClick={()=>setDepensesPropresPeriode(v)}
-                    style={{background:depensesPropresPeriode===v?'var(--pine)':'transparent', color:depensesPropresPeriode===v?'var(--white)':'var(--ink)', borderColor:depensesPropresPeriode===v?'var(--pine)':'var(--line-strong)'}}>
-                    {v === 'jour' ? 'Jour' : v === 'mois' ? 'Mois' : v === 'annee' ? 'Année' : 'À ce jour'}
+                    style={{background:depensesPropresPeriode===v?'var(--pine)':'transparent', color:depensesPropresPeriode===v?'var(--white)':'var(--ink)', borderColor:depensesPropresPeriode===v?'var(--pine)':'var(--line-strong)', textTransform:'capitalize'}}>
+                    {v === 'jour' ? 'Jour' : v === 'mois' ? 'Mois' : 'Année'}
                   </button>
                 ))}
                 {depensesPropresPeriode === 'jour' && (
@@ -4945,106 +4576,13 @@ function DepensesPropresActeursView({ db, setDb }){
                 {depensesPropresPeriode === 'mois' && (
                   <input type="month" value={depensesPropresMois} onChange={e=>setDepensesPropresMois(e.target.value)} style={{width:'auto'}} />
                 )}
-                <span style={{width:1, height:22, background:'var(--line-strong)', margin:'0 4px'}}></span>
-                <select value={filtreNomDp} onChange={e=>setFiltreNomDp(e.target.value)} style={{width:'auto', minWidth:150}}>
-                  <option value="">Nom : tous</option>
-                  {acteursSansCapitalFixe.map(p => <option key={p.nom} value={p.nom}>{p.nom}</option>)}
-                </select>
-                <select value={filtreDecaisseDp} onChange={e=>setFiltreDecaisseDp(e.target.value)} style={{width:'auto', minWidth:170, textTransform:'capitalize'}}>
-                  <option value="">Décaissé par : tous</option>
-                  {EMPLOYES_SALAIRE_JOURNALIER.map(cle => <option key={cle} value={cle}>{cle.replace(/\b\w/g, c=>c.toUpperCase())}</option>)}
-                  <option value="_aucun">Non renseigné</option>
-                </select>
               </div>
 
-              {/* Résumé par année — pour voir aussi les années précédentes (ex. 2025) */}
-              <h4 style={{fontSize:13, color:'var(--pine)', margin:'0 0 8px'}}>Par année — toutes années</h4>
-              <div className="card" style={{overflowX:'auto', marginBottom:20}}>
-                <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
-                  <thead>
-                    <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
-                      <th style={th}>Année</th>
-                      {acteursColonnes.map(p => <th key={p.nom} style={{...th, textAlign:'right'}}>{p.nom}</th>)}
-                      <th style={{...th, textAlign:'right'}}>Total année</th>
-                      <th style={{...th, textAlign:'right'}}>À ce jour</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {lignesAnnees.map(l => (
-                      <tr key={l.annee} onClick={()=>{ setAnnee(l.annee); setDepensesPropresPeriode('annee'); }}
-                        style={{borderTop:'1px solid var(--line)', cursor:'pointer', background: Number(annee) === l.annee ? 'var(--pine-light)' : 'transparent'}}>
-                        <td style={{...td, fontWeight:600}}>{l.annee}</td>
-                        {acteursColonnes.map(p => <td key={p.nom} style={{...td, textAlign:'right', color: l.parActeur[p.nom]>0 ? 'var(--rust)' : 'var(--steam)'}} className="mono">{l.parActeur[p.nom]>0 ? fmtGNF(l.parActeur[p.nom]) : '—'}</td>)}
-                        <td style={{...td, textAlign:'right', fontWeight:700, color: l.total>0 ? 'var(--danger)' : 'var(--steam)'}} className="mono">{l.total>0 ? fmtGNF(l.total) : '—'}</td>
-                        <td style={{...td, textAlign:'right', color:'var(--steam)'}} className="mono">
-                          {l.aCeJour>0 ? fmtGNF(l.aCeJour) : '—'}
-                          {l.futur>0 && <div style={{fontSize:10.5, color:'var(--danger)'}}>+ {fmtGNF(l.futur)} daté dans le futur</div>}
-                        </td>
-                      </tr>
-                    ))}
-                    <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
-                      <td style={{...td, fontWeight:700}}>Cumul à ce jour</td>
-                      {acteursColonnes.map(p => <td key={p.nom} style={{...td, textAlign:'right', fontWeight:700}} className="mono">{fmtGNF(sommeDp(entreesBase.filter(e => e.nomActeur === p.nom && (e.date||'') <= aujourdhuiDp)))}</td>)}
-                      <td style={{...td, textAlign:'right', fontWeight:700}} className="mono">{fmtGNF(sommeDp(entreesBase))}</td>
-                      <td style={{...td, textAlign:'right', fontWeight:700, color:'var(--danger)'}} className="mono">{fmtGNF(totalCumulACeJour)}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Tableau mensuel de l'année choisie — chaque dépense est placée dans le mois de sa date */}
-              <h4 style={{fontSize:13, color:'var(--pine)', margin:'0 0 8px'}}>Par mois — {annee}</h4>
-              <p style={{fontSize:11.5, color:'var(--steam)', margin:'0 0 8px', lineHeight:1.5}}>
-                Chaque dépense propre apparaît dans le mois où la dette a été prise (sa date). Cliquez sur un mois pour afficher le détail de ses dépenses plus bas. Changez l'année en haut à droite.
-              </p>
-              <div className="card" style={{overflowX:'auto', marginBottom:20}}>
-                <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
-                  <thead>
-                    <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
-                      <th style={th}>Mois</th>
-                      {acteursColonnes.map(p => <th key={p.nom} style={{...th, textAlign:'right'}}>{p.nom}</th>)}
-                      {EMPLOYES_SALAIRE_JOURNALIER.map(c => <th key={c} style={{...th, textAlign:'right', textTransform:'capitalize', color:'var(--steam)', fontWeight:500}}>Décaissé {c}</th>)}
-                      <th style={{...th, textAlign:'right'}}>Total</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {lignesMois.map(l => {
-                      const actif = depensesPropresPeriode === 'mois' && depensesPropresMois === l.cle;
-                      return (
-                        <tr key={l.cle} onClick={()=>{ setDepensesPropresPeriode('mois'); setDepensesPropresMois(l.cle); }}
-                          style={{borderTop:'1px solid var(--line)', cursor:'pointer', background: actif ? 'var(--pine-light)' : 'transparent', opacity: l.futur && l.total===0 ? 0.45 : 1}}>
-                          <td style={{...td, textTransform:'capitalize', fontWeight:600}}>
-                            {l.label}
-                            {l.nb>0 && <span style={{fontSize:10.5, color:'var(--steam)', fontWeight:400, marginLeft:6}}>({l.nb})</span>}
-                          </td>
-                          {acteursColonnes.map(p => <td key={p.nom} style={{...td, textAlign:'right', color: l.parActeur[p.nom]>0 ? 'var(--rust)' : 'var(--steam)'}} className="mono">{l.parActeur[p.nom]>0 ? fmtGNF(l.parActeur[p.nom]) : '—'}</td>)}
-                          {EMPLOYES_SALAIRE_JOURNALIER.map(c => <td key={c} style={{...td, textAlign:'right', color:'var(--steam)'}} className="mono">{l.parDecaisseur[c]>0 ? fmtGNF(l.parDecaisseur[c]) : '—'}</td>)}
-                          <td style={{...td, textAlign:'right', fontWeight:700, color: l.total>0 ? 'var(--danger)' : 'var(--steam)'}} className="mono">{l.total>0 ? fmtGNF(l.total) : '—'}</td>
-                        </tr>
-                      );
-                    })}
-                    <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
-                      <td style={{...td, fontWeight:700}}>Total année {annee}</td>
-                      {acteursColonnes.map(p => <td key={p.nom} style={{...td, textAlign:'right', fontWeight:700}} className="mono">{fmtGNF(lignesMois.reduce((s,l)=>s+l.parActeur[p.nom],0))}</td>)}
-                      {EMPLOYES_SALAIRE_JOURNALIER.map(c => <td key={c} style={{...td, textAlign:'right', fontWeight:600, color:'var(--steam)'}} className="mono">{fmtGNF(lignesMois.reduce((s,l)=>s+l.parDecaisseur[c],0))}</td>)}
-                      <td style={{...td, textAlign:'right', fontWeight:700, color:'var(--danger)'}} className="mono">{fmtGNF(totalAnnee)}</td>
-                    </tr>
-                    <tr style={{background:'var(--paper-2)'}}>
-                      <td style={{...td, fontWeight:600, color:'var(--steam)'}}>{annee} à ce jour</td>
-                      {acteursColonnes.map(p => <td key={p.nom} style={{...td, textAlign:'right', color:'var(--steam)'}} className="mono">{fmtGNF(sommeDp(entreesBase.filter(e => e.nomActeur === p.nom && (e.date||'').slice(0,4) === anneeStr && (e.date||'') <= aujourdhuiDp)))}</td>)}
-                      {EMPLOYES_SALAIRE_JOURNALIER.map(c => <td key={c} style={{...td, textAlign:'right', color:'var(--steam)'}} className="mono">{fmtGNF(sommeDp(entreesBase.filter(e => e.decaisseCle === c && (e.date||'').slice(0,4) === anneeStr && (e.date||'') <= aujourdhuiDp)))}</td>)}
-                      <td style={{...td, textAlign:'right', fontWeight:700}} className="mono">{fmtGNF(totalAnneeACeJour)}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-
-              <h4 style={{fontSize:13, color:'var(--pine)', margin:'0 0 8px', textTransform:'none'}}>Détail des dépenses — {periodeDepensesPropresLabel}</h4>
               <div className="card" style={{overflow:'hidden', marginBottom:16}}>
                 <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
                   <thead>
                     <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
-                      <th style={th}>Date</th>
+                      <th style={th}>Mois</th>
                       <th style={th}>Nom</th>
                       <th style={th}>Description</th>
                       <th style={th}>Décaissé par</th>
@@ -5054,12 +4592,12 @@ function DepensesPropresActeursView({ db, setDb }){
                   </thead>
                   <tbody>
                     {entreesFiltrees.length === 0 ? (
-                      <tr><td colSpan={6} style={{...td, textAlign:'center', color:'var(--steam)', padding:'1.5rem'}}>Aucune dépense propre sur cette période (avec ces filtres).</td></tr>
+                      <tr><td colSpan={6} style={{...td, textAlign:'center', color:'var(--steam)', padding:'1.5rem'}}>Aucune dépense propre sur cette période.</td></tr>
                     ) : entreesFiltrees.map(e => (
                       editingId === e.id ? (
                         <tr key={e.id} style={{borderTop:'1px solid var(--line)', background:'var(--pine-light)'}}>
                           <td style={td}>
-                            <input type="date" max={todayISO()} value={editDraft.date||''} onChange={ev=>setEditDraft({...editDraft, date: ev.target.value})} style={{width:'auto', fontSize:12.5}} />
+                            <input type="date" value={editDraft.date||''} onChange={ev=>setEditDraft({...editDraft, date: ev.target.value})} style={{width:'auto', fontSize:12.5}} />
                           </td>
                           <td style={td}>
                             <select value={editDraft.nomActeur||''} onChange={ev=>setEditDraft({...editDraft, nomActeur: ev.target.value})} style={{fontSize:12.5}}>
@@ -5079,7 +4617,7 @@ function DepensesPropresActeursView({ db, setDb }){
                             <input type="number" value={editDraft.montant||''} onChange={ev=>setEditDraft({...editDraft, montant: ev.target.value})} style={{fontSize:12.5}} />
                           </td>
                           <td style={{...td, textAlign:'right', whiteSpace:'nowrap'}}>
-                            <button className="btn btn-ghost btn-sm" style={{color:'var(--pine)'}} onClick={()=>enregistrerModificationDepenseActeur(e.nomActeur, e.id, e.anneeStockage)}><Icon name="check" size={13}/></button>
+                            <button className="btn btn-ghost btn-sm" style={{color:'var(--pine)'}} onClick={()=>enregistrerModificationDepenseActeur(e.nomActeur, e.id)}><Icon name="check" size={13}/></button>
                             <button className="btn btn-ghost btn-sm" onClick={annulerModificationDepenseActeur}><Icon name="x" size={13}/></button>
                           </td>
                         </tr>
@@ -5091,17 +4629,15 @@ function DepensesPropresActeursView({ db, setDb }){
                         <td style={{...td, fontWeight:600}}>{e.nomActeur}</td>
                         <td style={td}>
                           {e.description}
-                          {e.depuisDetailMensuel && <span className="tag" style={{marginLeft:6, fontSize:9.5, background:'var(--pine-light)', color:'var(--pine)'}}>Détail mensuel · {e.siteNom}</span>}
-                          {e.source === 'page' && e.anneeStockage && String(e.anneeStockage) !== (e.date||'').slice(0,4) && <span className="tag" style={{marginLeft:6, fontSize:9.5, background:'var(--warn-light)', color:'var(--warn)'}}>rangée en {e.anneeStockage}</span>}
-                          {(e.date||'') > aujourdhuiDp && <span className="tag" style={{marginLeft:6, fontSize:9.5, background:'var(--danger-light)', color:'var(--danger)'}}>date future</span>}
+                          {e.depuisDetailMensuel && <span className="tag" style={{marginLeft:6, fontSize:9.5, background:'var(--pine-light)', color:'var(--pine)'}}>Détail mensuel</span>}
                         </td>
-                        <td style={{...td, textTransform:'capitalize'}}>{e.decaisseCle || e.decaissePar || <span style={{color:'var(--steam)'}}>—</span>}</td>
+                        <td style={{...td, textTransform:'capitalize'}}>{e.decaissePar || <span style={{color:'var(--steam)'}}>—</span>}</td>
                         <td style={{...td, color:'var(--danger)', fontWeight:600}} className="mono">{fmtGNF(e.montant)}</td>
                         <td style={{...td, textAlign:'right', whiteSpace:'nowrap'}}>
                           {!e.depuisDetailMensuel && (
                             <>
                               <button className="btn btn-ghost btn-sm" onClick={()=>commencerModificationDepenseActeur(e)}><Icon name="edit" size={13}/></button>
-                              <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>{ if(window.confirm(`Supprimer cette dépense propre de ${e.nomActeur} (${fmtGNF(e.montant)}) ?`)) supprimerDepenseActeur(e.nomActeur, e.id, e.anneeStockage); }}><Icon name="trash" size={13}/></button>
+                              <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>supprimerDepenseActeur(e.nomActeur, e.id)}><Icon name="trash" size={13}/></button>
                             </>
                           )}
                         </td>
@@ -5110,7 +4646,7 @@ function DepensesPropresActeursView({ db, setDb }){
                     ))}
                     {entreesFiltrees.length > 0 && (
                       <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
-                        <td colSpan={4} style={{...td, fontWeight:700}}>Total — {periodeDepensesPropresLabel}{(filtreNomDp||filtreDecaisseDp) ? ' (filtré)' : ''} · {entreesFiltrees.length} dépense{entreesFiltrees.length>1?'s':''}</td>
+                        <td colSpan={4} style={{...td, fontWeight:700}}>Total</td>
                         <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(totalFiltre)}</td>
                         <td></td>
                       </tr>
@@ -5274,7 +4810,7 @@ function DepensesPropresActeursView({ db, setDb }){
                 <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
                   <tbody>
                     {EMPLOYES_SALAIRE_JOURNALIER.map(cle => {
-                      const entreesPourAutres = entreesPeriode.filter(e => e.decaisseCle === cle && !nomsCorrespondent(cle, e.nomActeur||''));
+                      const entreesPourAutres = entreesFiltrees.filter(e => e.decaissePar === cle && !nomsCorrespondent(cle, e.nomActeur||''));
                       const totalPourAutres = entreesPourAutres.reduce((s,e)=>s+(Number(e.montant)||0),0);
                       const nomAffiche = cle.replace(/\b\w/g, c=>c.toUpperCase());
                       return (
@@ -5303,7 +4839,7 @@ function DepensesPropresActeursView({ db, setDb }){
                 </select>
                 <input type="text" placeholder="Description (ex: avance sur salaire)" value={draftDesc['_form']||''} onChange={e=>setDraftDesc({...draftDesc, _form: e.target.value})} />
                 <input type="number" placeholder="Montant" value={draftMontant['_form']||''} onChange={e=>setDraftMontant({...draftMontant, _form: e.target.value})} />
-                <input type="date" max={todayISO()} value={draftDate['_form']||todayISO()} onChange={e=>setDraftDate({...draftDate, _form: e.target.value})} />
+                <input type="date" value={draftDate['_form']||todayISO()} onChange={e=>setDraftDate({...draftDate, _form: e.target.value})} />
                 <select value={decaisseurAjout} onChange={e=>setDecaisseurAjout(e.target.value)}>
                   <option value="">Décaissé par…</option>
                   {EMPLOYES_SALAIRE_JOURNALIER.map(cle => <option key={cle} value={cle} style={{textTransform:'capitalize'}}>{cle.replace(/\b\w/g, c=>c.toUpperCase())}</option>)}
@@ -5322,6 +4858,32 @@ function DepensesPropresActeursView({ db, setDb }){
 }
 
 /* ===================== DÉTAIL MENSUEL CONSOLIDÉ (menu autonome) ===================== */
+
+// Agrège le journal des modifications « Détail mensuel » de TOUS les pressings (contrairement à
+// JournalModificationsCard, qui ne lit qu'un seul site) — alerte visible du gérant quand un employé modifie
+// ou efface une donnée « avant seuil » déjà saisie dans son propre Détail mensuel.
+function JournalModificationsDetailMensuelMultiSites({ sites }){
+  const entries = sites
+    .flatMap(s => (s.journalConfig||[]).filter(e => e.section === 'Détail mensuel').map(e => ({ ...e, siteNom: s.nom })))
+    .sort((a,b) => new Date(b.date) - new Date(a.date))
+    .slice(0, 10);
+  if(entries.length === 0) return null;
+  return (
+    <div className="card" style={{padding:'1.1rem 1.25rem', marginBottom:20, background:'var(--warn-light)'}}>
+      <h4 style={{margin:'0 0 10px', fontSize:13, color:'var(--warn)', textTransform:'uppercase', letterSpacing:'0.03em'}}>
+        ⚠️ Dernières modifications — Détail mensuel
+      </h4>
+      <div style={{display:'grid', gap:8}}>
+        {entries.map(e => (
+          <div key={e.id} style={{fontSize:12.5, lineHeight:1.5, borderLeft:'3px solid var(--warn)', paddingLeft:10}}>
+            <div><strong>{e.auteurNom}</strong> <span style={{color:'var(--steam)'}}>({e.auteurRole} — {e.siteNom})</span> — {e.description}</div>
+            <div style={{color:'var(--steam)', fontSize:11.5}}>{fmtDateTime(e.date)}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function DetailMensuelConsolideView({ db, updateSite }){
   const currentYear = Number(todayISO().slice(0,4));
@@ -5437,6 +4999,7 @@ function DetailMensuelConsolideView({ db, updateSite }){
   return (
     <div>
       <PageHeader title="Détail mensuel — synthèse de tous les pressings" subtitle={periodeLabel} />
+      <JournalModificationsDetailMensuelMultiSites sites={db.sites} />
 
       <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
         {[{k:'mois',l:'Mois'},{k:'annee',l:'Année'},{k:'intervalle',l:'Intervalle'},{k:'total',l:'À ce jour'}].map(opt => (
@@ -5556,10 +5119,6 @@ function DetailMensuelConsolideView({ db, updateSite }){
                               <div className="mono" style={{fontSize:12.5, color:'var(--pine)', marginTop:2}}>
                                 Reçu Espèces : {fmtGNF(v.montantRecuEspeces||0)} · Reçu Orange Money : {fmtGNF(v.montantRecuOrangeMoney||0)} · Net perçu : {fmtGNF(netPercuEmp)}
                               </div>
-                              {(() => { const av = avancesDecaisseesCaissierMois(db, siteId, getEmpNomMultiSites(db.sites, empId), m.annee, m.mois); return av > 0 ? (
-                                <div className="mono" style={{fontSize:12.5, color:'var(--rust)', marginTop:2}}>
-                                  Avances décaissées pour des acteurs (page Dépenses propres) : − {fmtGNF(av)} · Net perçu après avances : <b>{fmtGNF(netPercuEmp - av)}</b>
-                                </div>) : null; })()}
                               {siteId && (
                                 <>
                                   <div style={{display:'flex', alignItems:'center', gap:8, marginTop:6, flexWrap:'wrap'}}>
@@ -6770,7 +6329,7 @@ function SiteDetailForGerant({ site, db, setDb, updateSite, onBack }){
   const navItems = [
     { key:'dashboard', label:'Tableau de bord', icon:'chart' },
     { key:'agenda', label:'Agenda du jour', icon:'clock' },
-    { key:'commandes', label:'Commandes', icon:'ticket', badge: alertesCommandesNonVues(site).length || undefined },
+    { key:'commandes', label:'Commandes', icon:'ticket' },
     { key:'clients', label:'Clients', icon:'users' },
     { key:'marketing', label:'Promos & Relances', icon:'bell' },
     { key:'stock', label:'Stock', icon:'box' },
@@ -7493,33 +7052,19 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
   const isRepasseur = monProfil && monProfil.role === 'Repasseur';
   const isCaissier = !monProfil || monProfil.role !== 'Repasseur'; // gérant ou caissier
 
-  function deleteCommande(id, auteur){
+  function deleteCommande(id){
     const cmd = site.commandes.find(c=>c.id===id);
-    const { auteurNom = 'Gérant', auteurRole = 'Gérant', motif = '' } = auteur || {};
-    const entry = { id: uid('trash_'), type:'commande', label: cmd ? `Commande ${cmd.numero}` : 'Commande', data: cmd, dateSuppression: new Date().toISOString(), supprimePar: auteurNom, motif: motif || '' };
+    const entry = { id: uid('trash_'), type:'commande', label: cmd ? `Commande ${cmd.numero}` : 'Commande', data: cmd, dateSuppression: new Date().toISOString() };
     // Si c'est la toute dernière commande numérotée automatiquement par le système (aucune commande plus
     // récente n'a encore été créée depuis), on recule le compteur pour que ce même numéro soit réutilisé
     // par la prochaine commande au lieu d'être perdu — utile quand un employé se trompe et reprend tout
     // de suite : le client garde le même numéro de reçu que celui déjà annoncé/imprimé.
-    // v2026-10-23-6 : ce recul n'est plus autorisé que si la commande a été supprimée dans les 15 minutes
-    // suivant sa création (vraie erreur de saisie corrigée tout de suite). Au-delà, le client a pu partir
-    // avec son reçu : réutiliser son numéro créerait un doublon (cas KIPE-2610-0160).
     let nouveauSeq = site.seq;
     if(cmd && !cmd.numeroSaisiManuellement){
       const m = (cmd.numero||'').match(/-(\d{4})$/);
-      const ageMinutes = (Date.now() - new Date(cmd.dateCreation).getTime()) / 60000;
-      const creeeAujourdhui = (cmd.dateCreation||'').slice(0,10) === todayISO();
-      if(m && Number(m[1]) === site.seq - 1 && creeeAujourdhui && ageMinutes >= 0 && ageMinutes <= 15){
-        nouveauSeq = site.seq - 1;
-        entry.numeroLibere = true;
-        registreLocalSupprimer(site.id, cmd.numero, cmd.id);
-        registreEnLigneLiberer(site.id, cmd.numero, cmd.id);
-      }
+      if(m && Number(m[1]) === site.seq - 1) nouveauSeq = site.seq - 1;
     }
-    const cliSupp = cmd ? (site.clients||[]).find(x => x.id === cmd.clientId) : null;
-    const descriptionSupp = `a SUPPRIMÉ la commande ${cmd ? cmd.numero : '?'}${cliSupp ? ` (${cliSupp.nom})` : ''}${cmd ? ` — ${fmtGNF(calcCommandeTotal(cmd, site.services))}` : ''}${motif ? ` — raison : ${motif}` : ''} (récupérable dans la Corbeille)`;
-    updateSite({ ...site, commandes: site.commandes.filter(c=>c.id!==id), seq: nouveauSeq, corbeille: [entry, ...(site.corbeille||[])],
-      journalConfig: ajouterAuJournalConfig(site, { section: 'Commandes', description: descriptionSupp, auteurNom, auteurRole, type: 'suppression', cmdId: id, numero: cmd ? cmd.numero : '' }) });
+    updateSite({ ...site, commandes: site.commandes.filter(c=>c.id!==id), seq: nouveauSeq, corbeille: [entry, ...(site.corbeille||[])] });
   }
 
   // Compteurs et montants affichés dans le bandeau d'alerte en haut de page (visibles sans avoir à
@@ -7715,29 +7260,6 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
         ) : null}
       />
 
-      {!employeId && (() => {
-        const alertes = alertesCommandesNonVues(site);
-        if(alertes.length === 0) return null;
-        return (
-          <div className="card" style={{padding:'0.9rem 1.1rem', marginBottom:14, border:'1px solid var(--rust)', background:'var(--warn-light)'}}>
-            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, flexWrap:'wrap', marginBottom:8}}>
-              <strong style={{color:'var(--rust)', fontSize:13.5}}>🔔 {alertes.length} commande{alertes.length>1?'s':''} modifiée{alertes.length>1?'s':''} ou supprimée{alertes.length>1?'s':''} par un employé</strong>
-              <button className="btn btn-sm" onClick={()=>updateSite({ ...site, alertesCommandesVuesLe: new Date().toISOString() })}>✓ Marquer comme vu</button>
-            </div>
-            <div style={{display:'grid', gap:6}}>
-              {alertes.slice(0, 15).map(e => (
-                <div key={e.id} style={{fontSize:12.5, lineHeight:1.45, borderLeft:`3px solid ${e.type==='suppression'?'var(--danger)':'var(--pine)'}`, paddingLeft:9}}>
-                  <span className="tag" style={{fontSize:9.5, marginRight:6, background: e.type==='suppression'?'var(--danger-light)':'var(--pine-light)', color: e.type==='suppression'?'var(--danger)':'var(--pine)'}}>{e.type==='suppression'?'Supprimée':'Modifiée'}</span>
-                  <strong>{e.auteurNom}</strong> <span style={{color:'var(--steam)'}}>({e.auteurRole})</span> {e.description}
-                  <div style={{color:'var(--steam)', fontSize:11}}>{fmtDateTime(e.date)}</div>
-                </div>
-              ))}
-              {alertes.length > 15 && <div style={{fontSize:11.5, color:'var(--steam)'}}>… et {alertes.length-15} autre(s) — voir « Dernières modifications » en bas de page.</div>}
-            </div>
-          </div>
-        );
-      })()}
-
       {editable && (nbImpayees > 0 || nbAnciennesNonRecuperees > 0) && (
         <div style={{display:'flex', gap:10, flexWrap:'wrap', marginBottom:14}}>
           {nbImpayees > 0 && (
@@ -7838,8 +7360,8 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
                   <td style={{...td, textAlign:'right'}}>
                     <div style={{display:'flex', gap:6, justifyContent:'flex-end', flexWrap:'nowrap', whiteSpace:'nowrap'}}>
                       <button className="btn btn-ghost btn-sm" onClick={()=>setOpenTicket(cmd)}>Voir</button>
-                      {editable && (
-                        <button className="btn btn-ghost btn-sm" style={{color:'var(--pine)'}} title="Modifier (n° de reçu, RDV, notes)" onClick={()=>setEditCmd(cmd)}><Icon name="edit" size={13}/></button>
+                      {editable && cmd.statut === 'Reçu' && (
+                        <button className="btn btn-ghost btn-sm" style={{color:'var(--pine)'}} onClick={()=>setEditCmd(cmd)}><Icon name="edit" size={13}/></button>
                       )}
                       {editable && (
                         <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>setConfirmDeleteCmd(cmd)}><Icon name="trash" size={13}/></button>
@@ -7887,14 +7409,10 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
 
       {showNew && <NewCommandeModal site={site} updateSite={updateSite} employeId={employeId} onClose={()=>setShowNew(false)} />}
       {openTicket && <TicketModal cmd={openTicket} site={site} onClose={()=>setOpenTicket(null)} />}
-      {editCmd && <EditCommandeModal cmd={editCmd} site={site} updateSite={updateSite} employeId={employeId||null} db={db} onClose={()=>setEditCmd(null)} />}
-      {confirmDeleteCmd && <ConfirmerModification db={db} site={site} employeId={employeId||null} danger avecMotif
-        titre="Supprimer la commande"
-        message={`Supprimer la commande ${confirmDeleteCmd.numero} ? Elle part dans la Corbeille et le gérant est averti de la suppression.`}
-        actionLabel="Supprimer"
-        onConfirm={(auteur)=>{ deleteCommande(confirmDeleteCmd.id, auteur); setConfirmDeleteCmd(null); }}
+      {editCmd && <EditCommandeModal cmd={editCmd} site={site} updateSite={updateSite} onClose={()=>setEditCmd(null)} />}
+      {confirmDeleteCmd && <ConfirmDelete db={db} message={`Supprimer définitivement la commande ${confirmDeleteCmd.numero} ? Cette action est irréversible.`}
+        onConfirm={()=>{ deleteCommande(confirmDeleteCmd.id); setConfirmDeleteCmd(null); }}
         onCancel={()=>setConfirmDeleteCmd(null)} />}
-      {!employeId && <JournalModificationsCard site={site} sections={['Commandes']} />}
       {showNewClient && <NewClientModal site={site} updateSite={updateSite} onClose={()=>setShowNewClient(false)} />}
       {showEncaisserSansCommande && <EncaisserSansCommandeModal site={site} updateSite={updateSite} employeId={employeId} onClose={()=>setShowEncaisserSansCommande(false)} />}
       {encaisserCmd && <EncaisserModal cmd={encaisserCmd} site={site} onClose={()=>setEncaisserCmd(null)} onSave={(montant, mode)=>enregistrerPaiement(encaisserCmd, montant, mode)} />}
@@ -7960,7 +7478,6 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
   const [lignes, setLignes] = useState([]);
   const [dateDepot, setDateDepot] = useState(todayISO());
   const [numeroManuel, setNumeroManuel] = useState('');
-  const [afficherNumeroManuel, setAfficherNumeroManuel] = useState(false);
   const [dateRetrait, setDateRetrait] = useState('');
   const [notes, setNotes] = useState('');
   const [dateRdv, setDateRdv] = useState('');
@@ -8034,23 +7551,9 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
     // (en évitant tout doublon — voir numeroCommandeLibre) au lieu du numéro auto-généré, et on ne consomme
     // pas la séquence auto (site.seq) puisqu'elle ne sert que pour les numéros générés par l'app.
     const numeroSaisi = (numeroManuel||'').trim();
-    const cmdIdNouveau = uid('cmd_');
-    const clientPourRegistre = workingClients.find(c=>c.id===finalClientId);
-    const infosRegistre = { cmdId: cmdIdNouveau, date: dateCreationFinale, client: clientPourRegistre ? clientPourRegistre.nom : '', tel: clientPourRegistre ? (clientPourRegistre.tel||'') : '', total, emisLe: new Date().toISOString(), employeId: employeId || null };
-    // Numéro automatique : on ne se fie plus au seul compteur site.seq (qui peut reculer après une perte de
-    // données) — voir attribuerNumeroAutomatique : saute tout numéro déjà vu et le réserve dans le registre.
-    let numeroFinal, seqUtilisee = seq;
-    if(numeroSaisi){
-      numeroFinal = numeroCommandeLibre(commandesConnuesDuSite(site), numeroSaisi);
-      registreLocalEcrire(site.id, numeroFinal, { ...infosRegistre, manuel:true });
-      registreEnLigneReserver(site.id, numeroFinal, { ...infosRegistre, manuel:true });
-    } else {
-      const attrib = await attribuerNumeroAutomatique(site, infosRegistre);
-      numeroFinal = attrib.numero;
-      seqUtilisee = attrib.seq;
-    }
+    const numeroFinal = numeroSaisi ? numeroCommandeLibre(site.commandes, numeroSaisi) : ticketNumber(site.code, seq);
     const cmd = {
-      id: cmdIdNouveau,
+      id: uid('cmd_'),
       numero: numeroFinal,
       numeroSaisiManuellement: !!numeroSaisi,
       clientId: finalClientId,
@@ -8089,8 +7592,6 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
       const url = await Promise.race([uploadReceiptPDF(site.id, cmd, pdfBlob), timeout]);
       msgDepose += `\n\n📄 Reçu PDF : ${url}`;
       cmd.receiptPdfUrl = url;
-      registreLocalEcrire(site.id, cmd.numero, { pdf: url });
-      registreEnLigneCompleter(site.id, cmd.numero, { pdf: url });
     } catch(e) {
       console.error('Erreur génération/envoi du reçu PDF', e);
     }
@@ -8099,7 +7600,7 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
 
     updateSite({
       ...site,
-      seq: numeroSaisi ? seq : Math.max(seq, seqUtilisee + 1),
+      seq: numeroSaisi ? seq : seq+1,
       clients: workingClients,
       commandes: [cmd, ...site.commandes],
       notifications: [notif, ...site.notifications].slice(0,300),
@@ -8156,17 +7657,10 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
 
         <div>
           <label>Date de dépôt</label>
-          <input type="date" value={dateDepot} onChange={e=>{ setDateDepot(e.target.value); if(e.target.value === todayISO() && !afficherNumeroManuel) setNumeroManuel(''); }} max={todayISO()} style={{maxWidth:200}} />
-          {dateDepot === todayISO() && !afficherNumeroManuel && (
-            <button type="button" className="btn btn-sm" style={{marginTop:6, marginLeft:8}} onClick={()=>setAfficherNumeroManuel(true)}>
-              🔁 Ressaisir un reçu déjà remis (garder son numéro)
-            </button>
-          )}
-          {(dateDepot !== todayISO() || afficherNumeroManuel) && (
+          <input type="date" value={dateDepot} onChange={e=>{ setDateDepot(e.target.value); if(e.target.value === todayISO()) setNumeroManuel(''); }} max={todayISO()} style={{maxWidth:200}} />
+          {dateDepot !== todayISO() && (
             <>
-              {dateDepot !== todayISO()
-                ? <p style={{fontSize:11.5, color:'var(--warn)', margin:'4px 0 0'}}>⚠️ Date antérieure à aujourd'hui — utile pour rattraper une commande papier prise avant le lancement de l'app.</p>
-                : <p style={{fontSize:11.5, color:'var(--warn)', margin:'4px 0 0'}}>⚠️ Ressaisie d'une commande déjà facturée aujourd'hui (ex. commande disparue) : saisissez le numéro inscrit sur le reçu du client.</p>}
+              <p style={{fontSize:11.5, color:'var(--warn)', margin:'4px 0 0'}}>⚠️ Date antérieure à aujourd'hui — utile pour rattraper une commande papier prise avant le lancement de l'app.</p>
               <div style={{marginTop:10}}>
                 <label>Numéro de reçu déjà remis au client (optionnel)</label>
                 <input type="text" value={numeroManuel} onChange={e=>setNumeroManuel(e.target.value.toUpperCase())} placeholder="Ex : KIPE-2609-0042" style={{maxWidth:280}} />
@@ -8488,7 +7982,7 @@ function ConfirmDelete({ message, onConfirm, onCancel, db, title='Confirmer la s
    Utilisé pour valider un ajout/modification/suppression fait par le gérant OU par un employé (employeId=null → gérant).
    Chaque confirmation réussie ajoute une entrée dans site.journalConfig (qui, quoi, section, date/heure) visible au gérant. */
 
-function ajouterAuJournalConfig(site, { section, description, auteurNom, auteurRole, ...extra }){
+function ajouterAuJournalConfig(site, { section, description, auteurNom, auteurRole }){
   const entree = {
     id: uid('jrn_'),
     date: new Date().toISOString(),
@@ -8496,57 +7990,8 @@ function ajouterAuJournalConfig(site, { section, description, auteurNom, auteurR
     description,
     auteurNom,
     auteurRole,
-    ...extra, // ex. type: 'modification' | 'suppression', cmdId, numero (journal des commandes)
   };
   return [entree, ...(site.journalConfig||[])].slice(0, 300);
-}
-
-// Modifications / suppressions de commandes faites par un EMPLOYÉ (avec son propre mot de passe) et que le
-// gérant n'a pas encore vues (site.alertesCommandesVuesLe = date du dernier « Marquer comme vu »).
-function alertesCommandesNonVues(site){
-  const vuLe = site.alertesCommandesVuesLe || '';
-  return (site.journalConfig||[]).filter(e => e && e.section === 'Commandes' && e.auteurRole !== 'Gérant' && (e.date||'') > vuLe);
-}
-
-// Correction du numéro de reçu d'une commande (employé ou gérant) — même logique que l'outil du gérant
-// « Numéros de reçu » : refuse un numéro déjà utilisé (commande actuelle, corbeille, registre local ou en
-// ligne), réserve le nouveau numéro dans le registre, régénère le reçu PDF et libère l'ancien numéro.
-// Renvoie { ok:false, message } ou { ok:true, cmdMaj, ancien, nouveau, client, total }.
-async function corrigerNumeroCommande(site, cmd, nouveauNumeroSaisi){
-  const nouveau = String(nouveauNumeroSaisi||'').trim().toUpperCase();
-  if(!nouveau) return { ok:false, message:'Entrez le bon numéro de reçu.' };
-  if(/[.#$\[\]\/]/.test(nouveau)) return { ok:false, message:'Le numéro ne doit pas contenir . # $ [ ] /' };
-  if(nouveau === cmd.numero) return { ok:false, message:'C\'est déjà le numéro de cette commande.' };
-  const lu = await registreEnLigneLire(site.id);
-  const registre = lu.ok ? lu.entrees : {};
-  const utilises = numerosDejaUtilises(site, registre);
-  // Le numéro n'est acceptable que si TOUT ce qui le porte (commandes, corbeille, registres) est cette commande-ci.
-  const proprietaires = [
-    ...commandesConnuesDuSite(site).filter(c => c && c.numero === nouveau).map(c => c.id),
-    ...Object.values(registreLocalLire(site.id)).filter(e => e && e.numero === nouveau).map(e => e.cmdId),
-    ...Object.values(registre).filter(e => e && e.numero === nouveau).map(e => e.cmdId),
-  ];
-  const estASoi = proprietaires.every(id => id === cmd.id);
-  if(utilises.has(nouveau) && !estASoi) return { ok:false, message:`Le numéro ${nouveau} est déjà utilisé (autre commande, corbeille ou reçu déjà émis). Vérifiez le reçu et choisissez le bon numéro.` };
-  const cli = (site.clients||[]).find(x => x.id === cmd.clientId);
-  const total = calcCommandeTotal(cmd, site.services);
-  const infos = { cmdId: cmd.id, date: cmd.dateCreation || '', client: cli ? cli.nom : '', tel: cli ? (cli.tel||'') : '', total, emisLe: new Date().toISOString(), renumerote: true, ancienNumero: cmd.numero, manuel: true };
-  const res = await registreEnLigneReserver(site.id, nouveau, infos);
-  if(res === 'pris') return { ok:false, message:`Le numéro ${nouveau} vient d'être pris sur un autre appareil.` };
-  registreLocalEcrire(site.id, nouveau, infos);
-  const ancien = cmd.numero;
-  let cmdMaj = { ...cmd, numero: nouveau, numeroSaisiManuellement: true, numeroAvantCorrection: ancien, numeroCorrigeLe: new Date().toISOString() };
-  try{
-    const acompte = Number(cmd.acompte) || 0;
-    const blob = generateReceiptPDFBlob(cmdMaj, site, cli, total, acompte, total - acompte);
-    const url = await avecDelai(uploadReceiptPDF(site.id, cmdMaj, blob), 8000);
-    cmdMaj = { ...cmdMaj, receiptPdfUrl: url };
-    registreLocalEcrire(site.id, nouveau, { pdf: url });
-    registreEnLigneCompleter(site.id, nouveau, { pdf: url });
-  }catch(e){ console.error('Régénération du reçu PDF impossible', e); }
-  const autreGardeAncien = (site.commandes||[]).some(c => c.id !== cmd.id && c.numero === ancien);
-  if(!autreGardeAncien){ registreLocalSupprimer(site.id, ancien, cmd.id); registreEnLigneLiberer(site.id, ancien, cmd.id); }
-  return { ok:true, cmdMaj, ancien, nouveau, client: cli, total };
 }
 
 /* ===================== HISTORIQUE DES CONNEXIONS (visible par le gérant) =====================
@@ -8672,25 +8117,20 @@ function HistoriqueConnexionsView({ db }){
   );
 }
 
-function ConfirmerModification({ db, site, employeId, message, actionLabel='Confirmer', danger=false, onConfirm, onCancel, avecMotif=false, titre }){
+function ConfirmerModification({ db, site, employeId, message, actionLabel='Confirmer', danger=false, onConfirm, onCancel }){
   const [pass, setPass] = useState('');
   const [error, setError] = useState('');
-  const [motif, setMotif] = useState('');
   const isGerant = employeId == null;
   const monProfil = !isGerant ? (site.employes||[]).find(e => e.id === employeId) : null;
 
   function handleConfirm(){
     if(isGerant){
       if(pass !== getPassGerant(db)){ setError('Mot de passe incorrect.'); setPass(''); return; }
-      onConfirm({ auteurNom: 'Gérant', auteurRole: 'Gérant', motif: motif.trim() });
+      onConfirm({ auteurNom: 'Gérant', auteurRole: 'Gérant' });
       return;
     }
-    if(avecMotif && !motif.trim()){ setError('Indiquez la raison du changement.'); return; }
-    if(!monProfil || pass !== monProfil.motdepasse){
-      setError(pass && pass === getPassGerant(db) ? 'Entrez VOTRE propre mot de passe, pas celui du gérant.' : 'Mot de passe incorrect.');
-      setPass(''); return;
-    }
-    onConfirm({ auteurNom: monProfil.nom, auteurRole: monProfil.role, motif: motif.trim() });
+    if(!monProfil || pass !== monProfil.motdepasse){ setError('Mot de passe incorrect.'); setPass(''); return; }
+    onConfirm({ auteurNom: monProfil.nom, auteurRole: monProfil.role });
   }
 
   return (
@@ -8701,17 +8141,11 @@ function ConfirmerModification({ db, site, employeId, message, actionLabel='Conf
       <div className="card" style={{width:400, maxWidth:'92vw', padding:'1.5rem'}}>
         <div style={{display:'flex', alignItems:'center', gap:10, marginBottom:14, color: danger?'var(--danger)':'var(--pine)'}}>
           <Icon name={danger?'alert':'check'} size={22} />
-          <h2 style={{margin:0, fontSize:18, color: danger?'var(--danger)':'var(--pine)'}}>{titre || 'Confirmer le changement'}</h2>
+          <h2 style={{margin:0, fontSize:18, color: danger?'var(--danger)':'var(--pine)'}}>Confirmer le changement</h2>
         </div>
         <p style={{fontSize:14, color:'var(--ink)', marginBottom:16, lineHeight:1.5}}>{message}</p>
-        {avecMotif && (
-          <div style={{marginBottom:12}}>
-            <label>Raison {isGerant ? '(facultatif)' : ''}</label>
-            <input type="text" value={motif} onChange={e=>{ setMotif(e.target.value); setError(''); }} placeholder="Ex : erreur de saisie, commande en double…" />
-          </div>
-        )}
         <div style={{marginBottom:14}}>
-          <label>{isGerant ? 'Mot de passe gérant pour confirmer' : `Votre propre mot de passe${monProfil ? ` (${monProfil.nom})` : ''} — pas celui du gérant`}</label>
+          <label>{isGerant ? 'Mot de passe gérant pour confirmer' : 'Votre mot de passe pour confirmer'}</label>
           <input
             type="password"
             placeholder="Entrez votre mot de passe…"
@@ -8773,128 +8207,46 @@ function ModalShell({ title, children, onClose, width=520 }){
   );
 }
 
-// Modification d'une commande par un employé OU le gérant : numéro de reçu (correction d'erreur), RDV et notes.
-// Chaque modification est confirmée par le mot de passe PERSONNEL de celui qui la fait (employé : le sien,
-// pas celui du gérant) et inscrite au journal (site.journalConfig, section « Commandes ») — le gérant voit
-// une alerte dans ses Commandes tant qu'il ne l'a pas marquée comme vue.
-function EditCommandeModal({ cmd, site, updateSite, onClose, employeId=null, db }){
-  const [numero, setNumero] = useState(cmd.numero || '');
+function EditCommandeModal({ cmd, site, updateSite, onClose }){
   const [notes, setNotes] = useState(cmd.notes || '');
   const [dateRetrait, setDateRetrait] = useState(cmd.dateRetraitPrevue || '');
   const [dateRdv, setDateRdv] = useState(cmd.dateRdvRecuperation || '');
   const [heureRdv, setHeureRdv] = useState(cmd.heureRdvRecuperation || '');
-  const [demandeConfirmation, setDemandeConfirmation] = useState(false);
-  const [enCours, setEnCours] = useState(false);
-  const [erreur, setErreur] = useState('');
-  const [aRenvoyer, setARenvoyer] = useState(null); // { tel, texte, numero }
 
-  const numeroNettoye = numero.trim().toUpperCase();
-  const numeroChange = !!numeroNettoye && numeroNettoye !== cmd.numero;
-
-  function listeChangements(){
-    const ch = [];
-    const d = v => v ? fmtDate(v) : '—';
-    if(numeroChange) ch.push(`n° de reçu ${cmd.numero} → ${numeroNettoye}`);
-    if(notes.trim() !== (cmd.notes||'').trim()) ch.push(`notes « ${(cmd.notes||'').trim()||'—'} » → « ${notes.trim()||'—'} »`);
-    if((dateRetrait||'') !== (cmd.dateRetraitPrevue||'')) ch.push(`RDV de récupération ${d(cmd.dateRetraitPrevue)} → ${d(dateRetrait)}`);
-    if((dateRdv||'') !== (cmd.dateRdvRecuperation||'') || (heureRdv||'') !== (cmd.heureRdvRecuperation||'')) ch.push(`rendez-vous ${d(cmd.dateRdvRecuperation)}${cmd.heureRdvRecuperation?' '+cmd.heureRdvRecuperation:''} → ${d(dateRdv)}${heureRdv?' '+heureRdv:''}`);
-    return ch;
-  }
-
-  function demanderEnregistrement(){
-    setErreur('');
-    if(!numeroNettoye){ setErreur('Le numéro de reçu ne peut pas être vide.'); return; }
-    if(listeChangements().length === 0){ onClose(); return; }
-    setDemandeConfirmation(true);
-  }
-
-  async function enregistrer({ auteurNom, auteurRole, motif }){
-    setDemandeConfirmation(false); setEnCours(true); setErreur('');
-    try{
-      const changements = listeChangements();
-      let cmdMaj = { ...cmd };
-      let client = (site.clients||[]).find(x => x.id === cmd.clientId);
-      let total = calcCommandeTotal(cmd, site.services);
-      if(numeroChange){
-        const res = await corrigerNumeroCommande(site, cmd, numeroNettoye);
-        if(!res.ok){ setErreur(res.message); return; }
-        cmdMaj = res.cmdMaj; client = res.client; total = res.total;
-      }
-      cmdMaj = {
-        ...cmdMaj, notes: notes.trim(),
+  function save(){
+    updateSite({
+      ...site,
+      commandes: site.commandes.map(c => c.id===cmd.id ? {
+        ...c, notes: notes.trim(),
         dateRetraitPrevue: dateRetrait || null,
         dateRdvRecuperation: dateRdv || null,
         heureRdvRecuperation: heureRdv || null,
-        modifieeLe: new Date().toISOString(),
-        modifieePar: auteurNom,
-      };
-      const description = `a MODIFIÉ la commande ${cmd.numero}${client ? ` (${client.nom})` : ''} : ${changements.join(' ; ')}${motif ? ` — raison : ${motif}` : ''}`;
-      updateSite({
-        ...site,
-        commandes: site.commandes.map(c => c.id===cmd.id ? cmdMaj : c),
-        journalConfig: ajouterAuJournalConfig(site, { section: 'Commandes', description, auteurNom, auteurRole, type: 'modification', cmdId: cmd.id, numero: cmdMaj.numero }),
-      });
-      if(numeroChange && client && client.tel){
-        const solde = total - (Number(cmd.acompte)||0);
-        setARenvoyer({ numero: cmdMaj.numero, tel: client.tel.replace(/\D/g,''), texte: `Bonjour ${client.nom}, correction de votre reçu ${site.nom} : votre numéro de commande est désormais ${cmdMaj.numero} (au lieu de ${cmd.numero}).\nTotal : ${fmtGNF(total)}${solde > 0 ? `\nSolde restant : ${fmtGNF(solde)}` : ' (Payé)'}${cmdMaj.receiptPdfUrl ? `\n\n📄 Nouveau reçu PDF : ${cmdMaj.receiptPdfUrl}` : ''}\nMerci et désolé pour la gêne.` });
-      } else onClose();
-    } finally { setEnCours(false); }
-  }
-
-  if(aRenvoyer){
-    return (
-      <ModalShell title="Numéro de reçu corrigé" onClose={onClose} width={440}>
-        <p style={{fontSize:14, lineHeight:1.5, marginTop:0}}>✅ La commande porte maintenant le numéro <b className="mono">{aRenvoyer.numero}</b>. Le gérant a été averti de la correction.</p>
-        <p style={{fontSize:13, color:'var(--steam)', lineHeight:1.5}}>Envoyez le reçu corrigé au client pour qu'il ait le bon numéro.</p>
-        <div style={{display:'flex', gap:10, justifyContent:'flex-end', flexWrap:'wrap'}}>
-          <button className="btn" onClick={onClose}>Fermer</button>
-          <a className="btn btn-rust" href={`https://wa.me/${aRenvoyer.tel}?text=${encodeURIComponent(aRenvoyer.texte)}`} target="_blank" rel="noopener noreferrer" onClick={()=>setTimeout(onClose, 300)}>📱 Envoyer le reçu {aRenvoyer.numero} par WhatsApp</a>
-        </div>
-      </ModalShell>
-    );
+      } : c)
+    });
+    onClose();
   }
 
   return (
-    <ModalShell title={`Modifier commande ${cmd.numero}`} onClose={onClose} width={460}>
+    <ModalShell title={`Modifier commande ${cmd.numero}`} onClose={onClose} width={440}>
       <div style={{display:'grid', gap:14}}>
-        <div>
-          <label>Numéro de reçu</label>
-          <input type="text" className="mono" value={numero} onChange={e=>{ setNumero(e.target.value.toUpperCase()); setErreur(''); }} placeholder="Ex : KIPE-2610-0160" />
-          <p style={{fontSize:11.5, color: numeroChange ? 'var(--rust)' : 'var(--steam)', margin:'4px 0 0', lineHeight:1.4}}>
-            {numeroChange
-              ? `⚠️ Le numéro passera de ${cmd.numero} à ${numeroNettoye}. Un nouveau reçu PDF sera créé — pensez à l'envoyer au client.`
-              : 'À corriger seulement si le numéro est faux (ex. il ne correspond pas au reçu remis au client).'}
-          </p>
-        </div>
         <div><label>RDV de récupération</label>
-          <input type="date" value={dateRetrait} onChange={e=>setDateRetrait(e.target.value)} />
+          <input type="date" value={dateRetrait} onChange={e=>setDateRetrait(e.target.value)} min={todayISO()} />
         </div>
         <div>
           <label>Rendez-vous de récupération</label>
           <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:10}}>
-            <input type="date" value={dateRdv} onChange={e=>setDateRdv(e.target.value)} />
+            <input type="date" value={dateRdv} onChange={e=>setDateRdv(e.target.value)} min={todayISO()} />
             <input type="time" value={heureRdv} onChange={e=>setHeureRdv(e.target.value)} />
           </div>
         </div>
         <div><label>Notes</label>
           <input type="text" value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Tache, bouton manquant…" />
         </div>
-        {erreur && <p style={{color:'var(--danger)', fontSize:13, margin:0}}>❌ {erreur}</p>}
-        <p style={{fontSize:11.5, color:'var(--steam)', margin:0, lineHeight:1.4}}>
-          🔒 {employeId ? 'Vous confirmerez avec VOTRE propre mot de passe (pas celui du gérant). ' : ''}La modification est enregistrée à votre nom et le gérant en est averti.
-        </p>
         <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
-          <button className="btn" onClick={onClose} disabled={enCours}>Annuler</button>
-          <button className="btn btn-rust" onClick={demanderEnregistrement} disabled={enCours}>{enCours ? 'Enregistrement…' : 'Enregistrer'}</button>
+          <button className="btn" onClick={onClose}>Annuler</button>
+          <button className="btn btn-rust" onClick={save}>Enregistrer</button>
         </div>
       </div>
-      {demandeConfirmation && (
-        <ConfirmerModification db={db} site={site} employeId={employeId} avecMotif={numeroChange}
-          message={<>Modifier la commande <b>{cmd.numero}</b> : {listeChangements().join(' ; ')}</>}
-          actionLabel="Confirmer la modification"
-          onConfirm={enregistrer}
-          onCancel={()=>setDemandeConfirmation(false)} />
-      )}
     </ModalShell>
   );
 }
@@ -11812,273 +11164,6 @@ function SelectionManuellePanel({ items, getId, renderLabel, selection, setSelec
   );
 }
 
-/* ===================== Paramètres → Numéros de reçu (v2026-10-23-6) =====================
-   Outil gérant : voir le prochain numéro, ajuster le compteur, repérer et corriger les numéros en double,
-   modifier le numéro d'une commande, retrouver les reçus émis dont la commande a disparu. */
-function NumerosRecusCard({ site, updateSite }){
-  const [ouvert, setOuvert] = useState(false);
-  const [registre, setRegistre] = useState({});
-  const [registreOk, setRegistreOk] = useState(null); // null = en cours, true/false
-  const [message, setMessage] = useState('');
-  const [enCours, setEnCours] = useState(false);
-  const [compteurSaisi, setCompteurSaisi] = useState('');
-  const [edition, setEdition] = useState(null); // { cmdId, valeur }
-  const [recherche, setRecherche] = useState('');
-  const [aRenvoyer, setARenvoyer] = useState(null); // { tel, texte, numero }
-  const [orphelins, setOrphelins] = useState(null); // null | 'chargement' | { ok, liste } 
-
-  async function chargerRegistre(){
-    setRegistreOk(null);
-    const lu = await registreEnLigneLire(site.id);
-    if(!lu.ok){ setRegistreOk(false); setRegistre({}); return; }
-    // Inscrit au registre en ligne tous les numéros actuels qui n'y sont pas encore (protège aussi les numéros
-    // émis avant cette version, ou par un appareil qui n'a jamais réservé en ligne).
-    const manquants = {};
-    commandesConnuesDuSite(site).forEach(c => {
-      if(!c || !c.numero) return;
-      const k = cleRegistreNumero(c.numero);
-      if(!lu.entrees[k] && !manquants[k]){
-        const cli = (site.clients||[]).find(x => x.id === c.clientId);
-        manquants[k] = { numero: c.numero, cmdId: c.id, date: c.dateCreation || '', client: cli ? cli.nom : '', tel: cli ? (cli.tel||'') : '', total: calcCommandeTotal(c, site.services), manuel: !!c.numeroSaisiManuellement, pdf: c.receiptPdfUrl || '', inscritRattrapage: true };
-      }
-    });
-    Object.values(registreLocalLire(site.id)).forEach(e => {
-      if(!e || !e.numero) return;
-      const k = cleRegistreNumero(e.numero);
-      if(!lu.entrees[k] && !manquants[k]) manquants[k] = { ...e };
-    });
-    let entrees = lu.entrees;
-    if(Object.keys(manquants).length){
-      try{
-        await avecDelai(firebaseDB.ref(`${REGISTRE_NUMEROS_KEY}/${site.id}`).update(manquants), 6000);
-        entrees = { ...manquants, ...lu.entrees };
-      }catch(e){ /* l'écriture a échoué : on garde la lecture */ }
-    }
-    setRegistre(entrees);
-    setRegistreOk(true);
-  }
-
-  useEffect(() => { if(ouvert) chargerRegistre(); }, [ouvert, site.id]);
-
-  const prochain = useMemo(() => prochainNumeroLibre(site, registre), [site, registre]);
-  const plusGrande = useMemo(() => plusGrandeSequenceVue(site, registre), [site, registre]);
-
-  const doublons = useMemo(() => {
-    const groupes = {};
-    (site.commandes||[]).forEach(c => { if(c.numero){ (groupes[c.numero] = groupes[c.numero] || []).push(c); } });
-    return Object.entries(groupes).filter(([, l]) => l.length > 1).map(([numero, liste]) => ({ numero, liste: [...liste].sort((a,b) => (a.dateCreation||'').localeCompare(b.dateCreation||'')) }));
-  }, [site.commandes]);
-
-  const introuvables = useMemo(() => {
-    const idsConnus = new Set();
-    (site.commandes||[]).forEach(c => idsConnus.add(c.id));
-    (site.corbeille||[]).forEach(e => {
-      if(e && e.type === 'commande' && e.data) idsConnus.add(e.data.id);
-      if(e && e.type === 'commandes_reset' && Array.isArray(e.data)) e.data.forEach(c => c && idsConnus.add(c.id));
-    });
-    const numerosActuels = new Set((site.commandes||[]).map(c => c.numero));
-    const tous = { ...registreLocalLire(site.id), ...registre };
-    return Object.values(tous)
-      .filter(e => e && e.cmdId && !idsConnus.has(e.cmdId))
-      .map(e => ({ ...e, numeroReprisParAutre: numerosActuels.has(e.numero) }))
-      .sort((a,b) => (b.date||'').localeCompare(a.date||''));
-  }, [site.commandes, site.corbeille, registre]);
-
-  const resultatsRecherche = useMemo(() => {
-    const q = recherche.trim().toLowerCase();
-    if(q.length < 2) return [];
-    return (site.commandes||[]).filter(c => {
-      const cli = (site.clients||[]).find(x => x.id === c.clientId);
-      return (c.numero||'').toLowerCase().includes(q) || (cli && (cli.nom||'').toLowerCase().includes(q));
-    }).slice(0, 15);
-  }, [recherche, site.commandes, site.clients]);
-
-  function nomClient(c){ const cli = (site.clients||[]).find(x => x.id === c.clientId); return cli ? cli.nom : '—'; }
-
-  async function renumeroter(cmd, nouveauNumeroSaisi){
-    setMessage(''); setEnCours(true);
-    try{
-      const cli = (site.clients||[]).find(x => x.id === cmd.clientId);
-      const total = calcCommandeTotal(cmd, site.services);
-      const infos = { cmdId: cmd.id, date: cmd.dateCreation || '', client: cli ? cli.nom : '', tel: cli ? (cli.tel||'') : '', total, emisLe: new Date().toISOString(), renumerote: true, ancienNumero: cmd.numero };
-      let nouveau, seqNouvelle = null;
-      if(nouveauNumeroSaisi){
-        nouveau = nouveauNumeroSaisi.trim().toUpperCase();
-        if(!nouveau){ setEnCours(false); return; }
-        const utilises = numerosDejaUtilises(site, registre);
-        const estASoi = (site.commandes||[]).filter(c => c.numero === nouveau).every(c => c.id === cmd.id) && (!registre[cleRegistreNumero(nouveau)] || registre[cleRegistreNumero(nouveau)].cmdId === cmd.id);
-        if(utilises.has(nouveau) && !estASoi){ setMessage(`❌ Le numéro ${nouveau} est déjà utilisé (commande actuelle, corbeille ou reçu déjà émis). Choisissez-en un autre.`); setEnCours(false); return; }
-        const res = await registreEnLigneReserver(site.id, nouveau, { ...infos, manuel:true });
-        if(res === 'pris'){ setMessage(`❌ Le numéro ${nouveau} vient d'être pris sur un autre appareil.`); setEnCours(false); return; }
-        registreLocalEcrire(site.id, nouveau, { ...infos, manuel:true });
-      } else {
-        const attrib = await attribuerNumeroAutomatique(site, infos);
-        nouveau = attrib.numero; seqNouvelle = attrib.seq;
-      }
-      const ancien = cmd.numero;
-      let cmdMaj = { ...cmd, numero: nouveau, numeroSaisiManuellement: !!nouveauNumeroSaisi, numeroAvantCorrection: ancien, numeroCorrigeLe: new Date().toISOString() };
-      // Nouveau reçu PDF avec le bon numéro (si possible)
-      try{
-        const acompte = Number(cmd.acompte) || 0;
-        const blob = generateReceiptPDFBlob(cmdMaj, site, cli, total, acompte, total - acompte);
-        const url = await avecDelai(uploadReceiptPDF(site.id, cmdMaj, blob), 8000);
-        cmdMaj = { ...cmdMaj, receiptPdfUrl: url };
-        registreLocalEcrire(site.id, nouveau, { pdf: url });
-        registreEnLigneCompleter(site.id, nouveau, { pdf: url });
-      }catch(e){ console.error('Régénération du reçu PDF impossible', e); }
-      // L'ancien numéro reste réservé à l'AUTRE commande qui le porte (on ne libère que s'il était à celle-ci
-      // ET qu'aucune autre commande ne le porte encore).
-      const autreGardeAncien = (site.commandes||[]).some(c => c.id !== cmd.id && c.numero === ancien);
-      if(!autreGardeAncien){ registreLocalSupprimer(site.id, ancien, cmd.id); registreEnLigneLiberer(site.id, ancien, cmd.id); }
-      updateSite({
-        ...site,
-        seq: seqNouvelle != null ? Math.max(Number(site.seq)||1, seqNouvelle + 1) : site.seq,
-        commandes: (site.commandes||[]).map(c => c.id === cmd.id ? cmdMaj : c),
-      });
-      setEdition(null);
-      setMessage(`✅ ${ancien} → ${nouveau} pour ${cli ? cli.nom : 'le client'}. Pensez à envoyer le nouveau reçu au client.`);
-      if(cli && cli.tel){
-        const solde = total - (Number(cmd.acompte)||0);
-        setARenvoyer({ numero: nouveau, tel: cli.tel.replace(/\D/g,''), texte: `Bonjour ${cli.nom}, correction de votre reçu ${site.nom} : votre numéro de commande est désormais ${nouveau} (au lieu de ${ancien}).\nTotal : ${fmtGNF(total)}${solde > 0 ? `\nSolde restant : ${fmtGNF(solde)}` : ' (Payé)'}${cmdMaj.receiptPdfUrl ? `\n\n📄 Nouveau reçu PDF : ${cmdMaj.receiptPdfUrl}` : ''}\nMerci et désolé pour la gêne.` });
-      } else setARenvoyer(null);
-      chargerRegistre();
-    } finally { setEnCours(false); }
-  }
-
-  function appliquerCompteur(){
-    const n = parseInt(compteurSaisi, 10);
-    if(!n || n < 1){ setMessage('❌ Entrez un nombre valide (ex : 161).'); return; }
-    updateSite({ ...site, seq: n });
-    setCompteurSaisi('');
-    setMessage(n <= plusGrande
-      ? `ℹ️ Compteur réglé à ${n}, mais ${ticketNumber(site.code, plusGrande)} a déjà été émis : l'app sautera automatiquement les numéros déjà utilisés.`
-      : `✅ Le prochain numéro sera ${ticketNumber(site.code, n)} (sauf s'il est déjà pris).`);
-  }
-
-  async function chercherPdfOrphelins(){
-    setOrphelins('chargement');
-    try{
-      const idsConnus = new Set((site.commandes||[]).map(c => c.id));
-      (site.corbeille||[]).forEach(e => {
-        if(e && e.type === 'commande' && e.data) idsConnus.add(e.data.id);
-        if(e && e.type === 'commandes_reset' && Array.isArray(e.data)) e.data.forEach(c => c && idsConnus.add(c.id));
-      });
-      const res = await avecDelai(firebaseStorage.ref().child(`receipts/${site.id}`).listAll(), 15000);
-      const items = res.items.filter(it => !idsConnus.has(it.name.replace(/\.pdf$/i,'')));
-      const liste = [];
-      for(const it of items.slice(0, 60)){
-        try{
-          const [url, meta] = await Promise.all([it.getDownloadURL(), it.getMetadata()]);
-          liste.push({ nom: it.name, url, date: meta.timeCreated || '' });
-        }catch(e){}
-      }
-      liste.sort((a,b) => (b.date||'').localeCompare(a.date||''));
-      setOrphelins({ ok:true, liste, total: items.length });
-    }catch(e){
-      console.error('Liste des PDF impossible', e);
-      setOrphelins({ ok:false, liste:[] });
-    }
-  }
-
-  const ligneCmd = (c, avecBoutons) => (
-    <div key={c.id} style={{display:'flex', flexWrap:'wrap', gap:8, alignItems:'center', justifyContent:'space-between', padding:'8px 0', borderTop:'1px solid var(--line)'}}>
-      <div style={{fontSize:13, lineHeight:1.5}}>
-        <span className="mono" style={{fontWeight:700}}>{c.numero}</span> — {nomClient(c)}<br/>
-        <span style={{color:'var(--steam)', fontSize:12}}>{fmtDate((c.dateCreation||'').slice(0,10))} {(c.dateCreation||'').slice(11,16)} · {fmtGNF(calcCommandeTotal(c, site.services))} · {c.statut}{c.numeroAvantCorrection ? ` · ancien n° ${c.numeroAvantCorrection}` : ''}</span>
-      </div>
-      {avecBoutons && (edition && edition.cmdId === c.id ? (
-        <div style={{display:'flex', gap:6, flexWrap:'wrap'}}>
-          <input type="text" value={edition.valeur} onChange={e=>setEdition({ cmdId:c.id, valeur:e.target.value.toUpperCase() })} style={{maxWidth:190}} />
-          <button className="btn btn-sm btn-rust" disabled={enCours} onClick={()=>renumeroter(c, edition.valeur)}>Enregistrer</button>
-          <button className="btn btn-sm" onClick={()=>setEdition(null)}>Annuler</button>
-        </div>
-      ) : (
-        <div style={{display:'flex', gap:6, flexWrap:'wrap'}}>
-          <button className="btn btn-sm" disabled={enCours} onClick={()=>renumeroter(c, null)}>🔢 Nouveau numéro auto</button>
-          <button className="btn btn-sm btn-ghost" disabled={enCours} onClick={()=>setEdition({ cmdId:c.id, valeur:c.numero })}>✏️ Modifier</button>
-        </div>
-      ))}
-    </div>
-  );
-
-  return (
-    <div className="card" style={{padding:'1.5rem', marginTop:18, borderColor: doublons.length ? 'var(--danger)' : undefined}}>
-      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10}}>
-        <h3 style={{margin:0, fontSize:15, display:'flex', alignItems:'center', gap:8}}>
-          🔢 Numéros de reçu {doublons.length > 0 && <span style={{fontSize:12, background:'var(--danger)', color:'var(--white)', padding:'2px 8px', borderRadius:100}}>{doublons.length} en double</span>}
-        </h3>
-        <button className="btn btn-sm" onClick={()=>setOuvert(!ouvert)}>{ouvert ? 'Fermer' : 'Ouvrir'}</button>
-      </div>
-      {!ouvert && <p style={{fontSize:13, color:'var(--steam)', margin:'8px 0 0'}}>Prochain numéro, numéros en double, correction d'un numéro, reçus émis dont la commande a disparu.</p>}
-      {ouvert && (
-        <div style={{display:'grid', gap:18, marginTop:14}}>
-          {message && <p style={{fontSize:13, margin:0, fontWeight:600}}>{message}</p>}
-          {aRenvoyer && (
-            <a className="btn btn-sm btn-rust" style={{justifySelf:'start'}} href={`https://wa.me/${aRenvoyer.tel}?text=${encodeURIComponent(aRenvoyer.texte)}`} target="_blank" rel="noopener noreferrer">📱 Envoyer le reçu corrigé {aRenvoyer.numero} par WhatsApp</a>
-          )}
-
-          <div>
-            <div style={{fontSize:13}}>Prochain numéro qui sera donné : <span className="mono" style={{fontWeight:700}}>{prochain.numero}</span></div>
-            <div style={{fontSize:12, color:'var(--steam)', marginTop:4}}>
-              Registre en ligne : {registreOk === null ? 'vérification…' : registreOk ? '✅ actif (les numéros sont réservés même si la base principale revient en arrière)' : '⚠️ inaccessible sur cet appareil — protection par la base + le registre local seulement'}
-            </div>
-            <div style={{display:'flex', gap:8, marginTop:10, flexWrap:'wrap', alignItems:'center'}}>
-              <input type="number" min={1} value={compteurSaisi} onChange={e=>setCompteurSaisi(e.target.value)} placeholder={`ex : ${prochain.seq}`} style={{maxWidth:140}} />
-              <button className="btn btn-sm" onClick={appliquerCompteur}>Ajuster le compteur</button>
-            </div>
-            <p style={{fontSize:11.5, color:'var(--steam)', margin:'5px 0 0'}}>Le compteur ne peut jamais redonner un numéro déjà émis : l'app saute automatiquement tout numéro déjà vu.</p>
-          </div>
-
-          <div>
-            <h4 style={{margin:'0 0 6px', fontSize:14}}>Numéros en double</h4>
-            {doublons.length === 0 ? <p style={{fontSize:13, color:'var(--ok)', margin:0}}>✅ Aucun numéro en double.</p> : doublons.map(g => (
-              <div key={g.numero} style={{marginBottom:10}}>
-                <div style={{fontSize:12.5, color:'var(--danger)', fontWeight:700}}>{g.numero} — {g.liste.length} commandes. Gardez le numéro du client qui a le reçu d'origine, donnez un nouveau numéro à l'autre.</div>
-                {g.liste.map(c => ligneCmd(c, true))}
-              </div>
-            ))}
-          </div>
-
-          <div>
-            <h4 style={{margin:'0 0 6px', fontSize:14}}>Modifier le numéro d'une commande</h4>
-            <input type="text" value={recherche} onChange={e=>setRecherche(e.target.value)} placeholder="Numéro ou nom du client…" style={{maxWidth:320}} />
-            {resultatsRecherche.map(c => ligneCmd(c, true))}
-          </div>
-
-          <div>
-            <h4 style={{margin:'0 0 6px', fontSize:14}}>Reçus émis introuvables</h4>
-            <p style={{fontSize:12, color:'var(--steam)', margin:'0 0 6px', lineHeight:1.5}}>Numéros remis à un client mais dont la commande n'existe plus (ni dans les commandes, ni dans la corbeille). Pour la remettre : Nouvelle commande → « 🔁 Ressaisir un reçu déjà remis » → saisir ce numéro.</p>
-            {introuvables.length === 0 ? <p style={{fontSize:13, margin:0}}>Aucun.</p> : introuvables.map(e => (
-              <div key={e.numero + e.cmdId} style={{fontSize:13, padding:'6px 0', borderTop:'1px solid var(--line)', lineHeight:1.5}}>
-                <span className="mono" style={{fontWeight:700}}>{e.numero}</span> — {e.client || '—'} {e.tel ? `(${e.tel})` : ''} · {e.date ? fmtDate(e.date.slice(0,10)) : ''} · {e.total != null ? fmtGNF(e.total) : ''}
-                {e.pdf && <> · <a href={e.pdf} target="_blank" rel="noopener noreferrer">📄 reçu PDF</a></>}
-                {e.numeroReprisParAutre && <div style={{color:'var(--danger)', fontSize:12}}>⚠️ Ce numéro est aujourd'hui porté par une autre commande : renumérotez celle-ci ou ressaisissez avec un suffixe.</div>}
-              </div>
-            ))}
-            <button className="btn btn-sm" style={{marginTop:10}} onClick={chercherPdfOrphelins} disabled={orphelins === 'chargement'}>
-              {orphelins === 'chargement' ? 'Recherche…' : '🔎 Chercher les reçus PDF sans commande (stockage)'}
-            </button>
-            {orphelins && orphelins !== 'chargement' && (
-              !orphelins.ok
-                ? <p style={{fontSize:12.5, color:'var(--warn)', margin:'6px 0 0'}}>Impossible de lister le stockage depuis cet appareil (règles Firebase Storage).</p>
-                : orphelins.liste.length === 0
-                  ? <p style={{fontSize:12.5, margin:'6px 0 0'}}>Aucun reçu PDF orphelin.</p>
-                  : <div style={{marginTop:6}}>
-                      <p style={{fontSize:12, color:'var(--steam)', margin:'0 0 4px'}}>{orphelins.total} PDF dont la commande n'existe plus{orphelins.total > orphelins.liste.length ? ` (60 plus récents affichés)` : ''}. Ouvrez-les pour retrouver client, articles et numéro.</p>
-                      {orphelins.liste.map(o => (
-                        <div key={o.nom} style={{fontSize:13, padding:'4px 0'}}>
-                          <a href={o.url} target="_blank" rel="noopener noreferrer">📄 Reçu du {o.date ? new Date(o.date).toLocaleString('fr-FR') : '?'}</a>
-                        </div>
-                      ))}
-                    </div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function ParametresView({ site, updateSite, db, setDb }){
   const [nom, setNom] = useState(site.nom);
   const [adresse, setAdresse] = useState(site.adresse);
@@ -12408,8 +11493,6 @@ function ParametresView({ site, updateSite, db, setDb }){
           <Icon name="plus" size={14}/> Ajouter / réajuster un salaire journalier
         </button>
       </div>
-
-      <NumerosRecusCard site={site} updateSite={updateSite} />
 
       {showAjusterSalaire && (
         <AjusterSalaireJournalierModal site={site} updateSite={updateSite} onClose={()=>setShowAjusterSalaire(false)} />
@@ -13012,17 +12095,12 @@ function RepassageApercuView({ site, updateSite, employeId }){
   // que le repassage est enregistré (voir advanceStatut), donc avant ça ils ne sont ni comptés ni payés.
   // C'est un arriéré actuel (combien reste à faire là, tout de suite), pas un flux sur la période choisie
   // ci-dessus — comme « À traiter » dans Vue globale, qui n'est pas non plus filtré par période.
-  // Calcule à la fois le nombre d'articles ET le nombre de commandes (ayant au moins un article à repasser).
-  const [voirCommandesARepasser, setVoirCommandesARepasser] = useState(false);
-  const { articlesRestantARepasser, commandesRestantARepasser, listeCommandesARepasser } = useMemo(() => {
+  const articlesRestantARepasser = useMemo(() => {
     const tarifsRepassage = (site.configRemuneration||{}).tarifsRepassage || [];
-    if(tarifsRepassage.length === 0) return { articlesRestantARepasser: 0, commandesRestantARepasser: 0, listeCommandesARepasser: [] };
+    if(tarifsRepassage.length === 0) return 0;
     let total = 0;
-    let nbCommandes = 0;
-    const liste = [];
     (site.commandes||[]).forEach(cmd => {
       if(cmd.statut === 'Récupéré' || cmd.statut === 'Prêt') return;
-      const avant = total;
       (cmd.lignes||[]).forEach(l => {
         const svc = site.services.find(s=>s.id===l.serviceId);
         if(!svc) return;
@@ -13032,16 +12110,9 @@ function RepassageApercuView({ site, updateSite, employeId }){
         );
         if(tarif) total += Number(l.qte)||0;
       });
-      if(total > avant){
-        nbCommandes++;
-        const cli = (site.clients||[]).find(c => c.id === cmd.clientId);
-        liste.push({ id: cmd.id, numero: cmd.numero, client: cli ? cli.nom : '—', tel: cli ? (cli.tel||'') : '', dateEmission: cmd.dateCreation, statut: cmd.statut, articles: total - avant, express: !!cmd.express, rdv: cmd.dateRdvRecuperation || cmd.dateRetraitPrevue || '' });
-      }
     });
-    // Les plus anciennes d'abord : ce sont celles qui attendent depuis le plus longtemps.
-    liste.sort((a,b) => (a.dateEmission||'').localeCompare(b.dateEmission||''));
-    return { articlesRestantARepasser: total, commandesRestantARepasser: nbCommandes, listeCommandesARepasser: liste };
-  }, [site.commandes, site.services, site.clients, site.configRemuneration]);
+    return total;
+  }, [site.commandes, site.services, site.configRemuneration]);
 
   const anneesDisponibles = useMemo(() => {
     const set = new Set(repassages.map(r => Number(r.date.slice(0,4))));
@@ -13180,58 +12251,11 @@ function RepassageApercuView({ site, updateSite, employeId }){
         )}
       </div>
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(200px, 1fr))', gap:14, marginBottom:20}}>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20}}>
         <StatCard label={`Total articles repassés — ${periodeLabel}`} value={totalArticlesGeneral} icon="shirt" />
         <StatCard label={`Total — ${periodeLabel}`} value={fmtGNF(totalGeneral)} icon="euro" />
-        <StatCard label="Reste à repasser (actuellement)" value={articlesRestantARepasser} sub="articles" icon="shirt" />
-        <div onClick={()=>setVoirCommandesARepasser(v=>!v)} style={{cursor:'pointer', borderRadius:12, outline: voirCommandesARepasser ? '2px solid var(--pine)' : 'none'}} title="Cliquer pour voir la liste">
-          <StatCard label="Commandes à repasser (actuellement)" value={commandesRestantARepasser} sub={voirCommandesARepasser ? '▲ Masquer la liste' : '▼ Cliquer pour voir la liste'} icon="ticket" />
-        </div>
+        <StatCard label="Reste à repasser (actuellement)" value={articlesRestantARepasser} icon="shirt" />
       </div>
-
-      {voirCommandesARepasser && (
-        <div className="card" style={{overflowX:'auto', marginBottom:20}}>
-          <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'10px 14px', borderBottom:'1px solid var(--line)'}}>
-            <strong style={{fontSize:13.5, color:'var(--pine)'}}>Commandes restant à repasser ({listeCommandesARepasser.length}) — {articlesRestantARepasser} article{articlesRestantARepasser>1?'s':''}</strong>
-            <button className="btn btn-ghost btn-sm" onClick={()=>setVoirCommandesARepasser(false)}><Icon name="x" size={14}/></button>
-          </div>
-          <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
-            <thead>
-              <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
-                <th style={th}>N° de reçu</th>
-                <th style={th}>Client</th>
-                <th style={th}>Date d'émission du reçu</th>
-                <th style={{...th, textAlign:'right'}}>Articles à repasser</th>
-                <th style={th}>Statut</th>
-                <th style={th}>RDV</th>
-              </tr>
-            </thead>
-            <tbody>
-              {listeCommandesARepasser.length === 0 ? (
-                <tr><td colSpan={6} style={{...td, textAlign:'center', color:'var(--steam)'}}>Aucune commande à repasser.</td></tr>
-              ) : listeCommandesARepasser.map(c => {
-                const jours = c.dateEmission ? Math.floor((Date.now() - new Date(c.dateEmission).getTime()) / 86400000) : 0;
-                return (
-                  <tr key={c.id} style={{borderTop:'1px solid var(--line)'}}>
-                    <td style={{...td, fontWeight:600}} className="mono">
-                      {c.numero}
-                      {c.express && <span className="tag" style={{marginLeft:6, fontSize:9.5, background:'var(--rust)', color:'var(--white)'}}>⚡ Express</span>}
-                    </td>
-                    <td style={td}>{c.client}{c.tel && <div style={{fontSize:11, color:'var(--steam)'}}>{c.tel}</div>}</td>
-                    <td style={td}>
-                      {c.dateEmission ? fmtDate(c.dateEmission.slice(0,10)) : '—'}
-                      {c.dateEmission && <span style={{fontSize:11, marginLeft:6, color: jours > 7 ? 'var(--danger)' : 'var(--steam)', fontWeight: jours > 7 ? 600 : 400}}>({jours === 0 ? "aujourd'hui" : `il y a ${jours} j`})</span>}
-                    </td>
-                    <td style={{...td, textAlign:'right', fontWeight:700}} className="mono">{c.articles}</td>
-                    <td style={td}>{c.statut}</td>
-                    <td style={td}>{c.rdv ? fmtDate(c.rdv) : '—'}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
 
       {repasseurIds.length === 0 ? (
         <div className="card" style={{padding:'1.25rem', textAlign:'center', color:'var(--steam)', fontSize:13}}>
@@ -14947,7 +13971,27 @@ function RepasseurView({ site, updateSite, employeId }){
 
 /* ===================== DETAIL MENSUEL (espace caissier — vue par site) ===================== */
 
-function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave, montantRecu, acteurs, annee, afficherAnnee }){
+// Détecte les changements sur les champs « avant seuil » qui comptent déjà comme une saisie initiale
+// (ancienne valeur non nulle ET différente de la nouvelle) : seuls ceux-là déclenchent la confirmation
+// par mot de passe + l'alerte au gérant — une première saisie (ancienne valeur = 0) reste sans friction.
+function changementsAvantSeuil(avant, apres){
+  const champs = [
+    { cle:'recetteBrute', label:'Recette brute' },
+    { cle:'depenses', label:'Dépenses entreprise' },
+    { cle:'montantRecuEspeces', label:'Montant net reçu (Espèces)' },
+    { cle:'montantRecuOrangeMoney', label:'Montant net reçu (Orange Money)' },
+  ];
+  const changements = [];
+  champs.forEach(({ cle, label }) => {
+    const v1 = Number(avant[cle]) || 0, v2 = Number(apres[cle]) || 0;
+    if(v1 !== 0 && v1 !== v2){
+      changements.push(`${label} : ${fmtGNF(v1)} → ${fmtGNF(v2)}`);
+    }
+  });
+  return changements;
+}
+
+function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave, montantRecu, acteurs, annee, afficherAnnee, db, site }){
   const mesValeurs = (valeurs.parEmploye && valeurs.parEmploye[employeId]) || { recetteBrute: 0, depenses: 0, impayes: 0, depensesPropres: 0, depensesPropresDescription: '', depensesPropresBeneficiaire: '', depensesPropresDate: '', montantRecuEspeces: 0, montantRecuOrangeMoney: 0 };
   const acteurAutoMatch = useMemo(() => (acteurs||[]).find(p=>nomsCorrespondent(monNom, p.nom)), [acteurs, monNom]);
   const moisStr = String(valeurs.mois).padStart(2,'0');
@@ -14963,6 +14007,7 @@ function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave, monta
   const [montantRecuOrangeMoney, setMontantRecuOrangeMoney] = useState(String(mesValeurs.montantRecuOrangeMoney || ''));
   const [ouvert, setOuvert] = useState(false);
   const [flash, setFlash] = useState(false);
+  const [pendingConfirm, setPendingConfirm] = useState(null); // valeurs en attente de mot de passe (modif/effacement avant seuil)
 
   useEffect(() => {
     const mv = (valeurs.parEmploye && valeurs.parEmploye[employeId]) || { recetteBrute: 0, depenses: 0, impayes: 0, depensesPropres: 0, depensesPropresDescription: '', depensesPropresBeneficiaire: '', depensesPropresDate: '', montantRecuEspeces: 0, montantRecuOrangeMoney: 0 };
@@ -14980,7 +14025,7 @@ function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave, monta
   const impayesCalcule = Math.max(0, (Number(recetteBrute)||0) - ((Number(montantRecuEspeces)||0) + (Number(montantRecuOrangeMoney)||0)));
 
   function save(){
-    onSave(valeurs.mois, {
+    const nouvellesValeurs = {
       recetteBrute: Number(recetteBrute)||0,
       impayes: impayesCalcule,
       depenses: Number(depenses)||0,
@@ -14990,9 +14035,31 @@ function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave, monta
       depensesPropresDate: depensesPropresDate || '',
       montantRecuEspeces: Number(montantRecuEspeces)||0,
       montantRecuOrangeMoney: Number(montantRecuOrangeMoney)||0,
-    });
+    };
+    // Garde-fou : une modification (ou un effacement) d'une donnée « avant seuil » déjà saisie exige de
+    // ressaisir son mot de passe, et le gérant en est alerté via le journal des modifications. Une première
+    // saisie (rien à modifier) part directement, sans friction.
+    if(avantSeuil){
+      const changements = changementsAvantSeuil(mesValeurs, nouvellesValeurs);
+      if(changements.length > 0){
+        setPendingConfirm({ valeurs: nouvellesValeurs, changements });
+        return;
+      }
+    }
+    finaliserSave(nouvellesValeurs);
+  }
+
+  function finaliserSave(nouvellesValeurs, journalInfo){
+    onSave(valeurs.mois, nouvellesValeurs, journalInfo);
     setFlash(true);
     setTimeout(()=>setFlash(false), 1200);
+  }
+
+  function confirmerModification({ auteurNom, auteurRole }){
+    if(!pendingConfirm) return;
+    const description = `${monNom} a modifié sa saisie de ${valeurs.label} ${annee} (donnée avant lancement) : ${pendingConfirm.changements.join(', ')}`;
+    finaliserSave(pendingConfirm.valeurs, { description, auteurNom, auteurRole });
+    setPendingConfirm(null);
   }
 
   return (
@@ -15063,6 +14130,20 @@ function MoisRowCaissier({ valeurs, avantSeuil, employeId, monNom, onSave, monta
             <p style={{fontSize:11, color:'var(--steam)', margin:'8px 0 0', lineHeight:1.4}}>
               « Dépenses entreprise » = dépenses du pressing (fournitures, factures...). « Dépenses propres » = vos dépenses personnelles, toujours modifiables peu importe le mois. « Mes impayés » = Recette brute − (Net Espèces + Net Orange Money), calculé automatiquement.
             </p>
+          </td>
+        </tr>
+      )}
+      {pendingConfirm && (
+        <tr>
+          <td colSpan={9} style={{padding:0}}>
+            <ConfirmerModification
+              db={db} site={site} employeId={employeId}
+              danger={true}
+              message={`Vous modifiez une donnée déjà saisie pour ${valeurs.label} ${annee} (avant lancement) : ${pendingConfirm.changements.join(', ')}. Le gérant en sera informé. Confirmer ?`}
+              actionLabel="Confirmer la modification"
+              onConfirm={confirmerModification}
+              onCancel={()=>setPendingConfirm(null)}
+            />
           </td>
         </tr>
       )}
@@ -15188,14 +14269,6 @@ function calculerDonneesMensuellesSite(site, annee){
 // l'UI (netPercuEmployeMois + écart), et l'écart lui-même est injecté dans le Montant reçu Espèces du mois
 // par calculerDonneesMensuellesSite / calculerDonneesMensuellesEmploye, ce qui le propage automatiquement
 // au Net perçu du site puis à la Distribution des recettes (voir le commentaire dans ces deux fonctions).
-// Avances décaissées par CE caissier via les pages « Dépenses propres » (gérant ou employé) pour un mois —
-// uniquement au pressing Kipé (seule caisse concernée). Affiché dans Détail mensuel pour que le Net perçu
-// du caissier reflète aussi l'argent sorti de sa caisse pour un acteur.
-function avancesDecaisseesCaissierMois(db, siteId, nomEmploye, annee, mois){
-  const kipe = siteKipe(db);
-  if(!kipe || kipe.id !== siteId || !cleDecaisseur(nomEmploye)) return 0;
-  return totalDecaisseParPersonnePourMois(db, nomEmploye, [{ annee: Number(annee), mois: Number(mois) }]);
-}
 function netPercuEmployeMois(v){
   if(!v) return 0;
   return (Number(v.montantRecuEspeces)||0) + (Number(v.montantRecuOrangeMoney)||0) - (Number(v.depenses)||0) - (Number(v.depensesPropres)||0);
@@ -15432,13 +14505,19 @@ function DetailMensuelSiteView({ site, updateSite, employeId, db }){
     return anneeMoisListe.map(({annee:a, mois:m}) => ({ ...parAnnee[a][m-1], annee: a, labelAvecAnnee: `${parAnnee[a][m-1].label} ${a}` }));
   }, [site, employeId, anneeMoisListe]);
 
-  function saveMois(anneeRow, m, valeurs){
+  function saveMois(anneeRow, m, valeurs, journalInfo){
     const manuelActuel = site.detailMensuelManuel || {};
     const anneeActuelle = manuelActuel[anneeRow] || {};
     const moisNormalise = normaliserMoisManuel(anneeActuelle[m]) || {};
     const nextMois = { ...moisNormalise, [employeId]: valeurs };
     const nextAnnee = { ...anneeActuelle, [m]: nextMois };
-    updateSite({ ...site, detailMensuelManuel: { ...manuelActuel, [anneeRow]: nextAnnee } });
+    updateSite({
+      ...site,
+      detailMensuelManuel: { ...manuelActuel, [anneeRow]: nextAnnee },
+      // journalInfo n'est fourni que lorsqu'un employé MODIFIE (ou efface) une donnée « avant seuil » déjà
+      // saisie — une première saisie part sans entrée de journal, pour ne pas noyer le gérant d'alertes.
+      ...(journalInfo ? { journalConfig: ajouterAuJournalConfig(site, { section: 'Détail mensuel', ...journalInfo }) } : {})
+    });
   }
 
   const totalBrute = donneesParMois.reduce((s,m)=>s+m.recetteBrute,0);
@@ -15534,9 +14613,9 @@ function DetailMensuelSiteView({ site, updateSite, employeId, db }){
           <tbody>
             {donneesParMois.map(m => (
               <MoisRowCaissier key={`${m.annee}-${m.mois}`} valeurs={m} avantSeuil={m.avantSeuil} employeId={employeId} monNom={monNom}
-                onSave={(mois, valeurs)=>saveMois(m.annee, mois, valeurs)}
+                onSave={(mois, valeurs, journalInfo)=>saveMois(m.annee, mois, valeurs, journalInfo)}
                 montantRecu={{especes: m.montantRecuEspeces||0, orangeMoney: m.montantRecuOrangeMoney||0}}
-                acteurs={acteursBeneficiaires} annee={m.annee} afficherAnnee={periode !== 'annee'} />
+                acteurs={acteursBeneficiaires} annee={m.annee} afficherAnnee={periode !== 'annee'} db={db} site={site} />
             ))}
             <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
               <td style={{...td, fontWeight:700}}>Total {periode === 'annee' ? annee : periodeLabel}</td>
@@ -15756,10 +14835,6 @@ function DetailMensuelGerantView({ site, updateSite, db }){
                           <div className="mono" style={{fontSize:12.5, color:'var(--pine)', marginTop:2}}>
                             Reçu Espèces : {fmtGNF(v.montantRecuEspeces||0)} · Reçu Orange Money : {fmtGNF(v.montantRecuOrangeMoney||0)} · Net perçu : {fmtGNF(netPercuEmp)}
                           </div>
-                          {(() => { const av = avancesDecaisseesCaissierMois(db, site.id, getEmpNom(empId), annee, m.mois); return av > 0 ? (
-                            <div className="mono" style={{fontSize:12.5, color:'var(--rust)', marginTop:2}}>
-                              Avances décaissées pour des acteurs (page Dépenses propres) : − {fmtGNF(av)} · Net perçu après avances : <b>{fmtGNF(netPercuEmp - av)}</b>
-                            </div>) : null; })()}
                           <div style={{display:'flex', alignItems:'center', gap:8, marginTop:6, flexWrap:'wrap'}}>
                             <label style={{fontSize:12, color:'var(--steam)'}}>Écart (reçus réels − Net perçu) :</label>
                             <input type="number" value={ecartAffiche}
@@ -16024,7 +15099,7 @@ function DepensesPropresEmployeView({ db, setDb, monProfil }){
           </div>
           <div>
             <label style={{fontSize:11.5, color:'var(--steam)', display:'block', marginBottom:4}}>Date</label>
-            <input type="date" max={todayISO()} value={date} onChange={e=>setDate(e.target.value)} />
+            <input type="date" value={date} onChange={e=>setDate(e.target.value)} />
           </div>
           <div>
             <label style={{fontSize:11.5, color:'var(--steam)', display:'block', marginBottom:4}}>Description (optionnel)</label>
