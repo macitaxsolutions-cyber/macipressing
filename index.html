@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-24-5">
+<meta name="app-version" content="2026-10-25-5">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-24-5';
+  const APP_VERSION_ACTUELLE = '2026-10-25-5';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -4373,9 +4373,100 @@ function DepensesPropresActeursView({ db, setDb }){
   const [rembDesc, setRembDesc] = useState('');
   const [autoMontant, setAutoMontant] = useState({});
   const [autoDepuis, setAutoDepuis] = useState({});
+  const [sortByDp, setSortByDp] = useState(null); // 'date'|'nom'|'decaisse'|'montant'
+  const [sortDirDp, setSortDirDp] = useState('asc');
+
+  function toggleSortDp(field){
+    if(sortByDp === field) setSortDirDp(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortByDp(field); setSortDirDp('asc'); }
+  }
 
   const dataHisto = (db.historiqueAnnuel || {})[annee] || {};
   const depensesActeursActuel = dataHisto.depensesActeurs || {};
+  const acteursSansCapitalFixe = parts.filter(p => p.nom !== 'Conservation du Capital Fixe');
+
+  // Toutes les dépenses propres de l'année choisie (toutes périodes confondues), y compris celles saisies
+  // par les caissiers via Détail mensuel — réutilisée à la fois par le récapitulatif mensuel (voir JSX plus
+  // bas) et par la liste filtrée par période, pour ne pas dupliquer cette logique à deux endroits.
+  const toutesEntreesAnnee = useMemo(() => {
+    const toutesEntrees = [];
+    acteursSansCapitalFixe.forEach(p => {
+      (depensesActeursActuel[p.nom]||[]).forEach(e => toutesEntrees.push({ ...e, nomActeur: p.nom }));
+    });
+    db.sites.forEach(site => {
+      const manuelAnnee = (site.detailMensuelManuel||{})[annee] || {};
+      for(let m=1; m<=12; m++){
+        const parEmploye = normaliserMoisManuel(manuelAnnee[m]) || {};
+        Object.entries(parEmploye).forEach(([empId, v]) => {
+          const montantDp = Number(v.depensesPropres)||0;
+          if(montantDp <= 0 || empId === '_legacy') return;
+          const emp = site.employes.find(e => e.id === empId);
+          if(!emp) return;
+          const acteurCorrespondant = acteursSansCapitalFixe.find(p => nomsCorrespondent(emp.nom, p.nom));
+          const nomBeneficiaire = v.depensesPropresBeneficiaire || (acteurCorrespondant && acteurCorrespondant.nom);
+          if(!nomBeneficiaire) return;
+          const moisStr = String(m).padStart(2,'0');
+          const descriptionSaisie = (v.depensesPropresDescription||'').trim();
+          const decaisseurTrouve = EMPLOYES_SALAIRE_JOURNALIER.find(cible => (emp.nom||'').trim().toLowerCase().includes(cible));
+          toutesEntrees.push({
+            id: `dm_${site.id}_${m}_${empId}`,
+            date: v.depensesPropresDate || `${annee}-${moisStr}-01`,
+            dateApproximative: !v.depensesPropresDate,
+            description: descriptionSaisie || `Dépenses propres — ${site.nom}`,
+            montant: montantDp,
+            nomActeur: nomBeneficiaire,
+            decaissePar: decaisseurTrouve || null,
+            depuisDetailMensuel: true,
+          });
+        });
+      }
+    });
+    return toutesEntrees;
+  }, [annee, depensesActeursActuel, db.sites, acteursSansCapitalFixe]);
+
+  // Même logique, mais TOUTES années confondues (pas seulement l'année choisie dans le menu déroulant) —
+  // utilisée par le filtre « À ce jour » et par « Compte des caissiers » ci-dessous, qui doit refléter un
+  // cumul réel (ce qui a été décaissé pour d'autres, depuis le début) et non se limiter à l'année affichée.
+  const toutesEntreesTousAns = useMemo(() => {
+    const toutesEntrees = [];
+    Object.entries(db.historiqueAnnuel||{}).forEach(([, anneeData]) => {
+      Object.entries(anneeData.depensesActeurs||{}).forEach(([nomActeur, entries]) => {
+        (entries||[]).forEach(e => toutesEntrees.push({ ...e, nomActeur }));
+      });
+    });
+    db.sites.forEach(site => {
+      Object.entries(site.detailMensuelManuel||{}).forEach(([anneeStr, anneeManuel]) => {
+        const anneeNum = Number(anneeStr);
+        Object.entries(anneeManuel).forEach(([moisStr, moisData]) => {
+          const m = Number(moisStr);
+          const parEmploye = normaliserMoisManuel(moisData) || {};
+          Object.entries(parEmploye).forEach(([empId, v]) => {
+            const montantDp = Number(v.depensesPropres)||0;
+            if(montantDp <= 0 || empId === '_legacy') return;
+            const emp = site.employes.find(e => e.id === empId);
+            if(!emp) return;
+            const acteurCorrespondant = acteursSansCapitalFixe.find(p => nomsCorrespondent(emp.nom, p.nom));
+            const nomBeneficiaire = v.depensesPropresBeneficiaire || (acteurCorrespondant && acteurCorrespondant.nom);
+            if(!nomBeneficiaire) return;
+            const moisStrPad = String(m).padStart(2,'0');
+            const descriptionSaisie = (v.depensesPropresDescription||'').trim();
+            const decaisseurTrouve = EMPLOYES_SALAIRE_JOURNALIER.find(cible => (emp.nom||'').trim().toLowerCase().includes(cible));
+            toutesEntrees.push({
+              id: `dm_${site.id}_${anneeNum}_${m}_${empId}`,
+              date: v.depensesPropresDate || `${anneeNum}-${moisStrPad}-01`,
+              dateApproximative: !v.depensesPropresDate,
+              description: descriptionSaisie || `Dépenses propres — ${site.nom}`,
+              montant: montantDp,
+              nomActeur: nomBeneficiaire,
+              decaissePar: decaisseurTrouve || null,
+              depuisDetailMensuel: true,
+            });
+          });
+        });
+      });
+    });
+    return toutesEntrees;
+  }, [db.historiqueAnnuel, db.sites, acteursSansCapitalFixe]);
 
   // Remboursement : l'acteur rend une partie de ce qu'il a emprunté. Le montant remboursé ne lui revient
   // pas — il repart vers les AUTRES acteurs, proportionnellement à leurs parts (c'est leur argent qu'il
@@ -4471,6 +4562,7 @@ function DepensesPropresActeursView({ db, setDb }){
   }
 
   function estDansPeriode(dateStr){
+    if(depensesPropresPeriode === 'total') return true; // « À ce jour » : toutes années confondues
     if(!dateStr) return depensesPropresPeriode === 'annee';
     if(depensesPropresPeriode === 'jour') return dateStr === depensesPropresJour;
     if(depensesPropresPeriode === 'mois') return dateStr.slice(0,7) === depensesPropresMois;
@@ -4491,49 +4583,111 @@ function DepensesPropresActeursView({ db, setDb }){
           Dépenses personnelles engagées par chaque acteur sur son propre compte (avances, retraits, achats personnels…). Elles seront déduites de sa part pour refléter son montant net réel — sans affecter la recette nette globale de l'entreprise. Si un acteur est aussi caissier dans un pressing, ses « dépenses propres » saisies dans « Détail mensuel » s'ajoutent automatiquement ici. Chaque dépense propre indique aussi qui a physiquement décaissé l'argent (Mamadou Alpha ou Nene Djiba) — voir « Compte des caissiers » plus bas.
         </p>
 
+        <h4 style={{fontSize:13, color:'var(--pine)', margin:'0 0 8px'}}>📅 Récapitulatif mensuel — {annee}</h4>
+        <p style={{fontSize:11.5, color:'var(--steam)', margin:'0 0 8px', lineHeight:1.5}}>
+          Total des dépenses propres de chaque acteur, mois par mois, pour {annee} — toutes sources confondues (saisies ici et via Détail mensuel), indépendamment du filtre Jour/Mois/Année ci-dessous.
+        </p>
+        <div className="card" style={{overflow:'hidden', marginBottom:20}}>
+          <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
+            <thead>
+              <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                <th style={th}>Mois</th>
+                {acteursSansCapitalFixe.map(p => <th key={p.nom} style={th}>{p.nom}</th>)}
+                <th style={th}>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Array.from({length:12}, (_,i) => i+1).map(m => {
+                const cleMois = `${annee}-${String(m).padStart(2,'0')}`;
+                const entreesMois = toutesEntreesAnnee.filter(e => (e.date||'').slice(0,7) === cleMois);
+                const totalMois = entreesMois.reduce((s,e)=>s+(Number(e.montant)||0),0);
+                return (
+                  <tr key={m} style={{borderTop:'1px solid var(--line)'}}>
+                    <td style={{...td, textTransform:'capitalize', fontWeight:600}}>{new Date(annee, m-1, 1).toLocaleDateString('fr-FR', {month:'long'})}</td>
+                    {acteursSansCapitalFixe.map(p => {
+                      // « pour qui » = cette colonne (acteur bénéficiaire) ; « par qui » = la répartition par
+                      // décaisseur affichée en petit sous le montant, pour les commandes où c'est connu.
+                      const entreesActeurMois = entreesMois.filter(e=>e.nomActeur===p.nom);
+                      const totalActeurMois = entreesActeurMois.reduce((s,e)=>s+(Number(e.montant)||0),0);
+                      const parDecaisseur = {};
+                      entreesActeurMois.forEach(e => {
+                        const cle = e.decaissePar || '_non_precise';
+                        parDecaisseur[cle] = (parDecaisseur[cle]||0) + (Number(e.montant)||0);
+                      });
+                      return (
+                        <td key={p.nom} style={td}>
+                          {totalActeurMois>0 ? (
+                            <>
+                              <div className="mono">{fmtGNF(totalActeurMois)}</div>
+                              <div style={{marginTop:2}}>
+                                {Object.entries(parDecaisseur).map(([cle, montant]) => (
+                                  <div key={cle} style={{fontSize:10, color:'var(--steam)', fontWeight:400}}>
+                                    {cle === '_non_precise' ? 'Décaissé par : gérant / non précisé' : `Décaissé par ${cle.replace(/\b\w/g, c=>c.toUpperCase())}`} : {fmtGNF(montant)}
+                                  </div>
+                                ))}
+                              </div>
+                            </>
+                          ) : <span className="mono">—</span>}
+                        </td>
+                      );
+                    })}
+                    <td style={{...td, fontWeight:700, color: totalMois>0 ? 'var(--danger)' : 'var(--steam)'}} className="mono">{totalMois>0 ? fmtGNF(totalMois) : '—'}</td>
+                  </tr>
+                );
+              })}
+              <tr style={{borderTop:'2px solid var(--line-strong)', background:'var(--paper-2)'}}>
+                <td style={{...td, fontWeight:700}}>Total {annee}</td>
+                {acteursSansCapitalFixe.map(p => {
+                  const entreesActeurAnnee = toutesEntreesAnnee.filter(e=>e.nomActeur===p.nom);
+                  const totalActeurAnnee = entreesActeurAnnee.reduce((s,e)=>s+(Number(e.montant)||0),0);
+                  const parDecaisseurAnnee = {};
+                  entreesActeurAnnee.forEach(e => {
+                    const cle = e.decaissePar || '_non_precise';
+                    parDecaisseurAnnee[cle] = (parDecaisseurAnnee[cle]||0) + (Number(e.montant)||0);
+                  });
+                  return (
+                    <td key={p.nom} style={{...td, fontWeight:700}}>
+                      <div className="mono">{fmtGNF(totalActeurAnnee)}</div>
+                      <div style={{marginTop:2}}>
+                        {Object.entries(parDecaisseurAnnee).map(([cle, montant]) => (
+                          <div key={cle} style={{fontSize:10, color:'var(--steam)', fontWeight:400}}>
+                            {cle === '_non_precise' ? 'Décaissé par : gérant / non précisé' : `Décaissé par ${cle.replace(/\b\w/g, c=>c.toUpperCase())}`} : {fmtGNF(montant)}
+                          </div>
+                        ))}
+                      </div>
+                    </td>
+                  );
+                })}
+                <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(toutesEntreesAnnee.reduce((s,e)=>s+(Number(e.montant)||0),0))}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
         {(() => {
-          const acteursSansCapitalFixe = parts.filter(p => p.nom !== 'Conservation du Capital Fixe');
-          const toutesEntrees = [];
-          acteursSansCapitalFixe.forEach(p => {
-            (depensesActeursActuel[p.nom]||[]).forEach(e => toutesEntrees.push({ ...e, nomActeur: p.nom }));
-          });
-          // Ajoute les « dépenses propres » saisies par chaque caissier dans Détail mensuel (par pressing)
-          db.sites.forEach(site => {
-            const manuelAnnee = (site.detailMensuelManuel||{})[annee] || {};
-            for(let m=1; m<=12; m++){
-              const parEmploye = normaliserMoisManuel(manuelAnnee[m]) || {};
-              Object.entries(parEmploye).forEach(([empId, v]) => {
-                const montantDp = Number(v.depensesPropres)||0;
-                if(montantDp <= 0 || empId === '_legacy') return;
-                const emp = site.employes.find(e => e.id === empId);
-                if(!emp) return;
-                // Bénéficiaire : celui choisi explicitement dans Détail mensuel (peut être différent du
-                // caissier qui a saisi, s'il a décaissé pour un autre acteur), sinon on retombe sur l'ancien
-                // comportement (auto-correspondance nom caissier ↔ nom acteur, cas le plus courant).
-                const acteurCorrespondant = acteursSansCapitalFixe.find(p => nomsCorrespondent(emp.nom, p.nom));
-                const nomBeneficiaire = v.depensesPropresBeneficiaire || (acteurCorrespondant && acteurCorrespondant.nom);
-                if(!nomBeneficiaire) return;
-                const moisStr = String(m).padStart(2,'0');
-                const descriptionSaisie = (v.depensesPropresDescription||'').trim();
-                // Décaissé par : toujours le caissier dont c'est la ligne de saisie (l'argent est sorti de
-                // sa caisse), à condition que ce soit bien l'un des deux employés qui manipulent l'argent.
-                const decaisseurTrouve = EMPLOYES_SALAIRE_JOURNALIER.find(cible => (emp.nom||'').trim().toLowerCase().includes(cible));
-                toutesEntrees.push({
-                  id: `dm_${site.id}_${m}_${empId}`,
-                  date: v.depensesPropresDate || `${annee}-${moisStr}-01`,
-                  dateApproximative: !v.depensesPropresDate,
-                  description: descriptionSaisie || `Dépenses propres — ${site.nom}`,
-                  montant: montantDp,
-                  nomActeur: nomBeneficiaire,
-                  decaissePar: decaisseurTrouve || null,
-                  depuisDetailMensuel: true,
-                });
-              });
-            }
-          });
-          const entreesFiltrees = toutesEntrees.filter(e => estDansPeriode(e.date)).sort((a,b) => new Date(b.date||0) - new Date(a.date||0));
+          // Toujours basé sur TOUTES les années (toutesEntreesTousAns) : estDansPeriode se charge de
+          // ramener ça à l'année choisie pour 'jour'/'mois'/'annee', et 'total' (À ce jour) laisse tout passer.
+          const toutesEntrees = toutesEntreesTousAns;
+          let entreesFiltrees = toutesEntrees.filter(e => estDansPeriode(e.date)).sort((a,b) => new Date(b.date||0) - new Date(a.date||0));
+          if(sortByDp){
+            const dir = sortDirDp === 'asc' ? 1 : -1;
+            const getVal = (e) => {
+              switch(sortByDp){
+                case 'date': return e.date ? new Date(e.date).getTime() : 0;
+                case 'nom': return (e.nomActeur||'').toLowerCase();
+                case 'decaisse': return (e.decaissePar||'').toLowerCase();
+                case 'montant': return Number(e.montant)||0;
+                default: return 0;
+              }
+            };
+            entreesFiltrees = [...entreesFiltrees].sort((a,b) => {
+              const va = getVal(a), vb = getVal(b);
+              if(va < vb) return -1 * dir;
+              if(va > vb) return 1 * dir;
+              return 0;
+            });
+          }
           const totalFiltre = entreesFiltrees.reduce((s,e)=>s+(Number(e.montant)||0),0);
-          const periodeDepensesPropresLabel = depensesPropresPeriode === 'jour' ? fmtDate(depensesPropresJour) : depensesPropresPeriode === 'mois' ? formatMoisAnnee(depensesPropresMois) : `année ${annee}`;
 
           // Cumulé toutes années, tous pressings confondus, par acteur
           const cumuleToutesAnneesParActeur = {};
@@ -4564,10 +4718,10 @@ function DepensesPropresActeursView({ db, setDb }){
           return (
             <>
               <div style={{display:'flex', gap:8, marginBottom:14, flexWrap:'wrap', alignItems:'center'}}>
-                {['jour','mois','annee'].map(v => (
+                {['jour','mois','annee','total'].map(v => (
                   <button key={v} className="btn btn-sm" onClick={()=>setDepensesPropresPeriode(v)}
                     style={{background:depensesPropresPeriode===v?'var(--pine)':'transparent', color:depensesPropresPeriode===v?'var(--white)':'var(--ink)', borderColor:depensesPropresPeriode===v?'var(--pine)':'var(--line-strong)', textTransform:'capitalize'}}>
-                    {v === 'jour' ? 'Jour' : v === 'mois' ? 'Mois' : 'Année'}
+                    {v === 'jour' ? 'Jour' : v === 'mois' ? 'Mois' : v === 'annee' ? 'Année' : 'À ce jour'}
                   </button>
                 ))}
                 {depensesPropresPeriode === 'jour' && (
@@ -4582,11 +4736,11 @@ function DepensesPropresActeursView({ db, setDb }){
                 <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
                   <thead>
                     <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
-                      <th style={th}>Mois</th>
-                      <th style={th}>Nom</th>
+                      <th style={th}><SortableTh label="Mois" field="date" sortBy={sortByDp} sortDir={sortDirDp} onSort={toggleSortDp} /></th>
+                      <th style={th}><SortableTh label="Nom" field="nom" sortBy={sortByDp} sortDir={sortDirDp} onSort={toggleSortDp} /></th>
                       <th style={th}>Description</th>
-                      <th style={th}>Décaissé par</th>
-                      <th style={th}>Montant</th>
+                      <th style={th}><SortableTh label="Décaissé par" field="decaisse" sortBy={sortByDp} sortDir={sortDirDp} onSort={toggleSortDp} /></th>
+                      <th style={th}><SortableTh label="Montant" field="montant" sortBy={sortByDp} sortDir={sortDirDp} onSort={toggleSortDp} /></th>
                       <th style={th}></th>
                     </tr>
                   </thead>
@@ -4802,22 +4956,29 @@ function DepensesPropresActeursView({ db, setDb }){
                 </table>
               </div>
 
-              <h4 style={{fontSize:13, color:'var(--pine)', margin:'0 0 8px'}}>🛡️ Compte des caissiers — décaissé pour d'autres ({periodeDepensesPropresLabel})</h4>
+              <h4 style={{fontSize:13, color:'var(--pine)', margin:'0 0 8px'}}>🛡️ Compte des caissiers — décaissé pour d'autres (à ce jour, toutes années)</h4>
               <p style={{fontSize:11.5, color:'var(--steam)', margin:'0 0 8px', lineHeight:1.5}}>
-                Ce que chaque caissier a physiquement sorti de sa caisse pour le compte d'un AUTRE acteur (pas pour lui-même). Ce montant ne compte pas comme un manque de caisse ou une dépense du caissier — c'est un crédit pris par l'acteur bénéficiaire, qui lui reste dû.
+                Ce que chaque caissier a physiquement sorti de sa caisse pour le compte d'un AUTRE acteur (pas pour lui-même), cumulé depuis le début — ce total ne dépend pas du filtre Jour/Mois/Année/À ce jour ci-dessus, pour ne jamais manquer un décaissement fait une autre année. Ce montant ne compte pas comme un manque de caisse ou une dépense du caissier — c'est un crédit pris par l'acteur bénéficiaire, qui lui reste dû.
               </p>
               <div className="card" style={{overflow:'hidden', marginBottom:16}}>
                 <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
                   <tbody>
                     {EMPLOYES_SALAIRE_JOURNALIER.map(cle => {
-                      const entreesPourAutres = entreesFiltrees.filter(e => e.decaissePar === cle && !nomsCorrespondent(cle, e.nomActeur||''));
+                      // Comparaison tolérante (via nomsCorrespondent, pas une égalité stricte) : si « Décaissé
+                      // par » a été enregistré avec une casse ou une orthographe légèrement différente
+                      // (ex. « Nene Djiba » au lieu de « nene djiba »), l'entrée est quand même reconnue.
+                      const entreesPourAutres = toutesEntreesTousAns.filter(e => nomsCorrespondent(cle, e.decaissePar||'') && !nomsCorrespondent(cle, e.nomActeur||''));
                       const totalPourAutres = entreesPourAutres.reduce((s,e)=>s+(Number(e.montant)||0),0);
                       const nomAffiche = cle.replace(/\b\w/g, c=>c.toUpperCase());
+                      // Détail par bénéficiaire (pas seulement la liste des noms) : utile pour voir en un
+                      // coup d'œil combien a été décaissé pour chacun, sans avoir à ouvrir la liste complète.
+                      const parBeneficiaire = {};
+                      entreesPourAutres.forEach(e => { parBeneficiaire[e.nomActeur] = (parBeneficiaire[e.nomActeur]||0) + (Number(e.montant)||0); });
                       return (
                         <tr key={cle} style={{borderTop:'1px solid var(--line)'}}>
                           <td style={{...td, fontWeight:600}}>{nomAffiche}</td>
                           <td style={{...td, color:'var(--steam)', fontSize:12}}>
-                            {entreesPourAutres.length === 0 ? 'Rien décaissé pour un autre acteur sur cette période' : entreesPourAutres.map(e=>e.nomActeur).filter((v,i,a)=>a.indexOf(v)===i).join(', ')}
+                            {entreesPourAutres.length === 0 ? 'Rien décaissé pour un autre acteur, à ce jour' : Object.entries(parBeneficiaire).map(([nom, montant]) => `${nom} (${fmtGNF(montant)})`).join(', ')}
                           </td>
                           <td style={{...td, textAlign:'right', fontWeight:600}} className="mono">
                             {totalPourAutres>0 ? fmtGNF(totalPourAutres) : '—'}
@@ -4825,9 +4986,34 @@ function DepensesPropresActeursView({ db, setDb }){
                         </tr>
                       );
                     })}
+                    {(() => {
+                      // Diagnostic : dépenses propres (d'un acteur autre que lui-même dans le champ "Décaissé
+                      // par") dont le décaisseur n'a pas pu être reconnu comme Mamadou Alpha ou Nene Djiba —
+                      // soit le champ est resté vide (saisie ancienne, avant que ce champ existe), soit sa
+                      // valeur ne correspond à aucun des deux. Affiché pour qu'un montant ne disparaisse
+                      // jamais silencieusement du compte des caissiers sans qu'on sache pourquoi.
+                      const entreesNonAttribuables = toutesEntreesTousAns.filter(e => {
+                        if(nomsCorrespondent(e.decaissePar||'', e.nomActeur||'')) return false; // décaissé par lui-même : normal, pas un cas « pour d'autres »
+                        return !EMPLOYES_SALAIRE_JOURNALIER.some(cle => nomsCorrespondent(cle, e.decaissePar||''));
+                      });
+                      if(entreesNonAttribuables.length === 0) return null;
+                      const totalNonAttribuable = entreesNonAttribuables.reduce((s,e)=>s+(Number(e.montant)||0),0);
+                      return (
+                        <tr style={{borderTop:'1px solid var(--line)', background:'var(--warn-light)'}}>
+                          <td style={{...td, fontWeight:600, color:'var(--warn)'}}>⚠️ Décaisseur non précisé / non reconnu</td>
+                          <td style={{...td, color:'var(--steam)', fontSize:12}}>
+                            {entreesNonAttribuables.map(e => `${e.nomActeur} — ${fmtGNF(e.montant)}${e.decaissePar ? ` (saisi : « ${e.decaissePar} »)` : ' (champ vide)'}${e.description ? ` — ${e.description}` : ''}`).join(' · ')}
+                          </td>
+                          <td style={{...td, textAlign:'right', fontWeight:600, color:'var(--warn)'}} className="mono">{fmtGNF(totalNonAttribuable)}</td>
+                        </tr>
+                      );
+                    })()}
                   </tbody>
                 </table>
               </div>
+              <p style={{fontSize:11, color:'var(--steam)', margin:'0 0 16px'}}>
+                Si un montant apparaît en « Décaisseur non précisé / non reconnu » ci-dessus alors que vous savez qui l'a physiquement décaissé, corrigez-le dans le tableau détaillé plus haut (bouton crayon ✏️) en choisissant le bon nom dans « Décaissé par » — il remontera alors automatiquement dans la bonne ligne ici.
+              </p>
 
               <p style={{fontSize:11.5, color:'var(--steam)', margin:'0 0 8px'}}>
                 « Décaissé par » = qui a physiquement sorti l'argent de la caisse (obligatoire) — permet de documenter que ce manque de caisse est un crédit pris par l'acteur, pas une dépense ou une faute du caissier qui a payé.
@@ -6833,15 +7019,24 @@ function Dashboard({ site, updateSite }){
   );
 }
 
-function StatCard({ label, value, sub, icon, tone='default' }){
+function StatCard({ label, value, sub, icon, tone='default', onClick }){
   const toneColor = tone === 'danger' ? 'var(--danger)' : 'var(--pine)';
+  const cliquable = typeof onClick === 'function';
   return (
-    <div className="card" style={{padding:'1.1rem 1.25rem'}}>
+    <div
+      className="card"
+      style={{padding:'1.1rem 1.25rem', cursor: cliquable ? 'pointer' : undefined, borderColor: cliquable ? 'var(--pine)' : undefined}}
+      onClick={onClick}
+      role={cliquable ? 'button' : undefined}
+      tabIndex={cliquable ? 0 : undefined}
+      onKeyDown={cliquable ? (e)=>{ if(e.key==='Enter' || e.key===' ') onClick(); } : undefined}
+    >
       <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start'}}>
         <div>
           <div style={{fontSize:12, color:'var(--steam)', textTransform:'uppercase', letterSpacing:'0.04em', fontWeight:600}}>{label}</div>
           <div style={{fontSize:22, fontWeight:700, color:toneColor, marginTop:4}}>{value}</div>
           {sub && <div style={{fontSize:12, color:'var(--steam)', marginTop:2}}>{sub}</div>}
+          {cliquable && <div style={{fontSize:11, color:'var(--pine)', marginTop:4, textDecoration:'underline'}}>Voir le détail</div>}
         </div>
         <Icon name={icon} size={18} style={{color:'var(--steam)', marginTop:2}} />
       </div>
@@ -12114,6 +12309,35 @@ function RepassageApercuView({ site, updateSite, employeId }){
     return total;
   }, [site.commandes, site.services, site.configRemuneration]);
 
+  // Même logique que ci-dessus, mais au niveau COMMANDE (pas article) : la liste des commandes qui ont au
+  // moins un article repassable en attente, avec client/numéro de reçu/date de dépôt — pour le détail
+  // affiché au clic sur la carte « Commandes restant à repasser ».
+  const commandesRestantARepasser = useMemo(() => {
+    const tarifsRepassage = (site.configRemuneration||{}).tarifsRepassage || [];
+    if(tarifsRepassage.length === 0) return [];
+    const liste = [];
+    (site.commandes||[]).forEach(cmd => {
+      if(cmd.statut === 'Récupéré' || cmd.statut === 'Prêt') return;
+      let qteRepassable = 0;
+      (cmd.lignes||[]).forEach(l => {
+        const svc = site.services.find(s=>s.id===l.serviceId);
+        if(!svc) return;
+        const tarif = tarifsRepassage.find(t =>
+          svc.nom.toLowerCase().includes(t.nom.toLowerCase()) ||
+          t.nom.toLowerCase().includes(svc.nom.toLowerCase())
+        );
+        if(tarif) qteRepassable += Number(l.qte)||0;
+      });
+      if(qteRepassable > 0){
+        const client = site.clients.find(c => c.id === cmd.clientId);
+        liste.push({ id: cmd.id, numero: cmd.numero, clientNom: client ? client.nom : '—', dateCreation: cmd.dateCreation, qteRepassable, statut: cmd.statut });
+      }
+    });
+    return liste.sort((a,b) => new Date(a.dateCreation) - new Date(b.dateCreation)); // plus anciennes en premier
+  }, [site.commandes, site.services, site.clients, site.configRemuneration]);
+
+  const [afficherListeRepassage, setAfficherListeRepassage] = useState(false);
+
   const anneesDisponibles = useMemo(() => {
     const set = new Set(repassages.map(r => Number(r.date.slice(0,4))));
     set.add(Number(todayISO().slice(0,4)));
@@ -12251,11 +12475,49 @@ function RepassageApercuView({ site, updateSite, employeId }){
         )}
       </div>
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20}}>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:20}}>
         <StatCard label={`Total articles repassés — ${periodeLabel}`} value={totalArticlesGeneral} icon="shirt" />
         <StatCard label={`Total — ${periodeLabel}`} value={fmtGNF(totalGeneral)} icon="euro" />
         <StatCard label="Reste à repasser (actuellement)" value={articlesRestantARepasser} icon="shirt" />
+        <StatCard
+          label="Commandes restant à repasser"
+          value={commandesRestantARepasser.length}
+          icon="ticket"
+          onClick={commandesRestantARepasser.length > 0 ? ()=>setAfficherListeRepassage(true) : undefined}
+        />
       </div>
+
+      {afficherListeRepassage && (
+        <ModalShell title="Commandes restant à repasser" onClose={()=>setAfficherListeRepassage(false)} width={620}>
+          <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px'}}>
+            {commandesRestantARepasser.length} commande{commandesRestantARepasser.length>1?'s':''} ont encore au moins un article à repasser — triées de la plus ancienne à la plus récente.
+          </p>
+          <div style={{maxHeight:'55vh', overflowY:'auto'}}>
+            <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
+              <thead>
+                <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                  <th style={th}>Client</th>
+                  <th style={th}>N° reçu</th>
+                  <th style={th}>Jour de dépôt</th>
+                  <th style={th}>Articles à repasser</th>
+                  <th style={th}>Statut</th>
+                </tr>
+              </thead>
+              <tbody>
+                {commandesRestantARepasser.map(c => (
+                  <tr key={c.id} style={{borderTop:'1px solid var(--line)'}}>
+                    <td style={td}>{c.clientNom}</td>
+                    <td style={td} className="mono">{c.numero}</td>
+                    <td style={td}>{fmtDate((c.dateCreation||'').slice(0,10))}</td>
+                    <td style={td} className="mono">{c.qteRepassable}</td>
+                    <td style={td}><span className={`tag ${STATUT_TAG_CLASS[c.statut]}`}>{c.statut}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </ModalShell>
+      )}
 
       {repasseurIds.length === 0 ? (
         <div className="card" style={{padding:'1.25rem', textAlign:'center', color:'var(--steam)', fontSize:13}}>
