@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-26-6">
+<meta name="app-version" content="2026-10-27-3">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-26-6';
+  const APP_VERSION_ACTUELLE = '2026-10-27-3';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -1546,6 +1546,37 @@ function App(){
     });
   }, [db, loading, persist]);
 
+  // Déconnexion automatique après 1h d'inactivité (aucun clic, aucune frappe, aucun défilement, aucun
+  // toucher) — pousse l'acteur à se reconnecter régulièrement. Deux bénéfices concrets : (1) une ligne de
+  // connexion fraîche est enregistrée dans l'historique à chaque reconnexion, ce qui donne une traçabilité
+  // fiable de qui travaille réellement et quand ; (2) un rechargement complet de la page a lieu au retour
+  // à l'écran de connexion (voir RoleSelect), ce qui évite qu'un onglet reste ouvert indéfiniment avec une
+  // version de l'app périmée en mémoire — voir le commentaire sur verifierSalaireJournalier plus bas
+  // (EmployeApp) pour un exemple concret du problème que ça causait sinon (salaire journalier jamais
+  // crédité sur plusieurs jours faute de reconnexion). S'applique à tous les rôles connectés.
+  useEffect(() => {
+    if(!role) return; // personne de connecté : rien à surveiller
+    const DUREE_INACTIVITE_MS = 60 * 60 * 1000; // 1 heure
+    let timerId = null;
+    function deconnecterPourInactivite(){
+      setRole(null);
+      setCurrentSiteId(null);
+      setCurrentClientId(null);
+      setCurrentEmployeId(null);
+    }
+    function reinitialiserTimer(){
+      if(timerId) clearTimeout(timerId);
+      timerId = setTimeout(deconnecterPourInactivite, DUREE_INACTIVITE_MS);
+    }
+    const evenementsActivite = ['mousedown', 'mousemove', 'keydown', 'touchstart', 'scroll', 'click'];
+    evenementsActivite.forEach(ev => window.addEventListener(ev, reinitialiserTimer, { passive: true }));
+    reinitialiserTimer();
+    return () => {
+      if(timerId) clearTimeout(timerId);
+      evenementsActivite.forEach(ev => window.removeEventListener(ev, reinitialiserTimer));
+    };
+  }, [role]);
+
   if(loading || !db){
     return (
       <div style={{minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', color:'var(--pine)'}}>
@@ -1674,6 +1705,35 @@ function employeResponsableCaisse(site, dateISO){
   const entree = PLANNING_DECAISSEMENT_SALAIRE.find(p => p.jours.includes(jour));
   if(!entree) return null;
   return (site.employes||[]).find(e => (e.nom||'').trim().toLowerCase().includes(entree.cible)) || null;
+}
+
+// Calcule la dépense « Salaire journalier » à ajouter pour EMP si elle n'a pas déjà été comptabilisée
+// AUJOURD'HUI, ou null sinon — à fusionner dans le MÊME appel updateSite que l'action en cours (nouvelle
+// commande, encaissement, encaissement sans commande) plutôt que d'appeler updateSite séparément : deux
+// appels updateSite successifs dans le même gestionnaire partiraient tous les deux du même `site` capturé
+// en mémoire (périmé après le premier appel), et le second écraserait silencieusement l'ajout du premier.
+// Objectif : ne plus compter uniquement sur la connexion (recordDailyCaissierExpense, RoleSelect) ou sur
+// la vérification périodique toutes les 5 minutes (verifierSalaireJournalier, EmployeApp — qui peut être
+// retardée ou jamais exécutée si le minuteur est mis en veille par le système sur une tablette dont
+// l'écran reste verrouillé) : désormais, toute action active et réelle de l'employé (créer une commande,
+// encaisser un paiement) déclenche aussi immédiatement le crédit de son salaire du jour s'il est dû.
+// Sans risque de doublon, quel que soit le point d'appel (même vérification `deja` que les deux autres).
+function salaireJournalierDuSiNecessaire(site, emp){
+  if(!site || !emp || !estEmployeSalaireJournalier(emp)) return null;
+  const today = todayISO();
+  if(new Date(today + 'T00:00:00Z').getUTCDay() === 0) return null; // pas de salaire journalier le dimanche
+  const deja = (site.depenses||[]).some(d => d.autoCaissierId === emp.id && d.date === today);
+  if(deja) return null;
+  const responsable = employeResponsableCaisse(site, today);
+  return {
+    id: uid('dep_'),
+    date: today,
+    description: `Salaire journalier — ${emp.nom}`,
+    montant: 50000,
+    categorie: 'Salaires',
+    autoCaissierId: emp.id,
+    saisiPar: (responsable ? responsable.id : emp.id),
+  };
 }
 
 function RoleSelect({ db, setDb, onSelect }){
@@ -7203,6 +7263,18 @@ function Dashboard({ site, updateSite }){
   const periodeAvantLancement = periode !== 'annee' && periode !== 'mois' && periode !== 'total' && bornes.fin < '2026-09-01';
 
   const lowStock = (site.stock||[]).filter(s => s.quantite <= s.seuil);
+
+  // Alerte visible à la caisse : quels employés éligibles au salaire journalier (Mamadou Alpha / Nene
+  // Djiba) ne sont pas encore connectés aujourd'hui, donc leur salaire du jour n'est pas encore
+  // comptabilisé — pour que la personne présente à la caisse pense à prévenir l'autre de se connecter.
+  // (Celui déjà actif aujourd'hui disparaît naturellement de cette liste dès que son salaire est crédité,
+  // que ce soit par connexion ou par une action réelle — voir salaireJournalierDuSiNecessaire.)
+  const salariesNonConnectes = useMemo(() => {
+    const estDimanche = new Date(today + 'T00:00:00Z').getUTCDay() === 0;
+    if(estDimanche) return [];
+    return (site.employes||[]).filter(e => estEmployeSalaireJournalier(e) && !(site.depenses||[]).some(d => d.autoCaissierId === e.id && d.date === today));
+  }, [site.employes, site.depenses, today]);
+
   const btn = (k, l) => (
     <button key={k} className="btn btn-sm" onClick={()=>setPeriode(k)}
       style={{background:periode===k?'var(--pine)':'transparent', color:periode===k?'var(--white)':'var(--ink)', borderColor:periode===k?'var(--pine)':'var(--line-strong)'}}>
@@ -7213,6 +7285,32 @@ function Dashboard({ site, updateSite }){
   return (
     <div>
       <PageHeader title={site.nom} subtitle={`Aujourd'hui, ${fmtDate(today)}`} />
+
+      {salariesNonConnectes.length > 0 && (
+        <div style={{background:'var(--warn-light)', border:'1px solid var(--warn)', borderRadius:8, padding:'10px 14px', marginBottom:16, fontSize:13, color:'var(--ink)'}}>
+          <div style={{display:'flex', alignItems:'flex-start', gap:8}}>
+            <span>⏰</span>
+            <span>Pas encore connecté{salariesNonConnectes.length>1?'s':''} aujourd'hui : <b>{salariesNonConnectes.map(e=>e.nom).join(', ')}</b> — {salariesNonConnectes.length>1?'leurs salaires du jour ne sont':'son salaire du jour n\'est'} pas encore comptabilisé{salariesNonConnectes.length>1?'s':''}. Pensez à {salariesNonConnectes.length>1?'les':'le'} prévenir de se connecter.</span>
+          </div>
+          <div style={{display:'flex', gap:8, flexWrap:'wrap', marginTop:8}}>
+            {salariesNonConnectes.map(e => {
+              const telPropre = (e.tel||'').replace(/\D/g,'');
+              if(!telPropre) return (
+                <span key={e.id} style={{fontSize:11.5, color:'var(--steam)', fontStyle:'italic'}}>
+                  {e.nom} : numéro non renseigné (Équipe → Ajouter un téléphone)
+                </span>
+              );
+              const msg = `Bonjour ${e.nom}, pensez à vous connecter sur l'application Maci Pressing aujourd'hui pour que votre salaire journalier soit comptabilisé. Merci !`;
+              return (
+                <a key={e.id} className="btn btn-sm" style={{background:'#25D366', color:'#fff', borderColor:'#25D366'}}
+                  href={`https://wa.me/${telPropre}?text=${encodeURIComponent(msg)}`} target="_blank" rel="noopener noreferrer">
+                  📱 Alerter {e.nom} par WhatsApp
+                </a>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
         {btn('jour', "Aujourd'hui")}
@@ -7416,7 +7514,16 @@ function EncaisserSansCommandeModal({ site: siteFixe, sites, updateSite, employe
       note: note.trim(),
       employeId: (employeId || encaisseParId) || null,
     };
-    updateSite({ ...site, paiementsHorsCommande: [entry, ...(site.paiementsHorsCommande||[])] });
+    // Crédite immédiatement le salaire journalier de l'employé qui encaisse ce paiement s'il est dû et
+    // pas encore enregistré aujourd'hui (voir salaireJournalierDuSiNecessaire).
+    const empActuelId = employeId || encaisseParId;
+    const empActuel = empActuelId ? (site.employes||[]).find(e => e.id === empActuelId) : null;
+    const depSalaire = salaireJournalierDuSiNecessaire(site, empActuel);
+    updateSite({
+      ...site,
+      paiementsHorsCommande: [entry, ...(site.paiementsHorsCommande||[])],
+      depenses: depSalaire ? [depSalaire, ...(site.depenses||[])] : site.depenses,
+    });
     onClose();
   }
 
@@ -7728,17 +7835,22 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
   function togglePaiement(cmd){
     updateCommande({ ...cmd, paiement: cmd.paiement === 'paye' ? 'impaye' : 'paye' });
   }
-  async function enregistrerPaiement(cmd, montant, mode){
-    const total = calcCommandeTotal(cmd, site.services);
+  async function enregistrerPaiement(cmd, montant, mode, rabaisSupp=0){
+    const totalAvantRabaisSupp = calcCommandeTotal(cmd, site.services);
+    const rabaisSuppNum = Math.max(0, Number(rabaisSupp) || 0);
+    // Rabais additionnel accordé au moment de l'encaissement (ex: négociation à la récupération) — vient
+    // s'ajouter au rabais éventuel déjà appliqué à la création de la commande, jamais le remplacer.
+    const nouveauRabaisTotal = (Number(cmd.rabais) || 0) + rabaisSuppNum;
+    const total = Math.max(0, totalAvantRabaisSupp - rabaisSuppNum);
     const nouvelAcompte = Math.min((Number(cmd.acompte)||0) + Number(montant), total);
     const nouveauSolde = total - nouvelAcompte;
     const nouveauPaiement = { id: uid('pmt_'), montant: Number(montant), mode, date: new Date().toISOString(), employeId: employeId || null };
-    const updated = { ...cmd, acompte: nouvelAcompte, paiement: nouvelAcompte >= total ? 'paye' : 'impaye', modePaiement: mode, paiements: [...(cmd.paiements||[]), nouveauPaiement] };
+    const updated = { ...cmd, rabais: nouveauRabaisTotal, acompte: nouvelAcompte, paiement: nouvelAcompte >= total ? 'paye' : 'impaye', modePaiement: mode, paiements: [...(cmd.paiements||[]), nouveauPaiement] };
 
     const client = site.clients.find(c => c.id === cmd.clientId);
 
     // Reçu de paiement à envoyer au client (montant versé maintenant + nouveau solde)
-    let msgPaiement = `🧾 Reçu de paiement — ${site.nom}\nCommande : ${cmd.numero}\n\nMontant versé aujourd'hui : ${fmtGNF(Number(montant))}\nMode : ${mode}\nTotal commande : ${fmtGNF(total)}\nTotal payé à ce jour : ${fmtGNF(nouvelAcompte)}\n${nouveauSolde > 0 ? `Solde restant : ${fmtGNF(nouveauSolde)}` : '✅ Commande entièrement payée'}\n\nMerci pour votre confiance !`;
+    let msgPaiement = `🧾 Reçu de paiement — ${site.nom}\nCommande : ${cmd.numero}\n\n${rabaisSuppNum>0?`Rabais accordé : -${fmtGNF(rabaisSuppNum)}\n`:''}Montant versé aujourd'hui : ${fmtGNF(Number(montant))}\nMode : ${mode}\nTotal commande : ${fmtGNF(total)}\nTotal payé à ce jour : ${fmtGNF(nouvelAcompte)}\n${nouveauSolde > 0 ? `Solde restant : ${fmtGNF(nouveauSolde)}` : '✅ Commande entièrement payée'}\n\nMerci pour votre confiance !`;
 
     // Générer un nouveau reçu PDF reflétant ce paiement et l'envoyer sur Firebase Storage (avec délai de sécurité de 8s)
     try {
@@ -7753,10 +7865,16 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
 
     const notif = client ? { id: uid('notif_'), clientId: client.id, message: msgPaiement, canal: client.canalPref || 'SMS', date: new Date().toISOString() } : null;
 
+    // Crédite immédiatement le salaire journalier de l'employé qui encaisse ce paiement s'il est dû et
+    // pas encore enregistré aujourd'hui (voir salaireJournalierDuSiNecessaire).
+    const empActuel = employeId ? (site.employes||[]).find(e => e.id === employeId) : null;
+    const depSalaire = salaireJournalierDuSiNecessaire(site, empActuel);
+
     updateSite({
       ...site,
       commandes: site.commandes.map(c => c.id === updated.id ? updated : c),
       notifications: notif ? [notif, ...site.notifications].slice(0,300) : site.notifications,
+      depenses: depSalaire ? [depSalaire, ...(site.depenses||[])] : site.depenses,
     });
 
     // Ouvrir WhatsApp automatiquement si le client a un numéro
@@ -7962,7 +8080,7 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
       {!employeId && <JournalModificationsCard site={site} sections={['Commandes']} />}
       {showNewClient && <NewClientModal site={site} updateSite={updateSite} onClose={()=>setShowNewClient(false)} />}
       {showEncaisserSansCommande && <EncaisserSansCommandeModal site={site} updateSite={updateSite} employeId={employeId} onClose={()=>setShowEncaisserSansCommande(false)} />}
-      {encaisserCmd && <EncaisserModal cmd={encaisserCmd} site={site} onClose={()=>setEncaisserCmd(null)} onSave={(montant, mode)=>enregistrerPaiement(encaisserCmd, montant, mode)} />}
+      {encaisserCmd && <EncaisserModal cmd={encaisserCmd} site={site} onClose={()=>setEncaisserCmd(null)} onSave={(montant, mode, rabaisSupp)=>enregistrerPaiement(encaisserCmd, montant, mode, rabaisSupp)} />}
     </div>
   );
 }
@@ -7970,7 +8088,26 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
 function EncaisserModal({ cmd, site, onClose, onSave }){
   const total = calcCommandeTotal(cmd, site.services);
   const soldeActuel = total - (Number(cmd.acompte)||0);
+  // Rabais additionnel accordé au moment de l'encaissement (ex: négociation à la récupération des
+  // articles) — s'ajoute au rabais éventuel déjà appliqué à la création de la commande, ne le remplace pas.
+  const [rabaisMode, setRabaisMode] = useState('none'); // 'none' | 'pourcent' | 'fixe'
+  const [rabaisSaisi, setRabaisSaisi] = useState('');
+  const montantRabaisSupp = useMemo(() => {
+    if(rabaisMode === 'pourcent' && rabaisSaisi) return Math.round(total * Number(rabaisSaisi) / 100);
+    if(rabaisMode === 'fixe' && rabaisSaisi) return Math.min(Number(rabaisSaisi), total);
+    return 0;
+  }, [total, rabaisMode, rabaisSaisi]);
+  const nouveauTotal = Math.max(0, total - montantRabaisSupp);
+  const nouveauSolde = Math.max(0, nouveauTotal - (Number(cmd.acompte)||0));
+
   const [montant, setMontant] = useState(String(soldeActuel > 0 ? soldeActuel : 0));
+  const [montantTouche, setMontantTouche] = useState(false);
+  // Tant que l'employé n'a pas lui-même modifié le montant proposé, on le garde aligné sur le solde
+  // restant (qui change si un rabais est appliqué) — dès qu'il y touche, on respecte sa saisie.
+  useEffect(() => {
+    if(!montantTouche) setMontant(String(nouveauSolde > 0 ? nouveauSolde : 0));
+    // eslint-disable-next-line
+  }, [nouveauSolde]);
   const [mode, setMode] = useState(cmd.modePaiement || 'Espèces');
 
   return (
@@ -7980,16 +8117,47 @@ function EncaisserModal({ cmd, site, onClose, onSave }){
           <div style={{display:'flex', justifyContent:'space-between'}}>
             <span>Total commande</span><span className="mono">{fmtGNF(total)}</span>
           </div>
+          {montantRabaisSupp > 0 && (
+            <div style={{display:'flex', justifyContent:'space-between', color:'var(--rust)'}}>
+              <span>Rabais accordé</span><span className="mono">− {fmtGNF(montantRabaisSupp)}</span>
+            </div>
+          )}
           <div style={{display:'flex', justifyContent:'space-between'}}>
             <span>Déjà payé</span><span className="mono">{fmtGNF(Number(cmd.acompte)||0)}</span>
           </div>
-          <div style={{display:'flex', justifyContent:'space-between', fontWeight:700, color: soldeActuel>0 ? 'var(--danger)' : 'var(--ok)', borderTop:'1px dashed var(--line-strong)', marginTop:6, paddingTop:6}}>
-            <span>Solde restant</span><span className="mono">{fmtGNF(soldeActuel)}</span>
+          <div style={{display:'flex', justifyContent:'space-between', fontWeight:700, color: nouveauSolde>0 ? 'var(--danger)' : 'var(--ok)', borderTop:'1px dashed var(--line-strong)', marginTop:6, paddingTop:6}}>
+            <span>Solde restant</span><span className="mono">{fmtGNF(nouveauSolde)}</span>
           </div>
         </div>
+
+        <div>
+          <div style={{display:'flex', gap:8, marginBottom:8, flexWrap:'wrap'}}>
+            {[{label:'Pas de rabais', val:'none'}, {label:'Rabais %', val:'pourcent'}, {label:'Montant fixe', val:'fixe'}].map(opt => (
+              <button key={opt.val} type="button" className="btn btn-sm" onClick={()=>{ setRabaisMode(opt.val); setRabaisSaisi(''); }}
+                style={{background: rabaisMode===opt.val ? 'var(--rust)' : 'transparent', color: rabaisMode===opt.val ? 'var(--white)' : 'var(--ink)', borderColor: rabaisMode===opt.val ? 'var(--rust)' : 'var(--line-strong)', fontSize:12}}>
+                🏷️ {opt.label}
+              </button>
+            ))}
+          </div>
+          {rabaisMode === 'pourcent' && (
+            <div style={{display:'flex', gap:8, flexWrap:'wrap', marginBottom:6}}>
+              {[5, 10, 15, 20, 25].map(p => (
+                <button key={p} type="button" className="btn btn-sm" onClick={()=>setRabaisSaisi(String(p))}
+                  style={{background: rabaisSaisi===String(p) ? 'var(--rust)' : 'transparent', color: rabaisSaisi===String(p) ? 'var(--white)' : 'var(--ink)', borderColor: rabaisSaisi===String(p) ? 'var(--rust)' : 'var(--line-strong)'}}>
+                  {p}%
+                </button>
+              ))}
+              <input type="number" placeholder="Autre %" value={rabaisSaisi} onChange={e=>setRabaisSaisi(e.target.value)} style={{width:80, padding:'5px 8px'}} max={100} min={0}/>
+            </div>
+          )}
+          {rabaisMode === 'fixe' && (
+            <input type="number" placeholder="Montant du rabais (GNF)" value={rabaisSaisi} onChange={e=>setRabaisSaisi(e.target.value)} max={total} min={0}/>
+          )}
+        </div>
+
         <div>
           <label>Montant que le client paie maintenant</label>
-          <input type="number" value={montant} onChange={e=>setMontant(e.target.value)} min={0} max={soldeActuel} autoFocus />
+          <input type="number" value={montant} onChange={e=>{ setMontant(e.target.value); setMontantTouche(true); }} min={0} max={nouveauSolde} autoFocus />
           <p style={{fontSize:12, color:'var(--steam)', margin:'6px 0 0', lineHeight:1.4}}>
             Si le client récupère ses articles sans tout régler, entrez ici seulement ce qu'il paie réellement — le reste restera enregistré comme solde dû.
           </p>
@@ -8003,7 +8171,7 @@ function EncaisserModal({ cmd, site, onClose, onSave }){
         </div>
         <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
           <button className="btn" onClick={onClose}>Annuler</button>
-          <button className="btn btn-rust" disabled={!montant || Number(montant)<=0} onClick={()=>{ onSave(Number(montant), mode); onClose(); }}>Enregistrer le paiement</button>
+          <button className="btn btn-rust" disabled={!montant || Number(montant)<=0} onClick={()=>{ onSave(Number(montant), mode, montantRabaisSupp); onClose(); }}>Enregistrer le paiement</button>
         </div>
       </div>
     </ModalShell>
@@ -8161,12 +8329,19 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
 
     const notif = { id: uid('notif_'), clientId: finalClientId, message: msgDepose, canal: client.canalPref || 'SMS', date: new Date().toISOString() };
 
+    // Crédite immédiatement le salaire journalier de l'employé qui crée cette commande s'il est dû et pas
+    // encore enregistré aujourd'hui — fusionné dans ce même appel updateSite (voir le commentaire sur
+    // salaireJournalierDuSiNecessaire) plutôt que déclenché à part.
+    const empActuel = employeId ? (site.employes||[]).find(e => e.id === employeId) : null;
+    const depSalaire = salaireJournalierDuSiNecessaire(site, empActuel);
+
     updateSite({
       ...site,
       seq: numeroSaisi ? seq : Math.max(seq, seqUtilisee + 1),
       clients: workingClients,
       commandes: [cmd, ...site.commandes],
       notifications: [notif, ...site.notifications].slice(0,300),
+      depenses: depSalaire ? [depSalaire, ...(site.depenses||[])] : site.depenses,
     });
 
     // Ouvrir WhatsApp automatiquement si le client a un numéro
@@ -8835,6 +9010,10 @@ function EditCommandeModal({ cmd, site, updateSite, onClose, employeId=null, db 
   const [dateRetrait, setDateRetrait] = useState(cmd.dateRetraitPrevue || '');
   const [dateRdv, setDateRdv] = useState(cmd.dateRdvRecuperation || '');
   const [heureRdv, setHeureRdv] = useState(cmd.heureRdvRecuperation || '');
+  // Rabais : modifiable à TOUT moment, quel que soit le statut de la commande (y compris après « Prêt »),
+  // puisque calcCommandeTotal recalcule le total à partir des lignes (inchangées ici) ET de cmd.rabais —
+  // changer le rabais après coup se répercute donc automatiquement partout (reçus, tableaux de bord...).
+  const [rabais, setRabais] = useState(String(cmd.rabais || 0));
   const [demandeConfirmation, setDemandeConfirmation] = useState(false);
   const [enCours, setEnCours] = useState(false);
   const [erreur, setErreur] = useState('');
@@ -8842,11 +9021,18 @@ function EditCommandeModal({ cmd, site, updateSite, onClose, employeId=null, db 
 
   const numeroNettoye = numero.trim().toUpperCase();
   const numeroChange = !!numeroNettoye && numeroNettoye !== cmd.numero;
+  const rabaisNum = Math.max(0, Number(rabais) || 0);
+  const rabaisChange = rabaisNum !== (Number(cmd.rabais) || 0);
+  const totalActuel = calcCommandeTotal(cmd, site.services);
+  const nouveauTotalApercu = calcCommandeTotal({ ...cmd, rabais: rabaisNum }, site.services);
+  const acompteActuel = Number(cmd.acompte) || 0;
+  const depasseAcompte = rabaisChange && nouveauTotalApercu < acompteActuel;
 
   function listeChangements(){
     const ch = [];
     const d = v => v ? fmtDate(v) : '—';
     if(numeroChange) ch.push(`n° de reçu ${cmd.numero} → ${numeroNettoye}`);
+    if(rabaisChange) ch.push(`rabais ${fmtGNF(Number(cmd.rabais)||0)} → ${fmtGNF(rabaisNum)} (total ${fmtGNF(totalActuel)} → ${fmtGNF(nouveauTotalApercu)})`);
     if(notes.trim() !== (cmd.notes||'').trim()) ch.push(`notes « ${(cmd.notes||'').trim()||'—'} » → « ${notes.trim()||'—'} »`);
     if((dateRetrait||'') !== (cmd.dateRetraitPrevue||'')) ch.push(`RDV de récupération ${d(cmd.dateRetraitPrevue)} → ${d(dateRetrait)}`);
     if((dateRdv||'') !== (cmd.dateRdvRecuperation||'') || (heureRdv||'') !== (cmd.heureRdvRecuperation||'')) ch.push(`rendez-vous ${d(cmd.dateRdvRecuperation)}${cmd.heureRdvRecuperation?' '+cmd.heureRdvRecuperation:''} → ${d(dateRdv)}${heureRdv?' '+heureRdv:''}`);
@@ -8872,8 +9058,13 @@ function EditCommandeModal({ cmd, site, updateSite, onClose, employeId=null, db 
         if(!res.ok){ setErreur(res.message); return; }
         cmdMaj = res.cmdMaj; client = res.client; total = res.total;
       }
+      total = calcCommandeTotal({ ...cmdMaj, rabais: rabaisNum }, site.services);
+      // Si le nouveau rabais fait tomber le total sous ce qui a déjà été payé, la commande est considérée
+      // entièrement payée (pas de solde négatif affiché) — aucun remboursement n'est créé automatiquement.
       cmdMaj = {
         ...cmdMaj, notes: notes.trim(),
+        rabais: rabaisNum,
+        paiement: acompteActuel >= total ? 'paye' : cmdMaj.paiement,
         dateRetraitPrevue: dateRetrait || null,
         dateRdvRecuperation: dateRdv || null,
         heureRdvRecuperation: heureRdv || null,
@@ -8931,6 +9122,15 @@ function EditCommandeModal({ cmd, site, updateSite, onClose, employeId=null, db 
         <div><label>Notes</label>
           <input type="text" value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Tache, bouton manquant…" />
         </div>
+        <div>
+          <label>🏷️ Rabais (GNF)</label>
+          <input type="number" value={rabais} onChange={e=>setRabais(e.target.value)} min={0} max={totalActuel + (Number(cmd.rabais)||0)} />
+          <p style={{fontSize:11.5, color: rabaisChange ? 'var(--rust)' : 'var(--steam)', margin:'4px 0 0', lineHeight:1.4}}>
+            {rabaisChange
+              ? `⚠️ Le total passera de ${fmtGNF(totalActuel)} à ${fmtGNF(nouveauTotalApercu)}.${depasseAcompte ? ' Ce montant déjà payé (' + fmtGNF(acompteActuel) + ') dépassera le nouveau total — la commande sera marquée entièrement payée, sans remboursement automatique.' : ''}`
+              : 'Modifiable à tout moment, même après que la commande est passée « Prêt ».'}
+          </p>
+        </div>
         {erreur && <p style={{color:'var(--danger)', fontSize:13, margin:0}}>❌ {erreur}</p>}
         <p style={{fontSize:11.5, color:'var(--steam)', margin:0, lineHeight:1.4}}>
           🔒 {employeId ? 'Vous confirmerez avec VOTRE propre mot de passe (pas celui du gérant). ' : ''}La modification est enregistrée à votre nom et le gérant en est averti.
@@ -8941,7 +9141,7 @@ function EditCommandeModal({ cmd, site, updateSite, onClose, employeId=null, db 
         </div>
       </div>
       {demandeConfirmation && (
-        <ConfirmerModification db={db} site={site} employeId={employeId} avecMotif={numeroChange}
+        <ConfirmerModification db={db} site={site} employeId={employeId} avecMotif={numeroChange || rabaisChange}
           message={<>Modifier la commande <b>{cmd.numero}</b> : {listeChangements().join(' ; ')}</>}
           actionLabel="Confirmer la modification"
           onConfirm={enregistrer}
@@ -10086,6 +10286,9 @@ function EquipeView({ site, updateSite, db }){
   const [editNomEmp, setEditNomEmp] = useState(null);
   const [newNom, setNewNom] = useState('');
   const [nomFlash, setNomFlash] = useState(false);
+  const [editTelEmp, setEditTelEmp] = useState(null);
+  const [newTel, setNewTel] = useState('');
+  const [telFlash, setTelFlash] = useState(false);
 
   function removeEmp(id){
     const emp = site.employes.find(e=>e.id===id);
@@ -10104,6 +10307,13 @@ function EquipeView({ site, updateSite, db }){
     updateSite({ ...site, employes: site.employes.map(e => e.id===editNomEmp.id ? {...e, nom: newNom.trim()} : e) });
     setNomFlash(true);
     setTimeout(()=>{ setNomFlash(false); setEditNomEmp(null); setNewNom(''); }, 1500);
+  }
+  function saveNewTel(){
+    // Le téléphone est optionnel — on autorise aussi de le vider (le champ servait alors un numéro saisi
+    // par erreur) : seule l'absence de sélection d'employé bloque l'enregistrement.
+    updateSite({ ...site, employes: site.employes.map(e => e.id===editTelEmp.id ? {...e, tel: newTel.trim()} : e) });
+    setTelFlash(true);
+    setTimeout(()=>{ setTelFlash(false); setEditTelEmp(null); setNewTel(''); }, 1500);
   }
 
   return (
@@ -10134,6 +10344,14 @@ function EquipeView({ site, updateSite, db }){
               </button>
               <button className="btn btn-ghost btn-sm" style={{padding:'3px 8px', fontSize:11, color:'var(--rust)'}} onClick={()=>{ setEditPassEmp(e); setNewPass(''); setShowNewPass(false); }}>
                 <Icon name="edit" size={12}/> Changer mdp
+              </button>
+            </div>
+            <div style={{marginTop:8, display:'flex', alignItems:'center', gap:8, flexWrap:'wrap'}}>
+              <span style={{fontSize:12.5, color: e.tel ? 'var(--ink)' : 'var(--steam)'}}>
+                📱 {e.tel || 'Numéro non renseigné'}
+              </span>
+              <button className="btn btn-ghost btn-sm" style={{padding:'3px 8px', fontSize:11, color:'var(--rust)'}} onClick={()=>{ setEditTelEmp(e); setNewTel(e.tel||''); }}>
+                <Icon name="edit" size={12}/> {e.tel ? 'Modifier' : 'Ajouter'}
               </button>
             </div>
           </div>
@@ -10183,6 +10401,26 @@ function EquipeView({ site, updateSite, db }){
               <button className="btn" onClick={()=>{ setEditNomEmp(null); setNewNom(''); }}>Annuler</button>
               <button className="btn btn-rust" disabled={!newNom.trim()} onClick={saveNewNom}>
                 {nomFlash ? <><Icon name="check" size={14}/> Modifié !</> : 'Enregistrer'}
+              </button>
+            </div>
+          </div>
+        </ModalShell>
+      )}
+
+      {editTelEmp && (
+        <ModalShell title={`Téléphone — ${editTelEmp.nom}`} onClose={()=>{ setEditTelEmp(null); setNewTel(''); }} width={400}>
+          <div style={{display:'grid', gap:14}}>
+            <div>
+              <label>Numéro de téléphone (WhatsApp)</label>
+              <input type="tel" placeholder="Ex : +224 6XX XX XX XX" value={newTel} onChange={e=>setNewTel(e.target.value)} autoFocus />
+            </div>
+            <p style={{fontSize:12.5, color:'var(--steam)', margin:0, lineHeight:1.5}}>
+              Sert uniquement à alerter cet employé par WhatsApp (ex: depuis le Tableau de bord, s'il n'est pas encore connecté un jour où son salaire journalier est dû). Jamais utilisé pour autre chose.
+            </p>
+            <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
+              <button className="btn" onClick={()=>{ setEditTelEmp(null); setNewTel(''); }}>Annuler</button>
+              <button className="btn btn-rust" onClick={saveNewTel}>
+                {telFlash ? <><Icon name="check" size={14}/> Modifié !</> : 'Enregistrer'}
               </button>
             </div>
           </div>
@@ -10275,12 +10513,13 @@ function MonCompteView({ site, updateSite, employeId }){
 function NewEmployeModal({ site, updateSite, onClose }){
   const [nom, setNom] = useState('');
   const [role, setRole] = useState('Caissier');
+  const [tel, setTel] = useState('');
   const [motdepasse, setMotdepasse] = useState('');
   const [showPass, setShowPass] = useState(false);
 
   function submit(){
     if(!nom.trim() || !motdepasse.trim()) return;
-    updateSite({ ...site, employes: [...site.employes, { id: uid('emp_'), nom: nom.trim(), role, motdepasse: motdepasse.trim() }] });
+    updateSite({ ...site, employes: [...site.employes, { id: uid('emp_'), nom: nom.trim(), role, tel: tel.trim(), motdepasse: motdepasse.trim() }] });
     onClose();
   }
   return (
@@ -10300,6 +10539,10 @@ function NewEmployeModal({ site, updateSite, onClose }){
             <option>Gérant adjoint</option>
             <option>Autre</option>
           </select>
+        </div>
+        <div>
+          <label>Téléphone (optionnel — WhatsApp)</label>
+          <input type="tel" placeholder="Ex : +224 6XX XX XX XX" value={tel} onChange={e=>setTel(e.target.value)} />
         </div>
         <div>
           <label>Mot de passe de connexion</label>
@@ -10652,9 +10895,16 @@ function DepensesView({ site, updateSite, db, employeId }){
         lignesFiltrees.forEach(l => {
           if(l.categorie === 'Salaires'){
             const key = `sal|${l.date.slice(0,10)}|${l.mode}`;
-            if(!groupes[key]) groupes[key] = { ...l, id: key, description: '', montant: 0, count: 0, isGrouped: true, isOrphan: true };
+            if(!groupes[key]) groupes[key] = { ...l, id: key, description: '', montant: 0, count: 0, isGrouped: true, isOrphan: true, detailSalaires: [] };
             groupes[key].montant += l.montant;
             groupes[key].count += 1;
+            // Pour chaque versement du groupe, retrouve à qui ce salaire est réellement crédité
+            // (autoCaissierId) — distinct de qui décaisse (saisiParNom, déjà affiché ailleurs) — afin de
+            // pouvoir afficher un indice (« Mamadou Alpha : 50 000 GNF · Nene Djiba : 50 000 GNF ») une
+            // fois les versements regroupés sous une seule ligne « Salaires du jour (N versements) ».
+            const beneficiaireId = l.original ? l.original.autoCaissierId : null;
+            const beneficiaireNom = beneficiaireId ? ((site.employes.find(e=>e.id===beneficiaireId)||{}).nom || 'Employé supprimé') : null;
+            groupes[key].detailSalaires.push({ nom: beneficiaireNom || 'Non attribué', montant: l.montant });
           } else if(l.categorie === 'Paiement repasseur' && l.isOrphan){
             // Ne regroupe que les prestations encore virtuelles (reliquat historique sans dépense propre) —
             // une vraie dépense enregistrée (isOrphan: false, désormais toujours UNE ligne par décaissement
@@ -10785,6 +11035,13 @@ function DepensesView({ site, updateSite, db, employeId }){
                         {l.description}
                         {l.isOrphan && !l.isGrouped && <span className="tag" style={{marginLeft:6, fontSize:9.5, background:'var(--warn-light)', color:'var(--warn)'}}>Historique</span>}
                         {l.isGrouped && <span className="tag" style={{marginLeft:6, fontSize:9.5, background:'var(--pine-light)', color:'var(--pine)'}}>Groupé</span>}
+                        {/* Indice : à qui chaque versement de salaire regroupé est réellement crédité — distinct
+                            de « Saisi par » (qui décaisse l'argent, pas forcément le bénéficiaire). */}
+                        {l.detailSalaires && l.detailSalaires.length > 0 && (
+                          <div style={{fontSize:11, color:'var(--steam)', marginTop:3, fontWeight:400}}>
+                            {l.detailSalaires.map((d,i) => `${d.nom} : ${fmtGNF(d.montant)}`).join(' · ')}
+                          </div>
+                        )}
                       </td>
                       {CATEGORIES_DEPENSES_AFFICHAGE.map(cat => (
                         <td key={cat} style={{...td, color: cat===l.categorie ? 'var(--danger)' : 'var(--line)', fontWeight: cat===l.categorie ? 600 : 400}} className="mono">
