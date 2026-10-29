@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-27-3">
+<meta name="app-version" content="2026-10-29-4">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-27-3';
+  const APP_VERSION_ACTUELLE = '2026-10-29-4';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -5527,7 +5527,7 @@ function DetailMensuelConsolideView({ db, updateSite }){
     const anneesUniques = Array.from(new Set(anneeMoisListe.map(x => x.annee)));
     return db.sites.map(site => {
       const employesSite = [
-        ...(site.employes||[]).filter(e => e.role !== 'Repasseur').map(e => ({ id: e.id, nom: e.nom })),
+        ...(site.employes||[]).filter(e => e.role !== 'Repasseur' && !estEmployeEmballeur(e)).map(e => ({ id: e.id, nom: e.nom })),
         { id: null, nom: 'Gérant' },
       ];
       const lignes = employesSite.map(({id, nom}) => {
@@ -6113,7 +6113,7 @@ function EncaissementsDecaissementsGlobalView({ db, updateSite }){
           };
           // Ordre : employés actuels (hors repasseurs) dans l'ordre de l'équipe, puis gérant, puis anciens employés
           const lignesEmployes = ouvert ? [
-            ...(site.employes||[]).filter(e => e.role !== 'Repasseur').map(e => ligne(e.id)),
+            ...(site.employes||[]).filter(e => e.role !== 'Repasseur' && !estEmployeEmballeur(e)).map(e => ligne(e.id)),
             ligne(null),
             ...Object.values(parEmploye).filter(l => l.empId && !(site.employes||[]).some(e => e.id === l.empId)),
           ] : [];
@@ -7491,7 +7491,7 @@ function EncaisserSansCommandeModal({ site: siteFixe, sites, updateSite, employe
   }, [clients, clientSearch]);
 
   const clientChoisi = clients.find(c=>c.id===clientId);
-  const employesChoix = site ? (site.employes||[]).filter(e => e.role !== 'Repasseur') : [];
+  const employesChoix = site ? (site.employes||[]).filter(e => e.role !== 'Repasseur' && !estEmployeEmballeur(e)) : [];
 
   function changerSite(id){
     setSiteId(id);
@@ -10531,6 +10531,7 @@ function NewEmployeModal({ site, updateSite, onClose }){
           <select value={role} onChange={e=>setRole(e.target.value)}>
             <option>Caissier</option>
             <option>Repasseur</option>
+            <option>Emballeur</option>
             <option>Nettoyeur</option>
             <option>Pressing</option>
             <option>Livreur</option>
@@ -10574,7 +10575,20 @@ function NewEmployeModal({ site, updateSite, onClose }){
 /* ===================== DEPENSES ===================== */
 
 const CATEGORIES_DEPENSES = ['Salaires', 'Électricité', 'Loyer', 'Fournitures', 'Autres'];
-const CATEGORIES_DEPENSES_AFFICHAGE = ['Salaires', 'Électricité', 'Loyer', 'Paiement repasseur', 'Livraison', 'Fournitures', 'Autres'];
+const CATEGORIES_DEPENSES_AFFICHAGE = ['Salaires', 'Électricité', 'Loyer', 'Paiement repasseur', 'Livraison', 'Paiement emballeur', 'Fournitures', 'Autres'];
+// Tarif payé par emballage (GNF) — une seule personne est habilitée à être payée pour l'emballage,
+// Boubacar Sadio (voir NOM_EMPLOYE_EMBALLEUR) : contrairement au salaire journalier (crédité
+// automatiquement à la connexion/action), cette dépense se saisit manuellement — le gérant ou l'employé
+// entre juste la quantité emballée, le montant se calcule tout seul (voir NewDepenseModal).
+const TARIF_EMBALLAGE = 300;
+const NOM_EMPLOYE_EMBALLEUR = 'boubacar sadio';
+function estEmployeEmballeur(emp){
+  if(!emp) return false;
+  // Reconnu soit par le rôle « Emballeur » choisi dans Équipe, soit par son nom (compatibilité avec les
+  // dépenses déjà enregistrées avant l'ajout de ce rôle) — les deux désignent la même personne habilitée.
+  if(emp.role === 'Emballeur') return true;
+  return (emp.nom || '').trim().toLowerCase().includes(NOM_EMPLOYE_EMBALLEUR);
+}
 
 // Résout la catégorie réellement affichée pour une dépense — corrige l'étiquette des anciennes
 // dépenses de repassage encore enregistrées sous 'Livraison' ou 'Prestations' (avant la séparation
@@ -10834,6 +10848,14 @@ function DepensesView({ site, updateSite, db, employeId }){
           const confirmes = remsLiees.filter(r => r.valideParRepasseur).length;
           return { label: `${confirmes}/${remsLiees.length} confirmé(s)`, color: confirmes===remsLiees.length ? 'var(--pine)' : 'var(--warn)', bg: confirmes===remsLiees.length ? 'var(--pine-light)' : 'var(--warn-light)' };
         }
+        // Même principe que statutConfirmation ci-dessus, mais pour les dépenses « Paiement emballeur » :
+        // Boubacar Sadio confirme lui-même avoir reçu l'argent (valideParEmballeur), directement sur la
+        // dépense — pas de rémunération liée séparée comme pour le repassage.
+        function statutConfirmationEmballeur(d){
+          return d.valideParEmballeur
+            ? { label: '✓ Confirmé', color: 'var(--pine)', bg: 'var(--pine-light)' }
+            : { label: 'Non confirmé', color: 'var(--warn)', bg: 'var(--warn-light)' };
+        }
 
         const lignesBrutes = [
           ...filtered.map(d => {
@@ -10853,7 +10875,7 @@ function DepensesView({ site, updateSite, db, employeId }){
               categorie: categorieAffichee(d, remunerations), mode: d.modePaiement || 'Espèces',
               saisiParNom: d.saisiPar ? ((site.employes.find(e=>e.id===d.saisiPar)||{}).nom || 'Employé supprimé') : 'Gérant',
               montant: Number(d.montant), original: d, isOrphan: false,
-              confirmation: statutConfirmation(remLiee), remLieeId: remLiee ? remLiee.id : null,
+              confirmation: d.categorie === 'Paiement emballeur' ? statutConfirmationEmballeur(d) : statutConfirmation(remLiee), remLieeId: remLiee ? remLiee.id : null,
             };
           }),
           ...remunerationsOrphelines.map(r => {
@@ -11320,11 +11342,31 @@ function NewPrestationModal({ site, updateSite, onClose, caissierId }){
 function NewDepenseModal({ site, updateSite, onClose, employeId }){
   const [date, setDate] = useState(todayISO());
   const [description, setDescription] = useState('');
+  const [descriptionTouchee, setDescriptionTouchee] = useState(false);
   const [montant, setMontant] = useState('');
   const [categorie, setCategorie] = useState('Salaires');
   const [modePaiement, setModePaiement] = useState('Espèces');
   const [saisiParId, setSaisiParId] = useState('');
   const [saisiParTouche, setSaisiParTouche] = useState(false);
+  // « Paiement emballeur » : payé à la pièce (voir TARIF_EMBALLAGE) — une seule personne est habilitée,
+  // Boubacar Sadio (NOM_EMPLOYE_EMBALLEUR ou rôle « Emballeur »), donc pas de choix de bénéficiaire à
+  // faire. Le caissier peut saisir SOIT la quantité emballée (le montant se calcule tout seul), SOIT
+  // directement le montant total déjà convenu avec lui (la quantité est alors déduite, à titre indicatif,
+  // du montant divisé par le tarif). Distinct de « Décaissé par » ci-dessous (qui sort l'argent de la
+  // caisse), déjà utilisé pour les autres catégories.
+  const [modeEmballage, setModeEmballage] = useState('quantite'); // 'quantite' | 'montant'
+  const [qteEmballage, setQteEmballage] = useState('');
+  const [montantEmballageSaisi, setMontantEmballageSaisi] = useState('');
+  const estEmballage = categorie === 'Paiement emballeur';
+  const emballeur = (site.employes||[]).find(estEmployeEmballeur) || null;
+  const montantEmballage = modeEmballage === 'montant'
+    ? Math.max(0, Number(montantEmballageSaisi) || 0)
+    : Math.max(0, Number(qteEmballage) || 0) * TARIF_EMBALLAGE;
+  // Quantité réelle si saisie directement, sinon déduite du montant (indicative — sert à la description
+  // et à l'historique, le montant saisi par le caissier reste toujours la source de vérité).
+  const qteEmballageEffective = modeEmballage === 'montant'
+    ? Math.round(montantEmballage / TARIF_EMBALLAGE)
+    : Math.max(0, Number(qteEmballage) || 0);
 
   // Pour le gérant uniquement : quand la catégorie choisie est « Paiement repasseur » (cas typique d'un
   // décaissement oublié par le caissier), on pré-remplit « Décaissé par » avec l'employé responsable de la
@@ -11338,16 +11380,32 @@ function NewDepenseModal({ site, updateSite, onClose, employeId }){
     // eslint-disable-next-line
   }, [categorie, date, employeId]);
 
+  // Description auto-générée pour le paiement emballeur (« Paiement emballeur — Boubacar Sadio (12 x 300
+  // GNF) », ou « Paiement emballeur — Boubacar Sadio (≈12 x 300 GNF) » si saisi par montant) tant que
+  // l'employé ne l'a pas personnalisée lui-même.
+  useEffect(() => {
+    if(!estEmballage || descriptionTouchee) return;
+    const approx = modeEmballage === 'montant' ? '≈' : '';
+    setDescription(emballeur ? `Paiement emballeur — ${emballeur.nom} (${approx}${qteEmballageEffective} x ${fmtGNF(TARIF_EMBALLAGE)})` : '');
+    // eslint-disable-next-line
+  }, [estEmballage, emballeur, modeEmballage, qteEmballageEffective]);
+
   function submit(){
-    if(!description.trim() || !montant || !date) return;
+    const montantFinal = estEmballage ? montantEmballage : Number(montant);
+    if(!description.trim() || !montantFinal || !date) return;
+    if(estEmballage && !emballeur) return;
     const dep = {
       id: uid('dep_'),
       date,
       description: description.trim(),
-      montant: Number(montant),
+      montant: montantFinal,
       categorie,
       modePaiement,
       saisiPar: employeId || saisiParId || null,
+      // valideParEmballeur : Boubacar Sadio confirme lui-même, depuis son espace employé, avoir bien reçu
+      // l'argent des mains de Nene Djiba ou Mamadou Alpha — même principe que valideParRepasseur pour les
+      // paiements de repassage (voir PaiementsAValiderView).
+      ...(estEmballage ? { beneficiaireId: emballeur.id, qteEmballage: qteEmballageEffective, tarifEmballage: TARIF_EMBALLAGE, valideParEmballeur: false } : {}),
     };
     updateSite({ ...site, depenses: [dep, ...(site.depenses||[])] });
     onClose();
@@ -11359,12 +11417,55 @@ function NewDepenseModal({ site, updateSite, onClose, employeId }){
         <div><label>Date</label><input type="date" value={date} onChange={e=>setDate(e.target.value)} max={todayISO()} /></div>
         <div>
           <label>Catégorie</label>
-          <select value={categorie} onChange={e=>setCategorie(e.target.value)}>
+          <select value={categorie} onChange={e=>{ setCategorie(e.target.value); setDescriptionTouchee(false); }}>
             {CATEGORIES_DEPENSES_AFFICHAGE.map(c => <option key={c}>{c}</option>)}
           </select>
         </div>
-        <div><label>Description</label><input type="text" placeholder="Ex : Salaire Mamadou Alpha, Facture électricité…" value={description} onChange={e=>setDescription(e.target.value)} autoFocus/></div>
-        <div><label>Montant (GNF)</label><input type="number" placeholder="0" value={montant} onChange={e=>setMontant(e.target.value)} /></div>
+        {estEmballage && (
+          <>
+            {emballeur ? (
+              <p style={{fontSize:12.5, color:'var(--steam)', margin:0}}>
+                Seul <b>{emballeur.nom}</b> est habilité à être payé pour l'emballage.
+              </p>
+            ) : (
+              <p style={{fontSize:12.5, color:'var(--danger)', margin:0, lineHeight:1.4}}>
+                ⚠️ Boubacar Sadio n'est pas encore dans l'équipe de ce pressing — ajoutez-le d'abord dans Équipe avant d'enregistrer cette dépense.
+              </p>
+            )}
+            <div>
+              <label>Comment voulez-vous saisir ce paiement ?</label>
+              <div style={{display:'flex', gap:8}}>
+                <button type="button" className="btn btn-sm"
+                  style={{flex:1, background: modeEmballage==='quantite' ? 'var(--pine)' : 'transparent', color: modeEmballage==='quantite' ? 'var(--white)' : 'var(--ink)', borderColor: modeEmballage==='quantite' ? 'var(--pine)' : 'var(--line-strong)'}}
+                  onClick={()=>setModeEmballage('quantite')}>Par quantité</button>
+                <button type="button" className="btn btn-sm"
+                  style={{flex:1, background: modeEmballage==='montant' ? 'var(--pine)' : 'transparent', color: modeEmballage==='montant' ? 'var(--white)' : 'var(--ink)', borderColor: modeEmballage==='montant' ? 'var(--pine)' : 'var(--line-strong)'}}
+                  onClick={()=>setModeEmballage('montant')}>Par montant total</button>
+              </div>
+            </div>
+            {modeEmballage === 'quantite' ? (
+              <div>
+                <label>Quantité d'emballages</label>
+                <input type="number" placeholder="0" value={qteEmballage} onChange={e=>setQteEmballage(e.target.value)} min={0} disabled={!emballeur} autoFocus />
+                <p style={{fontSize:12, color:'var(--steam)', margin:'6px 0 0'}}>
+                  {Math.max(0, Number(qteEmballage)||0)} × {fmtGNF(TARIF_EMBALLAGE)} = <b>{fmtGNF(montantEmballage)}</b>
+                </p>
+              </div>
+            ) : (
+              <div>
+                <label>Montant total convenu (GNF)</label>
+                <input type="number" placeholder="0" value={montantEmballageSaisi} onChange={e=>setMontantEmballageSaisi(e.target.value)} min={0} disabled={!emballeur} autoFocus />
+                <p style={{fontSize:12, color:'var(--steam)', margin:'6px 0 0'}}>
+                  ≈ {qteEmballageEffective} emballage{qteEmballageEffective>1?'s':''} (au tarif de {fmtGNF(TARIF_EMBALLAGE)}/emballage)
+                </p>
+              </div>
+            )}
+          </>
+        )}
+        <div><label>Description</label><input type="text" placeholder="Ex : Salaire Mamadou Alpha, Facture électricité…" value={description} onChange={e=>{ setDescription(e.target.value); setDescriptionTouchee(true); }} autoFocus={!estEmballage}/></div>
+        {!estEmballage && (
+          <div><label>Montant (GNF)</label><input type="number" placeholder="0" value={montant} onChange={e=>setMontant(e.target.value)} /></div>
+        )}
         <div>
           <label>Mode de paiement</label>
           <select value={modePaiement} onChange={e=>setModePaiement(e.target.value)}>
@@ -11386,7 +11487,7 @@ function NewDepenseModal({ site, updateSite, onClose, employeId }){
         )}
         <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
           <button className="btn" onClick={onClose}>Annuler</button>
-          <button className="btn btn-rust" disabled={!description.trim()||!montant||!date} onClick={submit}>Enregistrer</button>
+          <button className="btn btn-rust" disabled={!description.trim()||(estEmballage ? (!montantEmballage||!emballeur) : !montant)||!date} onClick={submit}>Enregistrer</button>
         </div>
       </div>
     </ModalShell>
@@ -13294,6 +13395,81 @@ function PaiementsAValiderView({ site, updateSite, employeId }){
   );
 }
 
+// Espace emballeur (Boubacar Sadio) : liste ses dépenses « Paiement emballeur » enregistrées par le
+// caissier du jour (Nene Djiba ou Mamadou Alpha, selon le planning) et confirme avoir bien reçu l'argent,
+// exactement comme un repasseur confirme ses paiements de repassage dans PaiementsAValiderView ci-dessus.
+function EmballeurPaiementsView({ site, updateSite, employeId }){
+  const depenses = site.depenses || [];
+
+  const paiementsAValider = useMemo(() => {
+    return depenses
+      .filter(d => d.categorie === 'Paiement emballeur' && d.beneficiaireId === employeId && !d.valideParEmballeur)
+      .sort((a,b) => new Date(b.date) - new Date(a.date));
+  }, [depenses, employeId]);
+
+  const paiementsConfirmes = useMemo(() => {
+    return depenses
+      .filter(d => d.categorie === 'Paiement emballeur' && d.beneficiaireId === employeId && d.valideParEmballeur)
+      .sort((a,b) => new Date(b.dateValidationEmballeur||b.date) - new Date(a.dateValidationEmballeur||a.date))
+      .slice(0, 10);
+  }, [depenses, employeId]);
+
+  function validerReception(dep){
+    const nextDepenses = depenses.map(d => d.id === dep.id
+      ? { ...d, valideParEmballeur: true, dateValidationEmballeur: new Date().toISOString() }
+      : d);
+    updateSite({ ...site, depenses: nextDepenses });
+  }
+
+  function nomDecaisseur(dep){
+    if(!dep.saisiPar) return 'Gérant';
+    return ((site.employes||[]).find(e=>e.id===dep.saisiPar)||{}).nom || 'Employé supprimé';
+  }
+
+  return (
+    <div>
+      <PageHeader title="Mes paiements" subtitle="Confirmez les paiements d'emballage reçus du caissier" />
+
+      {paiementsAValider.length === 0 ? (
+        <div className="card" style={{padding:'1.25rem', textAlign:'center', color:'var(--steam)', fontSize:13, marginBottom:20}}>
+          Aucun paiement en attente de confirmation.
+        </div>
+      ) : (
+        <div className="card" style={{padding:'1.25rem', marginBottom:20, borderColor:'var(--warn)'}}>
+          <h3 style={{margin:'0 0 4px', fontSize:15}}>💰 Paiements à confirmer</h3>
+          <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 12px'}}>Le caissier indique vous avoir payé — confirmez que vous avez bien reçu l'argent.</p>
+          <div style={{display:'grid', gap:8}}>
+            {paiementsAValider.map(d => (
+              <div key={d.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, padding:'10px 12px', background:'var(--warn-light)', borderRadius:8, flexWrap:'wrap'}}>
+                <div style={{fontSize:13}}>
+                  <span style={{fontWeight:600}}>{fmtGNF(d.montant)}</span> — 📦 {d.qteEmballage} emballage{d.qteEmballage>1?'s':''} du {fmtDate(d.date)}
+                  <span className="tag" style={{marginLeft:8, background: d.modePaiement==='Orange Money' ? '#FFF3E0' : 'var(--pine-light)', color: d.modePaiement==='Orange Money' ? '#E65100' : 'var(--pine)'}}>{d.modePaiement}</span>
+                  <div style={{fontSize:11.5, color:'var(--steam)', marginTop:3}}>Décaissé par : {nomDecaisseur(d)}</div>
+                </div>
+                <button className="btn btn-rust btn-sm" onClick={()=>validerReception(d)}>J'ai bien reçu</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {paiementsConfirmes.length > 0 && (
+        <div>
+          <h3 style={{margin:'0 0 10px', fontSize:14, color:'var(--steam)'}}>Confirmés récemment</h3>
+          <div style={{display:'grid', gap:6}}>
+            {paiementsConfirmes.map(d => (
+              <div key={d.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 10px', background:'var(--paper-2)', borderRadius:8, fontSize:12.5}}>
+                <span>{fmtGNF(d.montant)} — 📦 {d.qteEmballage} emballage{d.qteEmballage>1?'s':''} du {fmtDate(d.date)} ({d.modePaiement}) — décaissé par {nomDecaisseur(d)}</span>
+                <span className="tag" style={{background:'var(--pine-light)', color:'var(--pine)'}}>✓ Confirmé</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RepassageApercuView({ site, updateSite, employeId }){
   const [periode, setPeriode] = useState('jour');
   const [moisChoisi, setMoisChoisi] = useState(todayISO().slice(0,7));
@@ -13747,7 +13923,7 @@ function PerformanceCaissiersView({ site }){
 
   const parCaissier = useMemo(() => {
     const acc = {};
-    const caissiers = (site.employes||[]).filter(e => e.role !== 'Repasseur');
+    const caissiers = (site.employes||[]).filter(e => e.role !== 'Repasseur' && !estEmployeEmballeur(e));
     caissiers.forEach(e => { acc[e.id] = { nom: e.nom, nbCommandes: 0, totalCA: 0, nbArticles: 0, nbClients: new Set() }; });
     acc['_gerant'] = { nom: 'Gérant', nbCommandes: 0, totalCA: 0, nbArticles: 0, nbClients: new Set() };
     commandesPeriode.forEach(c => {
@@ -13966,7 +14142,7 @@ function EncaissementsGerantView({ site }){
   }
 
   // + une ligne « Gérant » pour l'argent encaissé/dépensé sans employé attribué (saisi directement par le gérant)
-  const employesListe = [...(site.employes || []).filter(e => e.role !== 'Repasseur'), { id: null, nom: 'Gérant (sans employé attribué)' }];
+  const employesListe = [...(site.employes || []).filter(e => e.role !== 'Repasseur' && !estEmployeEmballeur(e)), { id: null, nom: 'Gérant (sans employé attribué)' }];
   const periodeLabel = periode==='jour' ? "Aujourd'hui" : periode==='semaine' ? 'Cette semaine' : periode==='mois' ? 'Ce mois' : 'Cette année';
 
   const totalGeneralPeriode = periode === 'annee'
@@ -16449,8 +16625,9 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
   const site = db.sites.find(s => s.id === siteId);
   const monProfil = (site && employeId) ? site.employes.find(e=>e.id===employeId) : null;
   const isRepasseur = monProfil && monProfil.role === 'Repasseur';
+  const isEmballeur = !isRepasseur && estEmployeEmballeur(monProfil);
   const [page, setPage] = useState(() => {
-    const pageParDefaut = isRepasseur ? 'repassage' : 'caisse';
+    const pageParDefaut = isRepasseur ? 'repassage' : (isEmballeur ? 'paiements' : 'caisse');
     try {
       const today = todayISO();
       const cle = `maci-agenda-vu-${employeId}`;
@@ -16533,6 +16710,19 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
     );
   }
 
+  // Espace emballeur (Boubacar Sadio) — vue limitée : rien d'autre que confirmer ses paiements d'emballage
+  if(isEmballeur){
+    return (
+      <Shell title={site.nom} role={`${monProfil.nom} — Emballeur`} navItems={[
+        { key:'paiements', label:'Mes paiements', icon:'euro' },
+        { key:'moncompte', label:'Mon mot de passe', icon:'edit' },
+      ]} active={page} onNav={setPage} onLogout={onLogout}>
+        {page === 'paiements' && <EmballeurPaiementsView site={site} updateSite={updateSite} employeId={employeId} />}
+        {page === 'moncompte' && <MonCompteView site={site} updateSite={updateSite} employeId={employeId} />}
+      </Shell>
+    );
+  }
+
   // Espace caissier/autre employé — vue complète
   const navItems = [
     { key:'dashboard', label:'Tableau de bord', icon:'chart' },
@@ -16548,6 +16738,9 @@ function EmployeApp({ db, setDb, siteId, employeId, onLogout }){
     { key:'encaisserSansCommande', label:'Encaisser sans commande', icon:'euro' },
     { key:'detailMensuel', label:'Détail mensuel', icon:'chart' },
     { key:'performanceCaissiers', label:'Performance caissiers', icon:'chart' },
+    // Dépenses que CET employé a lui-même saisies (ex: paiement emballeur à Boubacar Sadio) — il peut les
+    // ajouter, les modifier ou les supprimer lui-même (DepensesView filtre déjà par saisiPar===employeId).
+    { key:'depenses', label:'Dépenses', icon:'euro' },
     { key:'depensesPropres', label:'Dépenses propres', icon:'euro' },
     { key:'servicesRemuneration', label:'Services & rémunérations', icon:'edit' },
     { key:'suivi', label:'Suivi repassage & distribution', icon:'euro', children: [
