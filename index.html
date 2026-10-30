@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-29-4">
+<meta name="app-version" content="2026-10-30-1">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-29-4';
+  const APP_VERSION_ACTUELLE = '2026-10-30-1';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -2662,13 +2662,23 @@ function calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi){
     return avantPooling - (totalDepensesPropresPeriode * poids);
   }
 
-  // Montant que CET acteur verse en plus vers la Conservation du Capital Fixe (20% de la part de son net
-  // perçu gagnée pendant un mois où le remboursement était actif, uniquement pour les 4 acteurs concernés).
-  // Plus de déduction de ses dépenses propres ici : elles sont déjà mutualisées via le pot commun ci-dessus,
-  // les 20% s'appliquent donc directement à sa part normale.
+  // Montant que CET acteur verse en plus vers la Conservation du Capital Fixe : 20% de son NET PERÇU RÉEL
+  // (après mutualisation des dépenses propres ET crédit de remboursement — ce que « Net perçu » affiche
+  // réellement), pour la seule fraction de la période où le remboursement était actif. Avant, les 20%
+  // s'appliquaient à partActeurEligibleRemboursement — une base calculée AVANT la mutualisation des
+  // dépenses propres, donc plus grande que le net perçu réellement affiché : ça pouvait prélever bien plus
+  // que 20% du net perçu (jusqu'à ~37% constaté), au lieu des 20% convenus.
   function extraCapitalFixeActeur(p){
     if(!ACTEURS_REMBOURSEMENT_INVESTISSEMENT.includes(p.nom)) return 0;
-    return Math.max(0, partActeurEligibleRemboursement(p.nom)) * 0.2;
+    const avantPooling = montantBrutAvantPoolingParActeur[p.nom] || 0;
+    if(avantPooling <= 0) return 0;
+    // Fraction de la part « avant mutualisation » de cet acteur qui provient de mois où le remboursement
+    // était actif — permet de ne prélever les 20% QUE sur la portion du net perçu gagnée pendant ces
+    // mois-là, même si la période couvre un mélange de mois éligibles et non éligibles.
+    const fractionEligible = Math.min(1, Math.max(0, partActeurEligibleRemboursement(p.nom) / avantPooling));
+    if(fractionEligible <= 0) return 0;
+    const montantNetActeur = montantBrutPoolePourActeur(p) + (creditsRemboursement[p.nom] || 0);
+    return Math.max(0, montantNetActeur) * 0.2 * fractionEligible;
   }
 
   const totalRedirigeVersCapitalFixe = parts.reduce((s,p) => s + extraCapitalFixeActeur(p), 0);
@@ -3587,12 +3597,23 @@ function DistributionView({ db, setDb, anneeInitiale }){
       return s + (Number(dm.netPercu)||0) * pctActeurMois(db, nom, a, m) / 100;
     }, 0);
   }
-  // Montant que CET acteur verse en plus vers la Conservation du Capital Fixe (20% de sa part éligible) —
-  // 0 si non concerné, ou si aucun mois de la période n'avait le remboursement actif à l'époque. Plus de
-  // déduction de ses dépenses propres ici : elles sont déjà mutualisées via le pot commun ci-dessus.
+  // Montant que CET acteur verse en plus vers la Conservation du Capital Fixe : 20% de son NET PERÇU RÉEL
+  // (après mutualisation des dépenses propres ET crédit de remboursement — ce que « Net perçu » affiche
+  // réellement), pour la seule fraction de la période où le remboursement était actif. Avant, les 20%
+  // s'appliquaient à partActeurEligibleRemboursement — une base calculée AVANT la mutualisation des
+  // dépenses propres, donc plus grande que le net perçu réellement affiché : ça pouvait prélever bien plus
+  // que 20% du net perçu (jusqu'à ~37% constaté), au lieu des 20% convenus.
   function extraCapitalFixeActeur(p){
     if(!ACTEURS_REMBOURSEMENT_INVESTISSEMENT.includes(p.nom)) return 0;
-    return Math.max(0, partActeurEligibleRemboursement(p.nom)) * 0.2;
+    const avantPooling = montantBrutAvantPoolingParActeur[p.nom] || 0;
+    if(avantPooling <= 0) return 0;
+    // Fraction de la part « avant mutualisation » de cet acteur qui provient de mois où le remboursement
+    // était actif — permet de ne prélever les 20% QUE sur la portion du net perçu gagnée pendant ces
+    // mois-là, même si la période couvre un mélange de mois éligibles et non éligibles.
+    const fractionEligible = Math.min(1, Math.max(0, partActeurEligibleRemboursement(p.nom) / avantPooling));
+    if(fractionEligible <= 0) return 0;
+    const montantNetActeur = montantBrutPoolePourActeur(p) + (creditsRemboursement[p.nom] || 0);
+    return Math.max(0, montantNetActeur) * 0.2 * fractionEligible;
   }
   // Remboursement d'investissement : 20% du net perçu éligible des 4 acteurs concernés est redirigé vers la Conservation du Capital Fixe
   const totalRedirigeVersCapitalFixe = parts.reduce((s,p) => s + extraCapitalFixeActeur(p), 0);
