@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-11-05-1">
+<meta name="app-version" content="2026-11-05-3">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-11-05-1';
+  const APP_VERSION_ACTUELLE = '2026-11-05-3';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -7926,7 +7926,7 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
   function togglePaiement(cmd){
     updateCommande({ ...cmd, paiement: cmd.paiement === 'paye' ? 'impaye' : 'paye' });
   }
-  async function enregistrerPaiement(cmd, montant, mode, rabaisSupp=0){
+  async function enregistrerPaiement(cmd, montant, mode, rabaisSupp=0, datePaiement=null){
     const totalAvantRabaisSupp = calcCommandeTotal(cmd, site.services);
     const rabaisSuppNum = Math.max(0, Number(rabaisSupp) || 0);
     // Rabais additionnel accordé au moment de l'encaissement (ex: négociation à la récupération) — vient
@@ -7935,7 +7935,16 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
     const total = Math.max(0, totalAvantRabaisSupp - rabaisSuppNum);
     const nouvelAcompte = Math.min((Number(cmd.acompte)||0) + Number(montant), total);
     const nouveauSolde = total - nouvelAcompte;
-    const nouveauPaiement = { id: uid('pmt_'), montant: Number(montant), mode, date: new Date().toISOString(), employeId: employeId || null };
+    // Par défaut la date/heure exacte de l'encaissement ; si l'employé a choisi une autre date dans le
+    // formulaire (ex: pour saisir un paiement reçu plus tôt, retrouvé après coup), on garde cette date-là
+    // mais avec l'heure actuelle, pour que le tri chronologique du jour reste cohérent.
+    const dateISO = (() => {
+      if(!datePaiement) return new Date().toISOString();
+      const now = new Date();
+      const d = new Date(`${datePaiement}T${now.toTimeString().slice(0,8)}`);
+      return isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
+    })();
+    const nouveauPaiement = { id: uid('pmt_'), montant: Number(montant), mode, date: dateISO, employeId: employeId || null };
     const updated = { ...cmd, rabais: nouveauRabaisTotal, acompte: nouvelAcompte, paiement: nouvelAcompte >= total ? 'paye' : 'impaye', modePaiement: mode, paiements: [...(cmd.paiements||[]), nouveauPaiement] };
 
     const client = site.clients.find(c => c.id === cmd.clientId);
@@ -8171,7 +8180,7 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
       {!employeId && <JournalModificationsCard site={site} sections={['Commandes']} />}
       {showNewClient && <NewClientModal site={site} updateSite={updateSite} onClose={()=>setShowNewClient(false)} />}
       {showEncaisserSansCommande && <EncaisserSansCommandeModal site={site} updateSite={updateSite} employeId={employeId} onClose={()=>setShowEncaisserSansCommande(false)} />}
-      {encaisserCmd && <EncaisserModal cmd={encaisserCmd} site={site} onClose={()=>setEncaisserCmd(null)} onSave={(montant, mode, rabaisSupp)=>enregistrerPaiement(encaisserCmd, montant, mode, rabaisSupp)} />}
+      {encaisserCmd && <EncaisserModal cmd={encaisserCmd} site={site} onClose={()=>setEncaisserCmd(null)} onSave={(montant, mode, rabaisSupp, datePaiement)=>enregistrerPaiement(encaisserCmd, montant, mode, rabaisSupp, datePaiement)} />}
     </div>
   );
 }
@@ -8200,6 +8209,7 @@ function EncaisserModal({ cmd, site, onClose, onSave }){
     // eslint-disable-next-line
   }, [nouveauSolde]);
   const [mode, setMode] = useState(cmd.modePaiement || 'Espèces');
+  const [datePaiement, setDatePaiement] = useState(() => new Date().toISOString().slice(0,10));
 
   return (
     <ModalShell title={`Encaisser — ${cmd.numero}`} onClose={onClose} width={380}>
@@ -8260,9 +8270,16 @@ function EncaisserModal({ cmd, site, onClose, onSave }){
             <option>Orange Money</option>
           </select>
         </div>
+        <div>
+          <label>Date de l'encaissement</label>
+          <input type="date" value={datePaiement} onChange={e=>setDatePaiement(e.target.value)} />
+          <p style={{fontSize:12, color:'var(--steam)', margin:'6px 0 0', lineHeight:1.4}}>
+            Par défaut aujourd'hui — à modifier seulement si ce paiement a en réalité été reçu un autre jour (ex : saisie tardive d'un encaissement perdu).
+          </p>
+        </div>
         <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
           <button className="btn" onClick={onClose}>Annuler</button>
-          <button className="btn btn-rust" disabled={!montant || Number(montant)<=0} onClick={()=>{ onSave(Number(montant), mode, montantRabaisSupp); onClose(); }}>Enregistrer le paiement</button>
+          <button className="btn btn-rust" disabled={!montant || Number(montant)<=0} onClick={()=>{ onSave(Number(montant), mode, montantRabaisSupp, datePaiement); onClose(); }}>Enregistrer le paiement</button>
         </div>
       </div>
     </ModalShell>
@@ -14336,11 +14353,17 @@ function EncaissementsGerantView({ site }){
 }
 
 function MesEncaissementsView({ site, updateSite, db, employeId }){
+  // Période affichée : jour | semaine | mois | annee | total (à ce jour) | date (un jour précis) | plage (intervalle)
+  // — même sélecteur que « Liste des paiements ».
   const [periode, setPeriode] = useState('jour');
   const [moisChoisi, setMoisChoisi] = useState(todayISO().slice(0,7));
   const [anneeChoisie, setAnneeChoisie] = useState(Number(todayISO().slice(0,4)));
 
   const today = todayISO();
+  const isoLocal = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; // sans décalage de fuseau horaire
+  const [dateChoisie, setDateChoisie] = useState(today);
+  const [plageDebut, setPlageDebut] = useState(() => { const d = new Date(today+'T00:00:00'); d.setDate(d.getDate()-6); return isoLocal(d); });
+  const [plageFin, setPlageFin] = useState(today);
   const getWeekDates = () => {
     const d = new Date(today + 'T00:00:00');
     const day = d.getDay() || 7;
@@ -14419,15 +14442,32 @@ function MesEncaissementsView({ site, updateSite, db, employeId }){
         return { especes: acc.especes + v.especes, orangeMoney: acc.orangeMoney + v.orangeMoney };
       }, { especes: 0, orangeMoney: 0 });
     }
+    if(periode === 'total') {
+      // Cumule tous les mois saisis manuellement (avant le lancement de sept. 2026), toutes années confondues.
+      return anneesDisponibles.reduce((acc,y) => moisDeLAnnee(y).reduce((acc2,m) => {
+        const v = montantManuel(m);
+        return { especes: acc2.especes + v.especes, orangeMoney: acc2.orangeMoney + v.orangeMoney };
+      }, acc), { especes: 0, orangeMoney: 0 });
+    }
+    // « Une date » / « Intervalle » : les saisies manuelles ne sont connues qu'au mois près, pas au jour
+    // près — on ne les inclut donc pas ici (comme « Aujourd'hui »/« Cette semaine »), pour éviter de
+    // surestimer un jour ou une plage précise avec un montant en réalité réparti sur tout un mois.
     return { especes: 0, orangeMoney: 0 };
-  }, [periode, moisChoisi, anneeChoisie, site.detailMensuelManuel, employeId]);
+  }, [periode, moisChoisi, anneeChoisie, site.detailMensuelManuel, employeId, anneesDisponibles]);
 
   const paiementsPeriode = useMemo(() => {
     if(periode === 'jour') return mesPaiements.filter(p => p.jour === today);
     if(periode === 'semaine') return mesPaiements.filter(p => p.jour >= week.start && p.jour <= week.end);
     if(periode === 'mois') return mesPaiements.filter(p => p.mois === moisChoisi);
-    return mesPaiements.filter(p => p.annee === anneeChoisie);
-  }, [mesPaiements, periode, today, week, moisChoisi, anneeChoisie]);
+    if(periode === 'annee') return mesPaiements.filter(p => p.annee === anneeChoisie);
+    if(periode === 'date') return mesPaiements.filter(p => p.jour === dateChoisie);
+    if(periode === 'plage') {
+      const a = plageDebut || today, b = plageFin || today;
+      const debut = a <= b ? a : b, fin = a <= b ? b : a;
+      return mesPaiements.filter(p => p.jour >= debut && p.jour <= fin);
+    }
+    return mesPaiements; // total = à ce jour, tout confondu
+  }, [mesPaiements, periode, today, week, moisChoisi, anneeChoisie, dateChoisie, plageDebut, plageFin]);
 
   const totalEspeces = paiementsPeriode.filter(p=>p.mode==='Espèces').reduce((s,p)=>s+p.montant,0) + totalManuelPeriode.especes;
   const totalOrangeMoney = paiementsPeriode.filter(p=>p.mode==='Orange Money').reduce((s,p)=>s+p.montant,0) + totalManuelPeriode.orangeMoney;
@@ -14440,11 +14480,18 @@ function MesEncaissementsView({ site, updateSite, db, employeId }){
     if(periode === 'jour') return d === today;
     if(periode === 'semaine') return d >= week.start && d <= week.end;
     if(periode === 'mois') return d.slice(0,7) === moisChoisi;
-    return d.slice(0,4) === String(anneeChoisie);
+    if(periode === 'annee') return d.slice(0,4) === String(anneeChoisie);
+    if(periode === 'date') return d === dateChoisie;
+    if(periode === 'plage') {
+      const a = plageDebut || today, b = plageFin || today;
+      const debut = a <= b ? a : b, fin = a <= b ? b : a;
+      return d >= debut && d <= fin;
+    }
+    return true; // total = à ce jour, tout confondu
   }
   const mesDepensesReelles = useMemo(() => {
     return (site.depenses||[]).filter(d => d.saisiPar === employeId && estDansPeriodeSimple(d.date)).reduce((s,d)=>s+Number(d.montant),0);
-  }, [site.depenses, employeId, periode, today, week, moisChoisi, anneeChoisie]);
+  }, [site.depenses, employeId, periode, today, week, moisChoisi, anneeChoisie, dateChoisie, plageDebut, plageFin]);
   function depensesManuelles(mois){
     const [anneeStr, moisStr] = mois.split('-');
     const anneeNum = Number(anneeStr), moisNum = Number(moisStr);
@@ -14456,12 +14503,13 @@ function MesEncaissementsView({ site, updateSite, db, employeId }){
   const mesDepensesManuellesPeriode = useMemo(() => {
     if(periode === 'mois') return depensesManuelles(moisChoisi);
     if(periode === 'annee') return moisDeLAnnee(anneeChoisie).reduce((s,m)=>s+depensesManuelles(m),0);
+    if(periode === 'total') return anneesDisponibles.reduce((s,y) => s + moisDeLAnnee(y).reduce((s2,m)=>s2+depensesManuelles(m),0), 0);
     return 0;
-  }, [periode, moisChoisi, anneeChoisie, site.detailMensuelManuel, employeId]);
+  }, [periode, moisChoisi, anneeChoisie, site.detailMensuelManuel, employeId, anneesDisponibles]);
   const mesDepensesPeriode = mesDepensesReelles + mesDepensesManuellesPeriode;
   const netPercuPeriode = totalGeneral - mesDepensesPeriode;
 
-  const periodeLabel = periode==='jour' ? "Aujourd'hui" : periode==='semaine' ? 'Cette semaine' : periode==='mois' ? 'Ce mois' : 'Cette année';
+  const periodeLabel = periode==='jour' ? "Aujourd'hui" : periode==='semaine' ? 'Cette semaine' : periode==='mois' ? 'Ce mois' : periode==='annee' ? 'Cette année' : periode==='date' ? `Le ${fmtDate(dateChoisie)}` : periode==='plage' ? `Du ${fmtDate(plageDebut)} au ${fmtDate(plageFin)}` : 'À ce jour (tout confondu)';
 
   const detailAnneeMois = useMemo(() => {
     if(periode !== 'annee') return [];
@@ -14483,10 +14531,10 @@ function MesEncaissementsView({ site, updateSite, db, employeId }){
       <PageHeader title="Mes encaissements Et Décaissements" subtitle="Argent que vous avez personnellement reçu et dépensé, par mode de paiement" />
 
       <div style={{display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center'}}>
-        {['jour','semaine','mois','annee'].map(v => (
+        {['jour','semaine','mois','annee','total','date','plage'].map(v => (
           <button key={v} className="btn btn-sm" onClick={()=>setPeriode(v)}
             style={{background:periode===v?'var(--pine)':'transparent', color:periode===v?'var(--white)':'var(--ink)', borderColor:periode===v?'var(--pine)':'var(--line-strong)', textTransform:'capitalize'}}>
-            {v === 'jour' ? "Aujourd'hui" : v === 'semaine' ? 'Cette semaine' : v === 'mois' ? 'Ce mois' : 'Cette année'}
+            {v === 'jour' ? "Aujourd'hui" : v === 'semaine' ? 'Cette semaine' : v === 'mois' ? 'Ce mois' : v === 'annee' ? 'Cette année' : v === 'total' ? 'À ce jour' : v === 'date' ? 'Une date' : 'Intervalle'}
           </button>
         ))}
         {periode === 'mois' && (
@@ -14496,6 +14544,17 @@ function MesEncaissementsView({ site, updateSite, db, employeId }){
           <select value={anneeChoisie} onChange={e=>setAnneeChoisie(Number(e.target.value))} style={{width:'auto', minWidth:100}}>
             {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
           </select>
+        )}
+        {periode === 'date' && (
+          <input type="date" value={dateChoisie} max={today} onChange={e=>setDateChoisie(e.target.value)} style={{width:'auto'}} />
+        )}
+        {periode === 'plage' && (
+          <span style={{display:'flex', gap:6, alignItems:'center', flexWrap:'wrap'}}>
+            <span style={{fontSize:12.5}}>du</span>
+            <input type="date" value={plageDebut} max={today} onChange={e=>setPlageDebut(e.target.value)} style={{width:'auto'}} />
+            <span style={{fontSize:12.5}}>au</span>
+            <input type="date" value={plageFin} max={today} onChange={e=>setPlageFin(e.target.value)} style={{width:'auto'}} />
+          </span>
         )}
       </div>
 
