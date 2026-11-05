@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-10-30-1">
+<meta name="app-version" content="2026-11-05-1">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-10-30-1';
+  const APP_VERSION_ACTUELLE = '2026-11-05-1';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -1091,34 +1091,93 @@ function purgeCorbeille(dbData){
   return { ...dbData, sites, corbeilleSites };
 }
 
+// Fusionne un tableau d'objets {id, ...} ÉLÉMENT PAR ÉLÉMENT entre "base" (dernière copie connue de CET
+// appareil avant de passer hors ligne), "parsed" (cette même copie après ses modifications hors ligne) et
+// "fraiche" (version actuelle du serveur, qui a pu évoluer ailleurs pendant la coupure) :
+//  - un élément que cet appareil n'a PAS touché garde toujours la version fraîche du serveur — c'est ce qui
+//    préserve ce que d'autres appareils ont ajouté/modifié sur ce même tableau pendant la coupure ;
+//  - un élément modifié par cet appareil (différent de sa base) garde sa version ;
+//  - un élément supprimé par cet appareil (présent dans base, absent de parsed) est retiré du résultat ;
+//  - un élément créé par cet appareil hors ligne (absent de base ET du serveur) est ajouté.
+// Seul un changement concurrent sur EXACTEMENT le même élément, par deux appareils différents pendant la
+// même coupure, peut encore faire perdre l'un des deux changements (limite acceptée, comme avant).
+function fusionnerArrayParId(baseArr, parsedArr, fraicheArr){
+  baseArr = Array.isArray(baseArr) ? baseArr : [];
+  parsedArr = Array.isArray(parsedArr) ? parsedArr : [];
+  fraicheArr = Array.isArray(fraicheArr) ? fraicheArr : [];
+  const baseById = new Map(baseArr.filter(x=>x && x.id).map(x => [x.id, x]));
+  const parsedById = new Map(parsedArr.filter(x=>x && x.id).map(x => [x.id, x]));
+  const fraicheIds = new Set(fraicheArr.filter(x=>x && x.id).map(x => x.id));
+  const supprimesParCetAppareil = new Set();
+  baseById.forEach((_, id) => { if(!parsedById.has(id)) supprimesParCetAppareil.add(id); });
+
+  const merged = [];
+  fraicheArr.forEach(fx => {
+    const id = fx && fx.id;
+    if(id && supprimesParCetAppareil.has(id)) return; // supprimé hors ligne par cet appareil
+    const px = id ? parsedById.get(id) : null;
+    const bx = id ? baseById.get(id) : null;
+    if(px && JSON.stringify(px) !== JSON.stringify(bx)){ merged.push(px); return; }
+    merged.push(fx);
+  });
+  // Éléments créés hors ligne par cet appareil (absents du serveur ET de sa base de référence).
+  parsedArr.forEach(px => {
+    if(px && px.id && !fraicheIds.has(px.id) && !baseById.has(px.id)) merged.push(px);
+  });
+  return merged;
+}
+
+// Champs d'un site qui sont des listes d'objets {id, ...} — fusionnés élément par élément via
+// fusionnerArrayParId (voir ci-dessus) plutôt que remplacés en bloc.
+const CHAMPS_SITE_LISTES_PAR_ID = ['clients', 'commandes', 'notifications', 'employes', 'depenses', 'corbeille', 'remunerations', 'services', 'stock'];
+
+// Fusionne UN site (bs/ps/fs = sa version dans base/parsed/fraiche) champ par champ : les listes
+// transactionnelles (commandes, dépenses, clients, employés…) via fusionnerArrayParId, le reste (nom,
+// adresse, configRemuneration…) par simple comparaison de valeur comme avant — ces champs changent rarement
+// et presque jamais en même temps sur deux appareils, donc le risque y est bien plus faible.
+function fusionnerSite(bs, ps, fs){
+  if(!ps) return fs; // cet appareil ne connaissait pas ce site (cas improbable) : on garde le serveur tel quel
+  if(!bs) return fs || ps; // site créé hors ligne par cet appareil : on le garde seulement s'il n'existe pas déjà côté serveur
+  if(!fs) return ps; // site supprimé côté serveur entre-temps : rien à fusionner, on garde la version de cet appareil
+  const merged = { ...fs };
+  Object.keys(ps).forEach(key => {
+    if(CHAMPS_SITE_LISTES_PAR_ID.includes(key)) return; // traité séparément ci-dessous
+    if(JSON.stringify(ps[key]) !== JSON.stringify(bs[key])) merged[key] = ps[key];
+  });
+  CHAMPS_SITE_LISTES_PAR_ID.forEach(champ => {
+    merged[champ] = fusionnerArrayParId(bs[champ], ps[champ], fs[champ]);
+  });
+  return merged;
+}
+
 // Fusionne les changements d'un appareil resté hors ligne avec la version fraîche du serveur, au lieu de
-// tout jeter dès qu'un autre appareil a sauvegardé entre-temps (ce qui faisait disparaître des commandes
-// déjà remises au client, avec reçu déjà imprimé). Toute la base (les 3 pressings + le compte gérant)
-// partage un seul numéro de révision Firebase : n'importe quelle sauvegarde, même sur un site totalement
-// différent, provoquait donc un conflit et l'abandon pur et simple du travail hors ligne.
+// tout jeter — ou, pire, de remplacer TOUT un pressing d'un bloc — dès qu'un autre appareil a sauvegardé
+// entre-temps. Toute la base (les 3 pressings + le compte gérant) partage un seul numéro de révision
+// Firebase : n'importe quelle sauvegarde, même sur un site totalement différent, provoque donc un conflit.
 //
-// Principe : "base" est la dernière copie connue de CET appareil avant qu'il ne passe hors ligne (donc
-// avant ses propres modifications) ; "parsed" est cette même copie après ses modifications hors ligne ;
-// "fraiche" est la version actuelle du serveur (qui a pu évoluer ailleurs pendant la coupure). Pour
-// chaque pressing et chaque champ de premier niveau, on ne garde la version de cet appareil QUE s'il l'a
-// réellement modifiée (différente de "base") — sinon on garde la version fraîche du serveur, pour ne pas
-// écraser ce que d'autres appareils ont fait pendant ce temps. Seul un changement concurrent sur
-// EXACTEMENT le même pressing, au même moment, peut encore être écrasé par cette fusion.
+// AVANT CORRECTIF : dès que cet appareil avait modifié ne serait-ce qu'UN SEUL champ de son site (ex: son
+// propre salaire journalier auto-crédité en tâche de fond, même sans action volontaire), la fusion
+// remplaçait l'intégralité du site — commandes, dépenses, clients, tout — par la vieille copie de cet
+// appareil, effaçant silencieusement tout le travail réel des AUTRES appareils sur ce même site pendant la
+// coupure. C'est ce qui a causé la disparition des commandes et dépenses de Kipé du 1er au 4 novembre 2026.
+// Désormais la fusion se fait élément par élément dans chaque tableau (voir fusionnerSite ci-dessus) : un
+// appareil resté hors ligne ne peut plus jamais écraser que SES PROPRES changements, jamais ceux des autres.
 function fusionnerApresConflitHorsLigne(base, parsed, fraiche){
   if(!base || !parsed || !fraiche) return fraiche;
   const merged = { ...fraiche };
   Object.keys(parsed).forEach(key => {
-    if(key === 'sites' || key === '_rev') return;
+    if(key === 'sites' || key === '_rev' || key === 'corbeilleSites') return;
     if(JSON.stringify(parsed[key]) !== JSON.stringify(base[key])) merged[key] = parsed[key];
   });
+  merged.corbeilleSites = fusionnerArrayParId(base.corbeilleSites, parsed.corbeilleSites, fraiche.corbeilleSites);
+
   const baseSites = base.sites || [];
   const parsedSites = parsed.sites || [];
   const fraicheSites = fraiche.sites || [];
   const mergedSites = fraicheSites.map(fs => {
     const bs = baseSites.find(s => s.id === fs.id);
     const ps = parsedSites.find(s => s.id === fs.id);
-    if(ps && JSON.stringify(ps) !== JSON.stringify(bs)) return ps;
-    return fs;
+    return fusionnerSite(bs, ps, fs);
   });
   // Un site créé hors ligne (absent du serveur ET de la base) est ajouté — cas rare (ajout de pressing
   // par le gérant), mais on ne veut pas non plus le perdre silencieusement.
@@ -1245,12 +1304,23 @@ function App(){
               dejaCharge = true;
             });
 
-            // Premier chargement : si pas de données, crée la base vide
+            // Premier chargement : si la base n'existe VRAIMENT pas encore, on la crée vide. ATTENTION :
+            // storageGet() avale toute erreur (coupure réseau passagère, etc.) et renvoie null dans ce
+            // cas-là aussi — indiscernable d'une base réellement vide. L'utiliser ici écraserait TOUTE la
+            // base de production au moindre pépin réseau passager au démarrage. On vérifie donc directement,
+            // sans avaler l'erreur, pour ne JAMAIS créer de base vide suite à un échec de lecture — seulement
+            // quand Firebase confirme explicitement qu'il n'y a rien (snapshot.exists() === false).
             (async () => {
-              const raw = await storageGet(DB_KEY);
-              if(!raw){
-                const fresh = emptyDB();
-                await storageSet(DB_KEY, JSON.stringify(fresh));
+              try{
+                const snapshot = await firebaseDB.ref(DB_KEY).get();
+                if(!snapshot.exists()){
+                  const fresh = emptyDB();
+                  await storageSet(DB_KEY, JSON.stringify(fresh));
+                }
+              }catch(e){
+                // Échec de lecture (réseau, permissions passagères…) : on ne touche à RIEN. Mieux vaut
+                // réessayer au prochain chargement que de risquer d'écraser une base existante.
+                console.error('Vérification de la base au démarrage impossible (aucune donnée créée/modifiée)', e);
               }
             })();
           });
