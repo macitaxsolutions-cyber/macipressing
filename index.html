@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-11-05-5">
+<meta name="app-version" content="2026-11-05-6">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-11-05-5';
+  const APP_VERSION_ACTUELLE = '2026-11-05-6';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -11158,10 +11158,14 @@ function categorieAffichee(d, remunerations){
 function DepensesView({ site, updateSite, db, employeId }){
   const [showNew, setShowNew] = useState(false);
   const [showPrestation, setShowPrestation] = useState(false);
-  const [typePeriode, setTypePeriode] = useState('jour'); // 'jour' | 'semaine' | 'mois' | 'annee'
+  const [typePeriode, setTypePeriode] = useState('jour'); // 'jour' | 'semaine' | 'mois' | 'annee' | 'total' | 'plage'
   const [filterJour, setFilterJour] = useState(todayISO());
   const [filterMois, setFilterMois] = useState(todayISO().slice(0,7));
   const [filterAnnee, setFilterAnnee] = useState(todayISO().slice(0,4));
+  // « Intervalle » : même principe que Liste des paiements / Mes encaissements Et Décaissements — par défaut
+  // les 7 derniers jours, bornes incluses des deux côtés.
+  const [filterPlageDebut, setFilterPlageDebut] = useState(() => { const d = new Date(todayISO()+'T00:00:00'); d.setDate(d.getDate()-6); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; });
+  const [filterPlageFin, setFilterPlageFin] = useState(todayISO());
   const [confirmDep, setConfirmDep] = useState(null);
   const [editDep, setEditDep] = useState(null);
   const [triColonne, setTriColonne] = useState('date');
@@ -11189,12 +11193,19 @@ function DepensesView({ site, updateSite, db, employeId }){
     if(typePeriode === 'jour') return d === filterJour;
     if(typePeriode === 'semaine') return d >= semaineActuelle.start && d <= semaineActuelle.end;
     if(typePeriode === 'mois') return d.slice(0,7) === filterMois;
+    if(typePeriode === 'annee') return d.slice(0,4) === filterAnnee;
+    if(typePeriode === 'total') return true; // « À ce jour » : toutes les dépenses, toutes périodes confondues
+    if(typePeriode === 'plage'){
+      const debut = filterPlageDebut || filterJour, fin = filterPlageFin || filterJour;
+      const [a,b] = debut <= fin ? [debut,fin] : [fin,debut];
+      return d >= a && d <= b;
+    }
     return d.slice(0,4) === filterAnnee;
   }
 
   const filtered = useMemo(() => {
     return [...depenses].filter(d => estDansPeriode(d.date) && (!employeId || d.saisiPar === employeId)).sort((a,b) => new Date(b.date) - new Date(a.date));
-  }, [depenses, typePeriode, filterJour, filterMois, filterAnnee, employeId]);
+  }, [depenses, typePeriode, filterJour, filterMois, filterAnnee, filterPlageDebut, filterPlageFin, employeId]);
 
   // Repassages/livraisons enregistrés AVANT la création automatique de dépenses (données historiques),
   // à inclure quand même dans la charge réelle de l'entreprise pour ne rien sous-estimer
@@ -11208,7 +11219,7 @@ function DepensesView({ site, updateSite, db, employeId }){
     // un vrai reliquat historique (avant la mise en place de la dépense au moment du décaissement). Une
     // prestation pas encore payée ne doit jamais apparaître ici comme dépense : l'argent n'est pas encore sorti.
     return remunerations.filter(r => (r.type==='repassage' || r.type==='livraison') && r.statutPaiement === 'paye' && !idsAvecDepense.has(r.id) && estDansPeriode(r.date) && (!employeId || r.employeId === employeId));
-  }, [remunerations, depenses, typePeriode, filterJour, filterMois, filterAnnee, employeId]);
+  }, [remunerations, depenses, typePeriode, filterJour, filterMois, filterAnnee, filterPlageDebut, filterPlageFin, employeId]);
   const totalOrphelines = remunerationsOrphelines.reduce((s,r)=>s+Number(r.montant),0);
 
   // Dépenses entreprise saisies manuellement par chaque employé dans Détail mensuel (mois avant septembre 2026),
@@ -11242,7 +11253,7 @@ function DepensesView({ site, updateSite, db, employeId }){
       });
     });
     return liste;
-  }, [site.detailMensuelManuel, site.employes, typePeriode, filterJour, filterMois, filterAnnee, employeId]);
+  }, [site.detailMensuelManuel, site.employes, typePeriode, filterJour, filterMois, filterAnnee, filterPlageDebut, filterPlageFin, employeId]);
   const totalDepensesEntrepriseHistoriques = depensesEntrepriseHistoriques.reduce((s,d)=>s+d.montant,0);
 
   const totalMois = filtered.reduce((s,d) => s + Number(d.montant), 0) + totalOrphelines + totalDepensesEntrepriseHistoriques;
@@ -11297,6 +11308,8 @@ function DepensesView({ site, updateSite, db, employeId }){
   const labelPeriode = typePeriode === 'jour' ? fmtDate(filterJour)
     : typePeriode === 'semaine' ? `semaine du ${fmtDate(semaineActuelle.start)} au ${fmtDate(semaineActuelle.end)}`
     : typePeriode === 'annee' ? filterAnnee
+    : typePeriode === 'total' ? 'à ce jour (tout confondu)'
+    : typePeriode === 'plage' ? `du ${fmtDate(filterPlageDebut)} au ${fmtDate(filterPlageFin)}`
     : formatMoisAnnee(filterMois);
 
   return (
@@ -11315,7 +11328,7 @@ function DepensesView({ site, updateSite, db, employeId }){
 
       {/* Filtre par période */}
       <div style={{display:'flex', gap:10, marginBottom:18, alignItems:'center', flexWrap:'wrap'}}>
-        {[{key:'jour', label:'Jour'}, {key:'semaine', label:'Semaine'}, {key:'mois', label:'Mois'}, {key:'annee', label:'Année'}].map(opt => (
+        {[{key:'jour', label:'Jour'}, {key:'semaine', label:'Semaine'}, {key:'mois', label:'Mois'}, {key:'annee', label:'Année'}, {key:'total', label:'À ce jour'}, {key:'plage', label:'Intervalle'}].map(opt => (
           <button key={opt.key} className="btn btn-sm" onClick={()=>setTypePeriode(opt.key)}
             style={{background: typePeriode===opt.key ? 'var(--pine)' : 'transparent', color: typePeriode===opt.key ? 'var(--white)' : 'var(--ink)', borderColor: typePeriode===opt.key ? 'var(--pine)' : 'var(--line-strong)'}}>
             {opt.label}
@@ -11341,6 +11354,14 @@ function DepensesView({ site, updateSite, db, employeId }){
           <select value={filterAnnee} onChange={e=>setFilterAnnee(e.target.value)} style={{width:'auto', minWidth:120}}>
             {anneesDisponibles.map(a => <option key={a} value={a}>{a}</option>)}
           </select>
+        )}
+        {typePeriode === 'plage' && (
+          <span style={{display:'flex', gap:6, alignItems:'center', flexWrap:'wrap'}}>
+            <span style={{fontSize:12.5}}>du</span>
+            <input type="date" value={filterPlageDebut} max={filterPlageFin || todayISO()} onChange={e=>setFilterPlageDebut(e.target.value)} style={{width:'auto'}} />
+            <span style={{fontSize:12.5}}>au</span>
+            <input type="date" value={filterPlageFin} min={filterPlageDebut} max={todayISO()} onChange={e=>setFilterPlageFin(e.target.value)} style={{width:'auto'}} />
+          </span>
         )}
       </div>
 
