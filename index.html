@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-11-06-2">
+<meta name="app-version" content="2026-11-07-1">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-11-06-2';
+  const APP_VERSION_ACTUELLE = '2026-11-07-1';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -3431,15 +3431,42 @@ function totalDecaisseParPersonnePourMois(db, nomPersonne, moisListe){
   });
   return total;
 }
-// Détail (Espèces reçues / Orange Money reçu / dépenses / dépenses propres / avances décaissées pour
-// d'autres acteurs / net) pour CETTE personne, en tant que caissière de Maci Pressing Kipé UNIQUEMENT, sur
-// les mois listés — sert à afficher la répartition Espèces vs Orange Money dans « Montant disponible pour
-// payer » (le compte Orange Money étant partagé par les deux caissiers, savoir ce que chacun y a
-// personnellement encaissé aide à comprendre d'où vient le solde). Même source de données que « Total par
-// employé » / « Mon total », plus les avances décaissées via la page Dépenses propres (voir
-// totalDecaisseParPersonnePourMois ci-dessus).
+// Dépenses de Kipé saisies au nom de quelqu'un d'autre qu'un des deux caissiers (saisiPar vide/« Gérant »,
+// ou un autre employé comme le Repasseur) — elles réduisent quand même la Base de répartition (voir
+// calculerDonneesMensuellesSite, qui additionne TOUTES les dépenses du site sans filtrer par personne), mais
+// avant ce correctif elles ne réduisaient le Disponible d'AUCUN des deux caissiers, ce qui faisait paraître
+// plus d'argent disponible en caisse qu'il n'y en avait réellement (signalé par le gérant le 07/11/2026,
+// écart d'environ 6,6M GNF entre « Total distribué » et la somme des deux Disponibles). Faute de savoir avec
+// certitude qui a physiquement payé, on les rattache au responsable de la caisse CE JOUR-LÀ — même planning
+// que pour le salaire journalier et le paiement repasseur (voir employeResponsableCaisse).
+function depensesNonAttribueesPourMois(site, moisListe){
+  const idsCaissiers = new Set();
+  DETENTEURS_CAISSE.forEach(nom => {
+    const emp = (site.employes||[]).find(e => (e.nom||'').trim().toLowerCase() === nom.toLowerCase());
+    if(emp) idsCaissiers.add(emp.id);
+  });
+  const moisSet = new Set(moisListe.map(({annee, mois}) => `${annee}-${String(mois).padStart(2,'0')}`));
+  const parCaissier = {};
+  (site.depenses||[]).forEach(d => {
+    if(!d.date || !moisSet.has(d.date.slice(0,7))) return;
+    if(d.saisiPar && idsCaissiers.has(d.saisiPar)) return; // déjà comptée normalement pour le bon caissier
+    const responsable = employeResponsableCaisse(site, d.date.slice(0,10));
+    if(!responsable) return; // dimanche : personne de caisse attitré ce jour-là
+    const cible = DETENTEURS_CAISSE.find(nom => nom.toLowerCase() === (responsable.nom||'').trim().toLowerCase());
+    if(!cible) return;
+    parCaissier[cible] = (parCaissier[cible]||0) + (Number(d.montant)||0);
+  });
+  return parCaissier;
+}
+// Détail (Espèces reçues / Orange Money reçu / dépenses / dépenses non attribuées / dépenses propres /
+// avances décaissées pour d'autres acteurs / net) pour CETTE personne, en tant que caissière de Maci
+// Pressing Kipé UNIQUEMENT, sur les mois listés — sert à afficher la répartition Espèces vs Orange Money
+// dans « Montant disponible pour payer » (le compte Orange Money étant partagé par les deux caissiers,
+// savoir ce que chacun y a personnellement encaissé aide à comprendre d'où vient le solde). Même source de
+// données que « Total par employé » / « Mon total », plus les avances décaissées via la page Dépenses
+// propres (voir totalDecaisseParPersonnePourMois ci-dessus) et les dépenses non attribuées ci-dessus.
 function detailRecuCaissierPourMois(db, nomPersonne, moisListe){
-  const vide = { especes:0, orangeMoney:0, depenses:0, depensesPropres:0, avancesDecaissees:0, net:0 };
+  const vide = { especes:0, orangeMoney:0, depenses:0, depensesNonAttribuees:0, depensesPropres:0, avancesDecaissees:0, net:0 };
   const site = siteKipe(db);
   if(!site || !moisListe.length) return vide;
   const cible = (nomPersonne||'').trim().toLowerCase();
@@ -3459,7 +3486,8 @@ function detailRecuCaissierPourMois(db, nomPersonne, moisListe){
     });
   });
   total.avancesDecaissees = totalDecaisseParPersonnePourMois(db, nomPersonne, moisListe);
-  total.net = total.especes + total.orangeMoney - total.depenses - total.depensesPropres - total.avancesDecaissees;
+  total.depensesNonAttribuees = depensesNonAttribueesPourMois(site, moisListe)[nomPersonne] || 0;
+  total.net = total.especes + total.orangeMoney - total.depenses - total.depensesNonAttribuees - total.depensesPropres - total.avancesDecaissees;
   return total;
 }
 // Montant net reçu par CETTE personne, en tant que caissière de Maci Pressing Kipé UNIQUEMENT, sur les
@@ -4750,7 +4778,7 @@ function SuiviDistributionView({ db, setDb, employeId }){
 
       <h2 style={{fontSize:16, color:'var(--ink)', margin:'0 0 6px'}}>Montant disponible pour payer — {periodeLabel}</h2>
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
-        {DETENTEURS_CAISSE.join(' et ')} encaissent directement l'argent des clients à Maci Pressing Kipé, donc c'est eux qui le détiennent physiquement. Chacun ne peut payer les acteurs qu'à hauteur de ce qu'il a lui-même net reçu (Espèces + Orange Money, moins ses dépenses et ses avances décaissées) pour <strong>cette période précise</strong> — jamais plus. S'il n'a pas assez pour payer un acteur en entier, il peut payer ce qu'il a, et l'autre caissier peut compléter le reste. Le compte Orange Money est partagé par les deux — le détail ci-dessous montre ce que chacun y a personnellement encaissé. Si un caissier finit une période avec moins reçu que dépensé, ce déficit n'est pas effacé : il continue de réduire son disponible des périodes suivantes jusqu'à résorption (un solde positif non utilisé, lui, ne se reporte pas — il reste disponible tel quel pour la période où il a été reçu).
+        {DETENTEURS_CAISSE.join(' et ')} encaissent directement l'argent des clients à Maci Pressing Kipé, donc c'est eux qui le détiennent physiquement. Chacun ne peut payer les acteurs qu'à hauteur de ce qu'il a lui-même net reçu (Espèces + Orange Money, moins ses dépenses, les dépenses non attribuées décaissées depuis sa caisse — ex : Repasseur, selon le planning du jour — et ses avances décaissées) pour <strong>cette période précise</strong> — jamais plus. S'il n'a pas assez pour payer un acteur en entier, il peut payer ce qu'il a, et l'autre caissier peut compléter le reste. Le compte Orange Money est partagé par les deux — le détail ci-dessous montre ce que chacun y a personnellement encaissé. Si un caissier finit une période avec moins reçu que dépensé, ce déficit n'est pas effacé : il continue de réduire son disponible des périodes suivantes jusqu'à résorption (un solde positif non utilisé, lui, ne se reporte pas — il reste disponible tel quel pour la période où il a été reçu).
         {!suiviPaiementDisponible && <> En « {periode==='intervalle'?'Intervalle':'À ce jour'} », ces montants sont calculés pour information : pour marquer un paiement, utilisez « Par mois » ou « Par année ».</>}
       </p>
       <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(240px, 1fr))', gap:10, marginBottom:20}}>
@@ -4772,6 +4800,12 @@ function SuiviDistributionView({ db, setDb, employeId }){
                 <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:4}}>
                   <span>Dépenses entreprise</span>
                   <span className="mono">− {fmtGNF(det.depenses)}</span>
+                </div>
+              )}
+              {det.depensesNonAttribuees>0 && (
+                <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:4}}>
+                  <span>Dépenses non attribuées (ex : Repasseur) — selon planning caisse</span>
+                  <span className="mono">− {fmtGNF(det.depensesNonAttribuees)}</span>
                 </div>
               )}
               {det.depensesPropres>0 && (
