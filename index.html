@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-11-07-1">
+<meta name="app-version" content="2026-11-07-3">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-11-07-1';
+  const APP_VERSION_ACTUELLE = '2026-11-07-3';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -3196,7 +3196,7 @@ function calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi){
 
   const totalRedirigeVersCapitalFixe = parts.reduce((s,p) => s + extraCapitalFixeActeur(p), 0);
 
-  return parts.map(p => {
+  const resultat = parts.map(p => {
     const impayesPart = partActeur(p.nom, 'impayes');
     const montantBrutAvantImpayes = partActeur(p.nom, 'recetteBrute');
     // Dépense propre de CET acteur — gardée pour affichage informatif (son « solde dû » continue d'augmenter
@@ -3220,6 +3220,19 @@ function calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi){
       soldeDu: soldeDuActeur(db, p.nom),
     };
   });
+  // Attachées directement sur le tableau renvoyé (sans changer sa forme : un .map/.reduce/.find sur le
+  // résultat continue de fonctionner partout ailleurs) pour que « Suivi distribution » puisse afficher
+  // clairement pourquoi « Base de répartition » est plus petite que le net perçu brut des pressings —
+  // demandé par le gérant le 07/11/2026 après avoir constaté un écart inexpliqué avec le Disponible des
+  // caissiers de Kipé. sommeAvantPooling = net perçu brut de tous les sites pour la période, AVANT d'avoir
+  // retiré les avances personnelles de qui que ce soit ; totalDepensesPropresPeriode = la somme de TOUTES
+  // les avances personnelles des 6 acteurs (dont celles prises par les deux caissiers de Kipé EN TANT
+  // QU'ACTEURS, distinctes de leurs propres dépenses propres de CAISSIER déjà déduites dans Disponible)
+  // mutualisée et retirée UNE SEULE FOIS du pot commun avant répartition — voir le commentaire
+  // « Mutualisation des dépenses propres » plus haut dans cette fonction.
+  resultat.sommeAvantPooling = sommeMontantBrutAvantPooling;
+  resultat.totalDepensesPropresPeriode = totalDepensesPropresPeriode;
+  return resultat;
 }
 
 // ---- Suivi du paiement réel de la distribution, acteur par acteur, période par période ----
@@ -4634,12 +4647,16 @@ function SuiviDistributionView({ db, setDb, employeId }){
   const suiviPaiementDisponible = periode !== 'cumul' && periode !== 'intervalle'; // le suivi payé/validé se fait par mois ou par année, pas sur un cumul glissant ou un intervalle arbitraire
 
   const totalAVerser = lignes.reduce((s,l)=>s+l.montantAVerser, 0);
-  // Base RÉELLE sur laquelle les % de chaque acteur s'appliquent (net perçu du pressing pour la période,
-  // AVANT les dépenses propres / crédits / extra Capital Fixe propres à chaque acteur). C'est ce nombre-là
-  // — pas « Total distribué » — qui doit être comparé à « % × ce nombre » pour un acteur donné : « Total
-  // distribué » est le résultat APRÈS ajustements individuels (dépenses propres de chacun, etc.), qui ne
-  // sont pas répartis au prorata des % — deux acteurs à 30% peuvent donc recevoir des montants différents
-  // de leur part initiale si l'un d'eux a pris des dépenses propres ce mois-là et pas l'autre.
+  // Base RÉELLE sur laquelle les % de chaque acteur s'appliquent (net perçu du pressing pour la période).
+  // ATTENTION, corrigé le 07/11/2026 : contrairement à ce que ce commentaire disait avant, ce nombre est
+  // calculé APRÈS avoir retiré les avances personnelles mutualisées des 6 acteurs (montantBrut = somme des
+  // montantBrutPoolePourActeur, qui ont déjà subi cette déduction — voir « Mutualisation des dépenses
+  // propres » dans calculerRepartitionActeursPourPeriode). Ce nombre-là — pas « Total distribué » — doit
+  // être comparé à « % × ce nombre » pour un acteur donné : « Total distribué » diffère seulement s'il y a
+  // un crédit de remboursement ou un extra Capital Fixe ce mois-là (ajustements propres à chacun, non
+  // répartis au prorata des %), PAS à cause des dépenses propres (déjà mutualisées en amont, dans les deux
+  // nombres). Voir resultat.sommeAvantPooling / resultat.totalDepensesPropresPeriode (attachés sur le
+  // tableau renvoyé par calculerRepartitionActeursPourPeriode) pour le détail affiché à l'utilisateur.
   const netPercuTotalBaseRepartition = lignes.reduce((s,l)=>s+l.montantBrut, 0);
 
   const cle = suiviPaiementDisponible ? clePeriodeDistribution(periode, moisChoisi, anneeChoisie) : null;
@@ -4770,10 +4787,27 @@ function SuiviDistributionView({ db, setDb, employeId }){
 
       <div style={{display:'flex', gap:10, flexWrap:'wrap', marginBottom:8}}>
         <StatCard label={`Total distribué — ${periodeLabel}`} value={fmtGNF(totalAVerser)} icon="euro" />
-        <StatCard label={`Base de répartition (avant dépenses propres de chacun)`} value={fmtGNF(netPercuTotalBaseRepartition)} icon="chart" />
+        <StatCard label={`Base de répartition (après avances personnelles mutualisées)`} value={fmtGNF(netPercuTotalBaseRepartition)} icon="chart" />
       </div>
+      {(lignes.totalDepensesPropresPeriode||0) > 0 && (
+        <div className="card" style={{padding:'0.85rem 1.1rem', marginBottom:10, maxWidth:520}}>
+          <div style={{fontSize:12.5, fontWeight:700, color:'var(--ink)', marginBottom:8}}>D'où vient la Base de répartition — {periodeLabel}</div>
+          <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:4}}>
+            <span>Net perçu brut des pressings (avant toute avance personnelle)</span>
+            <span className="mono">{fmtGNF(lignes.sommeAvantPooling||0)}</span>
+          </div>
+          <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:4}}>
+            <span>− Avances personnelles mutualisées des 6 acteurs (dont les 2 caissiers de Kipé, en tant qu'acteurs)</span>
+            <span className="mono">− {fmtGNF(lignes.totalDepensesPropresPeriode||0)}</span>
+          </div>
+          <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--ink)', fontWeight:700, borderTop:'1px dashed var(--line)', paddingTop:6, marginTop:2}}>
+            <span>= Base de répartition</span>
+            <span className="mono">{fmtGNF(netPercuTotalBaseRepartition)}</span>
+          </div>
+        </div>
+      )}
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 20px', lineHeight:1.5}}>
-        Le % de chaque acteur s'applique à la <strong>Base de répartition</strong> ci-dessus, pas directement au « Total distribué ». Les deux diffèrent dès qu'un ou plusieurs acteurs ont des dépenses propres, un crédit de remboursement ou (pour les 4 acteurs concernés) un extra versé à la Conservation du Capital Fixe ce mois-là — ces ajustements sont propres à chacun, pas répartis au prorata des %. Pour vérifier le % d'un acteur sans ajustement personnel ce mois-ci : son % × Base de répartition (pas × Total distribué). Si un caissier (ou un site) finit un mois en déficit, ce déficit ne réduit plus la Base de répartition partagée par tous : il contribue 0 ce mois-là, et son déficit personnel continue d'être suivi séparément contre ses propres mois futurs (voir « Montant disponible pour payer », dans Suivi distribution).
+        Le % de chaque acteur s'applique à la <strong>Base de répartition</strong> ci-dessus, pas directement au « Total distribué ». Les deux diffèrent dès qu'un ou plusieurs acteurs ont un crédit de remboursement ou (pour les 4 acteurs concernés) un extra versé à la Conservation du Capital Fixe ce mois-là — ces ajustements sont propres à chacun, pas répartis au prorata des %. Pour vérifier le % d'un acteur sans ajustement personnel ce mois-ci : son % × Base de répartition (pas × Total distribué). <strong>Important :</strong> la Base de répartition a déjà retiré les avances personnelles mutualisées des 6 acteurs (voir le détail ci-dessus) — ce n'est PAS la même chose que le « Disponible » des caissiers de Kipé plus bas, qui lui ne retire que ce que CHAQUE caissier a personnellement décaissé. Les deux montants ne sont donc normalement jamais égaux. Si un caissier (ou un site) finit un mois en déficit, ce déficit ne réduit plus la Base de répartition partagée par tous : il contribue 0 ce mois-là, et son déficit personnel continue d'être suivi séparément contre ses propres mois futurs (voir « Montant disponible pour payer » ci-dessous).
       </p>
 
       <h2 style={{fontSize:16, color:'var(--ink)', margin:'0 0 6px'}}>Montant disponible pour payer — {periodeLabel}</h2>
@@ -4843,12 +4877,35 @@ function SuiviDistributionView({ db, setDb, employeId }){
         })}
       </div>
       {montantsDisponibles.length>0 && (
-        <div style={{display:'flex', gap:24, flexWrap:'wrap', fontSize:12.5, color:'var(--steam)', margin:'-8px 0 20px', padding:'8px 12px', background:'var(--paper-2)', borderRadius:8}}>
+        <div style={{display:'flex', gap:24, flexWrap:'wrap', fontSize:12.5, color:'var(--steam)', margin:'-8px 0 10px', padding:'8px 12px', background:'var(--paper-2)', borderRadius:8}}>
           <span><strong style={{color:'var(--ink)'}}>Espèces (les deux) :</strong> {fmtGNF(montantsDisponibles.reduce((s,d)=>s+d.detail.especes,0))}</span>
           <span><strong style={{color:'var(--ink)'}}>Orange Money (les deux, compte partagé) :</strong> {fmtGNF(montantsDisponibles.reduce((s,d)=>s+d.detail.orangeMoney,0))}</span>
           <span><strong style={{color:'var(--ink)'}}>Total net reçu (les deux) :</strong> {fmtGNF(montantsDisponibles.reduce((s,d)=>s+d.net,0))}</span>
         </div>
       )}
+      {montantsDisponibles.length>0 && (() => {
+        // Compare ce qui est VRAIMENT payable depuis les deux caisses de Kipé maintenant (disponible de
+        // chacun, jamais négatif — un caissier en déficit ne peut rien fournir ce mois-ci, voir
+        // disponiblePourNom) au Total distribué dû aux 6 acteurs pour la même période. Les deux ne sont
+        // normalement JAMAIS égaux (voir l'explication au-dessus de « D'où vient la Base de répartition »)
+        // et peuvent diverger dans un sens ou dans l'autre d'une période à l'autre, selon que les avances
+        // personnelles mutualisées des 6 acteurs (qui réduisent le Total distribué sans toucher au
+        // Disponible) pèsent plus ou moins lourd que les dépenses propres à Kipé (qui réduisent le
+        // Disponible sans toucher au Total distribué) ce mois-là — ce bloc rend cette différence visible
+        // d'un coup d'œil au lieu de laisser deviner.
+        const disponibleUtilisable = montantsDisponibles.reduce((s,d) => s + Math.max(0, d.disponible), 0);
+        const ecart = disponibleUtilisable - totalAVerser;
+        if(Math.abs(ecart) < 1) return null;
+        const manque = ecart < 0;
+        return (
+          <div style={{fontSize:12.5, color: manque ? 'var(--danger)' : 'var(--steam)', background: manque ? 'var(--danger-light)' : 'var(--pine-light)', padding:'8px 12px', borderRadius:8, margin:'0 0 20px', lineHeight:1.5}}>
+            {manque
+              ? <>⚠️ Les deux caisses de Kipé n'ont actuellement que <strong>{fmtGNF(disponibleUtilisable)}</strong> utilisables, soit <strong>{fmtGNF(Math.abs(ecart))}</strong> de MOINS que le Total distribué ({fmtGNF(totalAVerser)}) dû aux 6 acteurs pour cette période. Ce n'est pas une erreur de calcul : ça veut dire qu'une partie de ce qui est dû ne peut pas encore être payée avec l'argent physiquement en caisse (par exemple si un caissier a fini la période en déficit, ou si les dépenses de Kipé ont été élevées ce mois-là) — à surveiller plutôt qu'à corriger.</>
+              : <>Les deux caisses de Kipé ont <strong>{fmtGNF(ecart)}</strong> de PLUS que le Total distribué ({fmtGNF(totalAVerser)}) dû aux 6 acteurs pour cette période (disponible utilisable : {fmtGNF(disponibleUtilisable)}). C'est normal quand les avances personnelles mutualisées des autres acteurs (voir « D'où vient la Base de répartition » plus haut) réduisent ce qui est dû sans réduire ce qu'il y a physiquement en caisse — cet excédent peut rester en caisse ou servir à rattraper un déficit futur.</>
+            }
+          </div>
+        );
+      })()}
 
       {lignes.map(l => {
         const paiement = paiementsPeriode[l.nom];
