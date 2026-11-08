@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-11-07-3">
+<meta name="app-version" content="2026-11-08-6">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-11-07-3';
+  const APP_VERSION_ACTUELLE = '2026-11-08-6';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -2521,7 +2521,7 @@ function GerantApp({ db, setDb, isOnline, pendingSync, onLogout }){
           {page === 'suiviDistribution' && <SuiviDistributionView db={db} setDb={setDb} />}
           {page === 'comparaison' && <ComparaisonAnneesView db={db} onOpenAnnee={ouvrirAnneeDansDistribution} />}
           {page === 'historiqueConnexions' && <HistoriqueConnexionsView db={db} />}
-          {page === 'diagnostic' && <DiagnosticView db={db} isOnline={isOnline} pendingSync={pendingSync} />}
+          {page === 'diagnostic' && <DiagnosticView db={db} setDb={setDb} isOnline={isOnline} pendingSync={pendingSync} />}
         </>
       )}
     </Shell>
@@ -2600,12 +2600,28 @@ function calculerDiagnostics(db){
   return resultats;
 }
 
-function DiagnosticView({ db, isOnline, pendingSync }){
+function DiagnosticView({ db, setDb, isOnline, pendingSync }){
   const [sauvegardes, setSauvegardes] = useState(null); // null = en cours de chargement
   const [erreurChargement, setErreurChargement] = useState('');
   const [actionEnCours, setActionEnCours] = useState(''); // '' | 'creation' | `restauration-${cle}` | `telechargement-${cle}`
   const [message, setMessage] = useState(null); // { ok, texte }
   const [sauvegardeARestaurer, setSauvegardeARestaurer] = useState(null); // { cle, heure, declencheur }
+  const [manquantCaisseOuvert, setManquantCaisseOuvert] = useState(false);
+  const [manquantDate, setManquantDate] = useState(todayISO());
+  const [manquantMontant, setManquantMontant] = useState('');
+  const [manquantDescription, setManquantDescription] = useState('');
+  const [manquantCaissier, setManquantCaissier] = useState(''); // '' = non attribué (réparti selon planning) | id employé d'un des 2 caissiers
+  const [manquantMessage, setManquantMessage] = useState(null); // { ok, texte }
+  const [manquantEnEdition, setManquantEnEdition] = useState(null); // dépense « Manquant de caisse » en cours de modification (id) — null = nouvelle saisie
+  const [manquantASupprimer, setManquantASupprimer] = useState(null); // dépense « Manquant de caisse » à confirmer pour suppression
+  const [manquantHeriteASupprimer, setManquantHeriteASupprimer] = useState(null); // ancien manquant (site.depenses) à confirmer pour suppression
+  const [reserveOuverte, setReserveOuverte] = useState(false);
+  const [reserveDate, setReserveDate] = useState(todayISO());
+  const [reserveMontant, setReserveMontant] = useState('');
+  const [reserveDescription, setReserveDescription] = useState('');
+  const [reserveMessage, setReserveMessage] = useState(null); // { ok, texte }
+  const [reserveEnEdition, setReserveEnEdition] = useState(null); // réserve en cours de modification (id) — null = nouvelle saisie
+  const [reserveASupprimer, setReserveASupprimer] = useState(null); // réserve à confirmer pour suppression
 
   const chargerSauvegardes = useCallback(async () => {
     setErreurChargement('');
@@ -2672,6 +2688,131 @@ function DiagnosticView({ db, isOnline, pendingSync }){
     }
   }
 
+  const siteKipeDiag = siteKipe(db);
+  // Les deux caissiers de Kipé, pour le sélecteur « Caissier concerné » — laisser « Non attribué » répartit
+  // le manquant selon le planning caisse du jour (voir depensesNonAttribueesPourMois) ; choisir un caissier
+  // précis l'attribue directement à SA caisse, ce qui réduit SON Disponible spécifiquement (utile pour
+  // recaler le Disponible d'une seule personne sur un comptage physique qui ne concerne qu'elle).
+  const caissiersKipe = siteKipeDiag ? DETENTEURS_CAISSE.map(nom => (siteKipeDiag.employes||[]).find(e => (e.nom||'').trim().toLowerCase() === nom.toLowerCase())).filter(Boolean) : [];
+  // Anciennes saisies (avant le 08/11/2026) enregistrées comme dépenses entreprise à Kipé — elles réduisaient
+  // alors AUSSI le Total distribué, ce qui n'est plus voulu : à supprimer dans Dépenses (catégorie « Manquant
+  // de caisse ») puis à ressaisir ci-dessous si besoin, pour qu'elles ne touchent plus que le Disponible.
+  const manquantsHeritesDesDepenses = siteKipeDiag ? (siteKipeDiag.depenses||[]).filter(d => d.categorie === 'Manquant de caisse') : [];
+  const manquantsExistants = [...(db.manquantsCaisse||[])].sort((a,b) => (b.date||'').localeCompare(a.date||''));
+
+  function ouvrirNouveauManquant(){
+    setManquantEnEdition(null);
+    setManquantDate(todayISO());
+    setManquantMontant('');
+    setManquantDescription('');
+    setManquantCaissier('');
+    setManquantMessage(null);
+    setManquantCaisseOuvert(true);
+  }
+  function ouvrirEditionManquant(m){
+    setManquantEnEdition(m.id);
+    setManquantDate(m.date || todayISO());
+    setManquantMontant(String(m.montant || ''));
+    setManquantDescription(m.description || '');
+    setManquantCaissier(m.caissier || '');
+    setManquantMessage(null);
+    setManquantCaisseOuvert(true);
+  }
+  // Enregistre (ou modifie) un manquant de caisse constaté (comptage physique inférieur à ce que les calculs
+  // attendaient) — réduit UNIQUEMENT le Disponible du/des caissier(s) concerné(s) (voir
+  // totalManquantCaissePourMois), jamais la Base de répartition ni ce qui est dû aux 6 acteurs, et ne touche
+  // à AUCUN paiement déjà versé dans le passé (demandé par le gérant le 08/11/2026).
+  function signalerManquant(){
+    setManquantMessage(null);
+    const montant = Number(manquantMontant) || 0;
+    if(montant <= 0){ setManquantMessage({ ok:false, texte:'Entrez un montant valide.' }); return; }
+    if(!manquantDate){ setManquantMessage({ ok:false, texte:'Entrez une date.' }); return; }
+    const description = manquantDescription.trim() || `Manquant de caisse constaté le ${fmtDate(manquantDate)}`;
+    let nextManquants;
+    if(manquantEnEdition){
+      nextManquants = (db.manquantsCaisse||[]).map(m => m.id === manquantEnEdition
+        ? { ...m, date: manquantDate, description, montant, caissier: manquantCaissier || null }
+        : m);
+    } else {
+      const m = { id: uid('manquant_'), date: manquantDate, description, montant, caissier: manquantCaissier || null };
+      nextManquants = [m, ...(db.manquantsCaisse||[])];
+    }
+    setDb({ ...db, manquantsCaisse: nextManquants });
+    const qui = manquantCaissier ? (caissiersKipe.find(e=>e.id===manquantCaissier)||{}).nom : null;
+    setManquantMontant('');
+    setManquantDescription('');
+    setManquantDate(todayISO());
+    setManquantCaissier('');
+    setManquantEnEdition(null);
+    setManquantCaisseOuvert(false);
+    setManquantMessage({ ok:true, texte:`Manquant de ${fmtGNF(montant)} ${manquantEnEdition?'modifié':'enregistré'} le ${fmtDate(manquantDate)}${qui?` (attribué à ${qui})`:' (non attribué — réparti selon le planning caisse)'} — réduit uniquement le Disponible, pas le Total distribué, aucun paiement passé modifié.` });
+  }
+  function confirmerSuppressionManquant(){
+    if(!manquantASupprimer) return;
+    setDb({ ...db, manquantsCaisse: (db.manquantsCaisse||[]).filter(m => m.id !== manquantASupprimer.id) });
+    setManquantASupprimer(null);
+    setManquantMessage({ ok:true, texte:'Manquant de caisse supprimé.' });
+  }
+  // Supprime une ANCIENNE dépense « Manquant de caisse » (saisie avant le 08/11/2026, directement dans
+  // site.depenses) — contrairement aux nouveaux manquants (db.manquantsCaisse), sa suppression remonte aussi
+  // le Total distribué, puisque c'était justement le problème à corriger.
+  function confirmerSuppressionManquantHerite(){
+    if(!manquantHeriteASupprimer) return;
+    const site = siteKipe(db);
+    if(!site){ setManquantHeriteASupprimer(null); return; }
+    const nextSite = { ...site, depenses: (site.depenses||[]).filter(d => d.id !== manquantHeriteASupprimer.id) };
+    setDb({ ...db, sites: db.sites.map(s => s.id === site.id ? nextSite : s) });
+    setManquantHeriteASupprimer(null);
+    setManquantMessage({ ok:true, texte:'Ancien manquant de caisse supprimé — le Total distribué va remonter en conséquence.' });
+  }
+
+  const reservesExistantes = [...(db.reservesOrangeMoney||[])].sort((a,b) => (b.date||'').localeCompare(a.date||''));
+
+  function ouvrirNouvelleReserve(){
+    setReserveEnEdition(null);
+    setReserveDate(todayISO());
+    setReserveMontant('');
+    setReserveDescription('');
+    setReserveMessage(null);
+    setReserveOuverte(true);
+  }
+  function ouvrirEditionReserve(r){
+    setReserveEnEdition(r.id);
+    setReserveDate(r.date || todayISO());
+    setReserveMontant(String(r.montant || ''));
+    setReserveDescription(r.description || '');
+    setReserveMessage(null);
+    setReserveOuverte(true);
+  }
+  // Enregistre (ou modifie) une réserve Orange Money : de l'argent qui existe réellement sur le compte
+  // partagé de Kipé, volontairement mis de côté et donc pas distribuable tout de suite — PAS une perte,
+  // contrairement à un manquant de caisse. Réduit le Disponible des DEUX caissiers à parts égales (voir
+  // totalReserveOrangeMoneyPourMois) pour toute période qui couvre sa date, sans toucher à aucun paiement
+  // déjà versé (demandé par le gérant le 08/11/2026, pour garder 2 050 000 GNF d'côté sans le distribuer).
+  function enregistrerReserve(){
+    setReserveMessage(null);
+    const montant = Number(reserveMontant) || 0;
+    if(montant <= 0){ setReserveMessage({ ok:false, texte:'Entrez un montant valide.' }); return; }
+    if(!reserveDate){ setReserveMessage({ ok:false, texte:'Entrez une date.' }); return; }
+    const description = reserveDescription.trim() || `Réserve Orange Money mise de côté le ${fmtDate(reserveDate)}`;
+    let nextReserves;
+    if(reserveEnEdition){
+      nextReserves = (db.reservesOrangeMoney||[]).map(r => r.id === reserveEnEdition ? { ...r, date: reserveDate, montant, description } : r);
+    } else {
+      nextReserves = [{ id: uid('reserve_'), date: reserveDate, montant, description }, ...(db.reservesOrangeMoney||[])];
+    }
+    setDb({ ...db, reservesOrangeMoney: nextReserves });
+    setReserveMontant(''); setReserveDescription(''); setReserveDate(todayISO());
+    setReserveEnEdition(null); setReserveOuverte(false);
+    setReserveMessage({ ok:true, texte:`Réserve de ${fmtGNF(montant)} ${reserveEnEdition?'modifiée':'enregistrée'} le ${fmtDate(reserveDate)} — partagée à parts égales entre Nene Djiba et Mamadou Alpha, aucun paiement passé modifié.` });
+  }
+  function confirmerSuppressionReserve(){
+    if(!reserveASupprimer) return;
+    setDb({ ...db, reservesOrangeMoney: (db.reservesOrangeMoney||[]).filter(r => r.id !== reserveASupprimer.id) });
+    setReserveASupprimer(null);
+    setReserveMessage({ ok:true, texte:'Réserve supprimée.' });
+  }
+
   return (
     <div>
       <PageHeader title="Centre de diagnostic" subtitle="État de santé de l'application, vérifications automatiques, et sauvegardes de secours" />
@@ -2714,6 +2855,190 @@ function DiagnosticView({ db, isOnline, pendingSync }){
           ))}
         </div>
       </div>
+
+      <div className="card" style={{padding:'1.1rem 1.25rem', marginBottom:20}}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:4, flexWrap:'wrap', gap:10}}>
+          <h2 style={{margin:0, fontSize:16, color:'var(--pine)'}}>Manquant de caisse</h2>
+          <button className="btn btn-sm btn-danger" onClick={()=> manquantCaisseOuvert ? setManquantCaisseOuvert(false) : ouvrirNouveauManquant()}>
+            {manquantCaisseOuvert ? 'Annuler' : '⚠️ Signaler un manquant de caisse'}
+          </button>
+        </div>
+        <p style={{fontSize:12.5, color:'var(--steam)', marginTop:0, marginBottom: manquantCaisseOuvert ? 14 : 0, lineHeight:1.5}}>
+          À utiliser quand un comptage physique à Kipé montre moins que ce que l'application attendait. Réduit UNIQUEMENT le Disponible du/des caissier(s) concerné(s) — jamais le Total distribué ni ce qui est dû aux 6 acteurs, et aucun paiement déjà versé n'est modifié. Pour réduire aussi le Total distribué, saisissez une dépense entreprise ordinaire dans Détail mensuel.
+        </p>
+        {manquantsHeritesDesDepenses.length > 0 && (
+          <div style={{margin:'0 0 14px', padding:'10px 12px', borderRadius:8, fontSize:12.5, background:'var(--danger-light)', color:'var(--danger)', lineHeight:1.5}}>
+            <div style={{marginBottom:8}}>⚠️ {manquantsHeritesDesDepenses.length} ancien(s) manquant(s) de caisse saisis avant ce changement comme dépenses entreprise — ils réduisent encore le Total distribué. Supprimez-les ci-dessous (bouton direct), puis ressaisissez-les dans le formulaire au-dessus pour qu'ils ne touchent plus que le Disponible.</div>
+            <div style={{display:'flex', flexDirection:'column', gap:6}}>
+              {manquantsHeritesDesDepenses.map(d => (
+                <div key={d.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, background:'var(--paper-2)', borderRadius:6, padding:'6px 10px'}}>
+                  <span style={{color:'var(--ink)'}}>{fmtDate(d.date)} — {d.description} — <span className="mono">{fmtGNF(d.montant)}</span></span>
+                  <button className="btn btn-sm btn-danger" onClick={()=>setManquantHeriteASupprimer(d)}>🗑 Supprimer</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {manquantMessage && (
+          <div style={{margin:'10px 0 14px', padding:'8px 12px', borderRadius:8, fontSize:13, background: manquantMessage.ok ? 'var(--paper-2)' : 'var(--danger-light)', color: manquantMessage.ok ? 'var(--pine)' : 'var(--danger)'}}>
+            {manquantMessage.texte}
+          </div>
+        )}
+        {manquantCaisseOuvert && (
+          <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(160px, 1fr))', gap:12, alignItems:'end', marginBottom:16}}>
+            <div>
+              <label>Date du constat</label>
+              <input type="date" value={manquantDate} max={todayISO()} onChange={e=>setManquantDate(e.target.value)} />
+            </div>
+            <div>
+              <label>Montant manquant (GNF)</label>
+              <input type="number" value={manquantMontant} onChange={e=>setManquantMontant(e.target.value)} placeholder="Ex: 3087000" />
+            </div>
+            <div>
+              <label>Caissier concerné (optionnel)</label>
+              <select value={manquantCaissier} onChange={e=>setManquantCaissier(e.target.value)}>
+                <option value="">Non attribué (selon planning caisse)</option>
+                {caissiersKipe.map(e => <option key={e.id} value={e.id}>{e.nom}</option>)}
+              </select>
+            </div>
+            <div style={{gridColumn:'1 / -1'}}>
+              <label>Description (optionnel)</label>
+              <input type="text" value={manquantDescription} onChange={e=>setManquantDescription(e.target.value)} placeholder={`Manquant de caisse constaté le ${fmtDate(manquantDate)}`} />
+            </div>
+            <div>
+              <button className="btn btn-sm" onClick={signalerManquant}>{manquantEnEdition ? 'Enregistrer les modifications' : 'Enregistrer le manquant'}</button>
+            </div>
+          </div>
+        )}
+        {manquantsExistants.length > 0 && (
+          <div style={{overflow:'auto'}}>
+            <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+              <thead>
+                <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                  <th style={th}>Date</th>
+                  <th style={th}>Description</th>
+                  <th style={th}>Caissier</th>
+                  <th style={th}>Montant</th>
+                  <th style={th}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {manquantsExistants.map(m => (
+                  <tr key={m.id} style={{borderTop:'1px solid var(--line)'}}>
+                    <td style={td}>{fmtDate(m.date)}</td>
+                    <td style={td}>{m.description}</td>
+                    <td style={td}>{m.caissier ? ((caissiersKipe.find(e=>e.id===m.caissier)||{}).nom || '—') : 'Non attribué'}</td>
+                    <td style={td} className="mono">{fmtGNF(m.montant)}</td>
+                    <td style={td}>
+                      <div style={{display:'flex', gap:8, flexWrap:'wrap'}}>
+                        <button className="btn btn-sm btn-ghost" onClick={()=>ouvrirEditionManquant(m)}>✎ Modifier</button>
+                        <button className="btn btn-sm btn-danger" onClick={()=>setManquantASupprimer(m)}>🗑 Supprimer</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {manquantASupprimer && (
+        <ConfirmDelete
+          db={db}
+          title="Supprimer ce manquant de caisse"
+          actionLabel="Supprimer"
+          message={`Supprimer définitivement le manquant de ${fmtGNF(manquantASupprimer.montant)} du ${fmtDate(manquantASupprimer.date)} (« ${manquantASupprimer.description} ») ? Les Disponibles et la Base de répartition redeviendront comme si ce manquant n'avait jamais été signalé.`}
+          onConfirm={confirmerSuppressionManquant}
+          onCancel={()=>setManquantASupprimer(null)}
+        />
+      )}
+      {manquantHeriteASupprimer && (
+        <ConfirmDelete
+          db={db}
+          title="Supprimer cet ancien manquant de caisse"
+          actionLabel="Supprimer"
+          message={`Supprimer définitivement l'ancienne dépense « ${manquantHeriteASupprimer.description} » (${fmtGNF(manquantHeriteASupprimer.montant)} du ${fmtDate(manquantHeriteASupprimer.date)}) ? Contrairement aux nouveaux manquants, ceci va aussi faire REMONTER le Total distribué — c'est normal, c'est l'ancien mécanisme qu'on corrige.`}
+          onConfirm={confirmerSuppressionManquantHerite}
+          onCancel={()=>setManquantHeriteASupprimer(null)}
+        />
+      )}
+
+      <div className="card" style={{padding:'1.1rem 1.25rem', marginBottom:20}}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:4, flexWrap:'wrap', gap:10}}>
+          <h2 style={{margin:0, fontSize:16, color:'var(--pine)'}}>Réserve non distribuée (Orange Money)</h2>
+          <button className="btn btn-sm" onClick={()=> reserveOuverte ? setReserveOuverte(false) : ouvrirNouvelleReserve()}>
+            {reserveOuverte ? 'Annuler' : '💰 Mettre un montant de côté'}
+          </button>
+        </div>
+        <p style={{fontSize:12.5, color:'var(--steam)', marginTop:0, marginBottom: reserveOuverte ? 14 : 0, lineHeight:1.5}}>
+          Pour de l'argent qui existe réellement sur le compte Orange Money partagé de Kipé, mais que vous voulez garder de côté pour l'instant sans le distribuer aux acteurs — contrairement à un manquant de caisse, ce n'est PAS une perte. Réduit le Disponible de Nene Djiba et Mamadou Alpha à parts égales (moitié chacun), sans toucher à aucun paiement déjà versé.
+        </p>
+        {reserveMessage && (
+          <div style={{margin:'10px 0 14px', padding:'8px 12px', borderRadius:8, fontSize:13, background: reserveMessage.ok ? 'var(--paper-2)' : 'var(--danger-light)', color: reserveMessage.ok ? 'var(--pine)' : 'var(--danger)'}}>
+            {reserveMessage.texte}
+          </div>
+        )}
+        {reserveOuverte && (
+          <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(160px, 1fr))', gap:12, alignItems:'end', marginBottom:16}}>
+            <div>
+              <label>Date</label>
+              <input type="date" value={reserveDate} max={todayISO()} onChange={e=>setReserveDate(e.target.value)} />
+            </div>
+            <div>
+              <label>Montant à mettre de côté (GNF)</label>
+              <input type="number" value={reserveMontant} onChange={e=>setReserveMontant(e.target.value)} placeholder="Ex: 2050000" />
+            </div>
+            <div style={{gridColumn:'1 / -1'}}>
+              <label>Description (optionnel)</label>
+              <input type="text" value={reserveDescription} onChange={e=>setReserveDescription(e.target.value)} placeholder={`Réserve Orange Money mise de côté le ${fmtDate(reserveDate)}`} />
+            </div>
+            <div>
+              <button className="btn btn-sm" onClick={enregistrerReserve}>{reserveEnEdition ? 'Enregistrer les modifications' : 'Mettre de côté'}</button>
+            </div>
+          </div>
+        )}
+        {reservesExistantes.length > 0 && (
+          <div style={{overflow:'auto'}}>
+            <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+              <thead>
+                <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                  <th style={th}>Date</th>
+                  <th style={th}>Description</th>
+                  <th style={th}>Montant</th>
+                  <th style={th}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reservesExistantes.map(r => (
+                  <tr key={r.id} style={{borderTop:'1px solid var(--line)'}}>
+                    <td style={td}>{fmtDate(r.date)}</td>
+                    <td style={td}>{r.description}</td>
+                    <td style={td} className="mono">{fmtGNF(r.montant)}</td>
+                    <td style={td}>
+                      <div style={{display:'flex', gap:8, flexWrap:'wrap'}}>
+                        <button className="btn btn-sm btn-ghost" onClick={()=>ouvrirEditionReserve(r)}>✎ Modifier</button>
+                        <button className="btn btn-sm btn-danger" onClick={()=>setReserveASupprimer(r)}>🗑 Supprimer</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {reserveASupprimer && (
+        <ConfirmDelete
+          db={db}
+          title="Supprimer cette réserve"
+          actionLabel="Supprimer"
+          message={`Supprimer définitivement la réserve de ${fmtGNF(reserveASupprimer.montant)} du ${fmtDate(reserveASupprimer.date)} (« ${reserveASupprimer.description} ») ? Le Disponible des deux caissiers redeviendra comme si cette réserve n'avait jamais été mise de côté.`}
+          onConfirm={confirmerSuppressionReserve}
+          onCancel={()=>setReserveASupprimer(null)}
+        />
+      )}
 
       <div className="card" style={{padding:'1.1rem 1.25rem'}}>
         <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:4, flexWrap:'wrap', gap:10}}>
@@ -3471,15 +3796,61 @@ function depensesNonAttribueesPourMois(site, moisListe){
   });
   return parCaissier;
 }
+// db.reservesOrangeMoney = [{id, date, montant, description}] — montants mis volontairement de côté sur le
+// compte Orange Money PARTAGÉ de Kipé : de l'argent qui existe réellement, gardé en réserve pour plus tard,
+// donc PAS distribuable aux acteurs tout de suite — contrairement à un « manquant de caisse » (voir plus
+// haut) qui constate une perte réelle. Comme le compte est partagé à parts égales par les deux caissiers de
+// Kipé, chaque réserve réduit le Disponible des DEUX caissiers à parts égales (moitié chacun), pour toute
+// période qui couvre sa date.
+function totalReserveOrangeMoneyPourMois(db, moisListe){
+  const moisSet = new Set(moisListe.map(({annee, mois}) => `${annee}-${String(mois).padStart(2,'0')}`));
+  return (db.reservesOrangeMoney||[]).reduce((s,r) => {
+    if(!r.date || !moisSet.has(r.date.slice(0,7))) return s;
+    return s + (Number(r.montant)||0);
+  }, 0);
+}
+// db.manquantsCaisse = [{id, date, montant, description, caissier}] — manquants de caisse constatés (voir
+// Centre de diagnostic), où « caissier » est l'id employé du caissier concerné (Nene Djiba / Mamadou Alpha),
+// ou null pour répartir selon le planning caisse du jour (comme depensesNonAttribueesPourMois). VOLONTAIREMENT
+// TENU HORS de site.depenses : un manquant de caisse ne réduit QUE le Disponible du/des caissier(s) concerné
+// (s), jamais la Base de répartition ni ce qui est dû aux 6 acteurs — demandé explicitement par le gérant le
+// 08/11/2026 (« je n'ai pas l'intention de leur faire payer le montant manquant »). Si le gérant veut aussi
+// réduire le Total distribué pour refléter un manquant, il saisit une dépense entreprise ORDINAIRE dans
+// Détail mensuel (datée un dimanche, pour ne décaler le Disponible d'aucun des deux caissiers si souhaité).
+function totalManquantCaissePourMois(db, moisListe){
+  const site = siteKipe(db);
+  const moisSet = new Set(moisListe.map(({annee, mois}) => `${annee}-${String(mois).padStart(2,'0')}`));
+  const parCaissier = {};
+  (db.manquantsCaisse||[]).forEach(m => {
+    if(!m.date || !moisSet.has(m.date.slice(0,7))) return;
+    const montant = Number(m.montant)||0;
+    if(montant <= 0) return;
+    if(m.caissier){
+      const emp = site && (site.employes||[]).find(e => e.id === m.caissier);
+      if(!emp) return;
+      parCaissier[emp.nom] = (parCaissier[emp.nom]||0) + montant;
+      return;
+    }
+    if(!site) return;
+    const responsable = employeResponsableCaisse(site, m.date.slice(0,10));
+    if(!responsable) return; // dimanche : personne de caisse attitré ce jour-là
+    const cible = DETENTEURS_CAISSE.find(nom => nom.toLowerCase() === (responsable.nom||'').trim().toLowerCase());
+    if(!cible) return;
+    parCaissier[cible] = (parCaissier[cible]||0) + montant;
+  });
+  return parCaissier;
+}
 // Détail (Espèces reçues / Orange Money reçu / dépenses / dépenses non attribuées / dépenses propres /
-// avances décaissées pour d'autres acteurs / net) pour CETTE personne, en tant que caissière de Maci
-// Pressing Kipé UNIQUEMENT, sur les mois listés — sert à afficher la répartition Espèces vs Orange Money
-// dans « Montant disponible pour payer » (le compte Orange Money étant partagé par les deux caissiers,
-// savoir ce que chacun y a personnellement encaissé aide à comprendre d'où vient le solde). Même source de
-// données que « Total par employé » / « Mon total », plus les avances décaissées via la page Dépenses
-// propres (voir totalDecaisseParPersonnePourMois ci-dessus) et les dépenses non attribuées ci-dessus.
+// avances décaissées pour d'autres acteurs / manquant de caisse / réserve Orange Money / net) pour CETTE
+// personne, en tant que caissière de Maci Pressing Kipé UNIQUEMENT, sur les mois listés — sert à afficher la
+// répartition Espèces vs Orange Money dans « Montant disponible pour payer » (le compte Orange Money étant
+// partagé par les deux caissiers, savoir ce que chacun y a personnellement encaissé aide à comprendre d'où
+// vient le solde). Même source de données que « Total par employé » / « Mon total », plus les avances
+// décaissées via la page Dépenses propres (voir totalDecaisseParPersonnePourMois ci-dessus), les dépenses
+// non attribuées ci-dessus, le manquant de caisse (voir totalManquantCaissePourMois ci-dessus) et la réserve
+// Orange Money (voir totalReserveOrangeMoneyPourMois ci-dessus).
 function detailRecuCaissierPourMois(db, nomPersonne, moisListe){
-  const vide = { especes:0, orangeMoney:0, depenses:0, depensesNonAttribuees:0, depensesPropres:0, avancesDecaissees:0, net:0 };
+  const vide = { especes:0, orangeMoney:0, depenses:0, depensesNonAttribuees:0, depensesPropres:0, avancesDecaissees:0, manquantCaisse:0, reserveOrangeMoney:0, net:0 };
   const site = siteKipe(db);
   if(!site || !moisListe.length) return vide;
   const cible = (nomPersonne||'').trim().toLowerCase();
@@ -3500,7 +3871,9 @@ function detailRecuCaissierPourMois(db, nomPersonne, moisListe){
   });
   total.avancesDecaissees = totalDecaisseParPersonnePourMois(db, nomPersonne, moisListe);
   total.depensesNonAttribuees = depensesNonAttribueesPourMois(site, moisListe)[nomPersonne] || 0;
-  total.net = total.especes + total.orangeMoney - total.depenses - total.depensesNonAttribuees - total.depensesPropres - total.avancesDecaissees;
+  total.manquantCaisse = totalManquantCaissePourMois(db, moisListe)[nomPersonne] || 0;
+  total.reserveOrangeMoney = totalReserveOrangeMoneyPourMois(db, moisListe) / DETENTEURS_CAISSE.length;
+  total.net = total.especes + total.orangeMoney - total.depenses - total.depensesNonAttribuees - total.depensesPropres - total.avancesDecaissees - total.manquantCaisse - total.reserveOrangeMoney;
   return total;
 }
 // Montant net reçu par CETTE personne, en tant que caissière de Maci Pressing Kipé UNIQUEMENT, sur les
@@ -4583,6 +4956,7 @@ function SuiviDistributionView({ db, setDb, employeId }){
   const [detailLifetimeOuvert, setDetailLifetimeOuvert] = useState({}); // { [nomActeur]: true } — affiche le détail versement par versement du « Déjà distribué » depuis le début
   const [confirmSupprimerVersement, setConfirmSupprimerVersement] = useState(null); // { nomActeur, cle, index } du versement qu'on veut supprimer définitivement
   const [editionVersement, setEditionVersement] = useState(null); // { nomActeur, cle, index, montant, modePaiement, payeDepuisCaisseDe, datePaiement } — versement en cours d'édition dans le détail « Depuis le début »
+  const parts = partsActuelles(db); // pour retrouver, dans « Montant disponible », l'acteur correspondant à chaque caissier de Kipé (ex: « Nene Djiba » -> « Nene Djiba Bah »)
 
   const anneesDisponibles = useMemo(() => {
     const arr = [];
@@ -4848,10 +5222,40 @@ function SuiviDistributionView({ db, setDb, employeId }){
                   <span className="mono">− {fmtGNF(det.depensesPropres)}</span>
                 </div>
               )}
+              {(() => {
+                // Information seulement — n'entre PAS dans le calcul du Disponible ci-dessous. « Dépenses
+                // propres » juste au-dessus ne compte que ce que CE caissier a lui-même pris dans SA caisse
+                // de Kipé (ça réduit vraiment ce qu'il a en main). Ce solde dû, lui, vient de la page
+                // « Dépenses propres » (Distribution des recettes) : il additionne TOUTES les avances qui
+                // lui sont créditées comme acteur, toutes sources et tous sites confondus — y compris de
+                // l'argent jamais passé par sa caisse à lui. Montré ici pour qu'on le voie sans aller
+                // chercher sur l'autre page, sans fausser le plafond de paiement physique.
+                const acteurCorrespondant = parts.find(p => nomsCorrespondent(d.nom, p.nom));
+                const solde = acteurCorrespondant ? soldeDuActeur(db, acteurCorrespondant.nom) : 0;
+                if(!acteurCorrespondant || solde <= 0) return null;
+                return (
+                  <div style={{display:'flex', justifyContent:'space-between', fontSize:11.5, color:'var(--rust)', background:'var(--paper-2)', borderRadius:6, padding:'4px 8px', marginTop:-2, marginBottom:8}}>
+                    <span style={{fontStyle:'italic'}}>ℹ️ Solde dû total en tant qu'acteur (toutes sources — voir « Dépenses propres »)</span>
+                    <span className="mono">{fmtGNF(solde)}</span>
+                  </div>
+                );
+              })()}
               {det.avancesDecaissees>0 && (
                 <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:4}}>
                   <span>Avances décaissées pour d'autres acteurs</span>
                   <span className="mono">− {fmtGNF(det.avancesDecaissees)}</span>
+                </div>
+              )}
+              {det.manquantCaisse>0 && (
+                <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--danger)', marginBottom:4}}>
+                  <span>Manquant de caisse (voir Centre de diagnostic)</span>
+                  <span className="mono">− {fmtGNF(det.manquantCaisse)}</span>
+                </div>
+              )}
+              {det.reserveOrangeMoney>0 && (
+                <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:4}}>
+                  <span>Réserve Orange Money (part, non distribuée — voir Centre de diagnostic)</span>
+                  <span className="mono">− {fmtGNF(det.reserveOrangeMoney)}</span>
                 </div>
               )}
               <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--ink)', fontWeight:600, borderTop:'1px dashed var(--line)', paddingTop:6, marginTop:2, marginBottom:8}}>
@@ -11254,8 +11658,8 @@ function NewEmployeModal({ site, updateSite, onClose }){
 
 /* ===================== DEPENSES ===================== */
 
-const CATEGORIES_DEPENSES = ['Salaires', 'Électricité', 'Loyer', 'Fournitures', 'Autres'];
-const CATEGORIES_DEPENSES_AFFICHAGE = ['Salaires', 'Électricité', 'Loyer', 'Paiement repasseur', 'Livraison', 'Paiement emballeur', 'Fournitures', 'Autres'];
+const CATEGORIES_DEPENSES = ['Salaires', 'Électricité', 'Loyer', 'Fournitures', 'Manquant de caisse', 'Autres'];
+const CATEGORIES_DEPENSES_AFFICHAGE = ['Salaires', 'Électricité', 'Loyer', 'Paiement repasseur', 'Livraison', 'Paiement emballeur', 'Fournitures', 'Manquant de caisse', 'Autres'];
 // Tarif payé par emballage (GNF) — une seule personne est habilitée à être payée pour l'emballage,
 // Boubacar Sadio (voir NOM_EMPLOYE_EMBALLEUR) : contrairement au salaire journalier (crédité
 // automatiquement à la connexion/action), cette dépense se saisit manuellement — le gérant ou l'employé
