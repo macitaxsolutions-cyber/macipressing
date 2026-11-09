@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-11-08-6">
+<meta name="app-version" content="2026-11-08-7">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-11-08-6';
+  const APP_VERSION_ACTUELLE = '2026-11-08-7';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -2622,6 +2622,13 @@ function DiagnosticView({ db, setDb, isOnline, pendingSync }){
   const [reserveMessage, setReserveMessage] = useState(null); // { ok, texte }
   const [reserveEnEdition, setReserveEnEdition] = useState(null); // réserve en cours de modification (id) — null = nouvelle saisie
   const [reserveASupprimer, setReserveASupprimer] = useState(null); // réserve à confirmer pour suppression
+  const [ajustementOuvert, setAjustementOuvert] = useState(false);
+  const [ajustementDate, setAjustementDate] = useState(todayISO());
+  const [ajustementMontant, setAjustementMontant] = useState(''); // peut être négatif (ex: -1951000) pour baisser la Base de répartition
+  const [ajustementDescription, setAjustementDescription] = useState('');
+  const [ajustementMessage, setAjustementMessage] = useState(null); // { ok, texte }
+  const [ajustementEnEdition, setAjustementEnEdition] = useState(null); // ajustement en cours de modification (id) — null = nouvelle saisie
+  const [ajustementASupprimer, setAjustementASupprimer] = useState(null); // ajustement à confirmer pour suppression
 
   const chargerSauvegardes = useCallback(async () => {
     setErreurChargement('');
@@ -2811,6 +2818,53 @@ function DiagnosticView({ db, setDb, isOnline, pendingSync }){
     setDb({ ...db, reservesOrangeMoney: (db.reservesOrangeMoney||[]).filter(r => r.id !== reserveASupprimer.id) });
     setReserveASupprimer(null);
     setReserveMessage({ ok:true, texte:'Réserve supprimée.' });
+  }
+
+  const ajustementsExistants = [...(db.ajustementsBaseRepartition||[])].sort((a,b) => (b.date||'').localeCompare(a.date||''));
+
+  function ouvrirNouvelAjustement(){
+    setAjustementEnEdition(null);
+    setAjustementDate(todayISO());
+    setAjustementMontant('');
+    setAjustementDescription('');
+    setAjustementMessage(null);
+    setAjustementOuvert(true);
+  }
+  function ouvrirEditionAjustement(a){
+    setAjustementEnEdition(a.id);
+    setAjustementDate(a.date || todayISO());
+    setAjustementMontant(String(a.montant ?? ''));
+    setAjustementDescription(a.description || '');
+    setAjustementMessage(null);
+    setAjustementOuvert(true);
+  }
+  // Enregistre (ou modifie) un ajustement manuel de la Base de répartition : positif ou négatif, retiré/ajouté
+  // au prorata entre les 6 acteurs comme une avance personnelle mutualisée (voir
+  // totalAjustementBaseRepartitionPourMois). Ne touche JAMAIS le Disponible des caissiers ni la Réserve
+  // Orange Money — demandé par le gérant le 08/11/2026 pour pouvoir corriger la Base de répartition
+  // indépendamment du reste, « sans toucher l'Orange Money ».
+  function enregistrerAjustement(){
+    setAjustementMessage(null);
+    const montant = Number(ajustementMontant);
+    if(!montant){ setAjustementMessage({ ok:false, texte:'Entrez un montant non nul (positif pour augmenter la Base de répartition, négatif pour la diminuer).' }); return; }
+    if(!ajustementDate){ setAjustementMessage({ ok:false, texte:'Entrez une date.' }); return; }
+    const description = ajustementDescription.trim() || `Ajustement de la Base de répartition le ${fmtDate(ajustementDate)}`;
+    let nextAjustements;
+    if(ajustementEnEdition){
+      nextAjustements = (db.ajustementsBaseRepartition||[]).map(a => a.id === ajustementEnEdition ? { ...a, date: ajustementDate, description, montant } : a);
+    } else {
+      nextAjustements = [{ id: uid('ajustement_'), date: ajustementDate, description, montant }, ...(db.ajustementsBaseRepartition||[])];
+    }
+    setDb({ ...db, ajustementsBaseRepartition: nextAjustements });
+    setAjustementMontant(''); setAjustementDescription(''); setAjustementDate(todayISO());
+    setAjustementEnEdition(null); setAjustementOuvert(false);
+    setAjustementMessage({ ok:true, texte:`Ajustement de ${fmtGNF(montant)} ${ajustementEnEdition?'modifié':'enregistré'} le ${fmtDate(ajustementDate)} — modifie uniquement la Base de répartition (répartie au prorata entre les 6 acteurs), jamais le Disponible des caissiers ni la Réserve Orange Money.` });
+  }
+  function confirmerSuppressionAjustement(){
+    if(!ajustementASupprimer) return;
+    setDb({ ...db, ajustementsBaseRepartition: (db.ajustementsBaseRepartition||[]).filter(a => a.id !== ajustementASupprimer.id) });
+    setAjustementASupprimer(null);
+    setAjustementMessage({ ok:true, texte:'Ajustement supprimé.' });
   }
 
   return (
@@ -3037,6 +3091,82 @@ function DiagnosticView({ db, setDb, isOnline, pendingSync }){
           message={`Supprimer définitivement la réserve de ${fmtGNF(reserveASupprimer.montant)} du ${fmtDate(reserveASupprimer.date)} (« ${reserveASupprimer.description} ») ? Le Disponible des deux caissiers redeviendra comme si cette réserve n'avait jamais été mise de côté.`}
           onConfirm={confirmerSuppressionReserve}
           onCancel={()=>setReserveASupprimer(null)}
+        />
+      )}
+
+      <div className="card" style={{padding:'1.1rem 1.25rem', marginBottom:20}}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:4, flexWrap:'wrap', gap:10}}>
+          <h2 style={{margin:0, fontSize:16, color:'var(--pine)'}}>Ajustement de la Base de répartition</h2>
+          <button className="btn btn-sm" onClick={()=> ajustementOuvert ? setAjustementOuvert(false) : ouvrirNouvelAjustement()}>
+            {ajustementOuvert ? 'Annuler' : '⚖️ Ajouter un ajustement'}
+          </button>
+        </div>
+        <p style={{fontSize:12.5, color:'var(--steam)', marginTop:0, marginBottom: ajustementOuvert ? 14 : 0, lineHeight:1.5}}>
+          Pour corriger directement la Base de répartition (et donc le Total distribué aux 6 acteurs) d'un montant précis, sans toucher au Disponible des caissiers ni à la Réserve Orange Money. Montant positif = augmente la Base de répartition ; montant négatif = la diminue. Réparti au prorata entre les 6 acteurs, comme une avance personnelle mutualisée. Aucun paiement déjà versé n'est modifié.
+        </p>
+        {ajustementMessage && (
+          <div style={{margin:'10px 0 14px', padding:'8px 12px', borderRadius:8, fontSize:13, background: ajustementMessage.ok ? 'var(--paper-2)' : 'var(--danger-light)', color: ajustementMessage.ok ? 'var(--pine)' : 'var(--danger)'}}>
+            {ajustementMessage.texte}
+          </div>
+        )}
+        {ajustementOuvert && (
+          <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(160px, 1fr))', gap:12, alignItems:'end', marginBottom:16}}>
+            <div>
+              <label>Date</label>
+              <input type="date" value={ajustementDate} max={todayISO()} onChange={e=>setAjustementDate(e.target.value)} />
+            </div>
+            <div>
+              <label>Montant (GNF) — positif ou négatif</label>
+              <input type="number" value={ajustementMontant} onChange={e=>setAjustementMontant(e.target.value)} placeholder="Ex: 1951000 ou -1951000" />
+            </div>
+            <div style={{gridColumn:'1 / -1'}}>
+              <label>Description (optionnel)</label>
+              <input type="text" value={ajustementDescription} onChange={e=>setAjustementDescription(e.target.value)} placeholder={`Ajustement de la Base de répartition le ${fmtDate(ajustementDate)}`} />
+            </div>
+            <div>
+              <button className="btn btn-sm" onClick={enregistrerAjustement}>{ajustementEnEdition ? 'Enregistrer les modifications' : 'Enregistrer l’ajustement'}</button>
+            </div>
+          </div>
+        )}
+        {ajustementsExistants.length > 0 && (
+          <div style={{overflow:'auto'}}>
+            <table style={{width:'100%', borderCollapse:'collapse', fontSize:13.5}}>
+              <thead>
+                <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                  <th style={th}>Date</th>
+                  <th style={th}>Description</th>
+                  <th style={th}>Montant</th>
+                  <th style={th}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ajustementsExistants.map(a => (
+                  <tr key={a.id} style={{borderTop:'1px solid var(--line)'}}>
+                    <td style={td}>{fmtDate(a.date)}</td>
+                    <td style={td}>{a.description}</td>
+                    <td style={{...td, color: a.montant < 0 ? 'var(--danger)' : 'var(--pine)'}} className="mono">{a.montant > 0 ? '+ ' : ''}{fmtGNF(a.montant)}</td>
+                    <td style={td}>
+                      <div style={{display:'flex', gap:8, flexWrap:'wrap'}}>
+                        <button className="btn btn-sm btn-ghost" onClick={()=>ouvrirEditionAjustement(a)}>✎ Modifier</button>
+                        <button className="btn btn-sm btn-danger" onClick={()=>setAjustementASupprimer(a)}>🗑 Supprimer</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {ajustementASupprimer && (
+        <ConfirmDelete
+          db={db}
+          title="Supprimer cet ajustement"
+          actionLabel="Supprimer"
+          message={`Supprimer définitivement l'ajustement de ${fmtGNF(ajustementASupprimer.montant)} du ${fmtDate(ajustementASupprimer.date)} (« ${ajustementASupprimer.description} ») ? La Base de répartition redeviendra comme si cet ajustement n'avait jamais été saisi.`}
+          onConfirm={confirmerSuppressionAjustement}
+          onCancel={()=>setAjustementASupprimer(null)}
         />
       )}
 
@@ -3488,6 +3618,10 @@ function calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi){
   const totalDepensesPropresPeriode = parts.reduce((s,p) => {
     return s + (depensesActeursPeriode[p.nom]||[]).reduce((s2,e)=>s2+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
   }, 0);
+  // Ajustement manuel de la Base de répartition (voir db.ajustementsBaseRepartition / Centre de diagnostic) —
+  // positif ou négatif, réparti au prorata comme une avance personnelle mutualisée, mais dans l'autre sens :
+  // AJOUTÉ au pot commun au lieu d'en être retiré. Ne touche jamais le Disponible des caissiers.
+  const totalAjustementsPeriode = totalAjustementBaseRepartitionPourMois(db, moisCouverts);
   const montantBrutAvantPoolingParActeur = {};
   parts.forEach(p => { montantBrutAvantPoolingParActeur[p.nom] = partActeur(p.nom, 'recetteNette'); });
   const sommeMontantBrutAvantPooling = parts.reduce((s,p) => s + montantBrutAvantPoolingParActeur[p.nom], 0);
@@ -3497,7 +3631,7 @@ function calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi){
     // à son % exact sur un seul mois ; pondéré mois par mois sur une période à cheval sur plusieurs mois ou
     // plusieurs grilles de %). Repli sur le % nominal si la somme est nulle (aucun revenu net ce mois-là).
     const poids = sommeMontantBrutAvantPooling !== 0 ? (avantPooling / sommeMontantBrutAvantPooling) : ((Number(p.pct)||0) / 100);
-    return avantPooling - (totalDepensesPropresPeriode * poids);
+    return avantPooling - (totalDepensesPropresPeriode * poids) + (totalAjustementsPeriode * poids);
   }
 
   // Montant que CET acteur verse en plus vers la Conservation du Capital Fixe : 20% de son NET PERÇU RÉEL
@@ -3557,6 +3691,7 @@ function calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi){
   // « Mutualisation des dépenses propres » plus haut dans cette fonction.
   resultat.sommeAvantPooling = sommeMontantBrutAvantPooling;
   resultat.totalDepensesPropresPeriode = totalDepensesPropresPeriode;
+  resultat.totalAjustementsPeriode = totalAjustementsPeriode;
   return resultat;
 }
 
@@ -3807,6 +3942,20 @@ function totalReserveOrangeMoneyPourMois(db, moisListe){
   return (db.reservesOrangeMoney||[]).reduce((s,r) => {
     if(!r.date || !moisSet.has(r.date.slice(0,7))) return s;
     return s + (Number(r.montant)||0);
+  }, 0);
+}
+// db.ajustementsBaseRepartition = [{id, date, montant, description}] — ajustement manuel (positif ou
+// négatif) de la Base de répartition UNIQUEMENT, saisi dans Centre de diagnostic. Contrairement au Manquant
+// de caisse et à la Réserve Orange Money (qui ne touchent que le Disponible des caissiers), celui-ci ne
+// touche JAMAIS le Disponible ni la Réserve Orange Money — il modifie directement le pot commun réparti
+// entre les 6 acteurs (voir calculerRepartitionActeursPourPeriode), au prorata comme une avance personnelle
+// mutualisée. Ajouté à la demande du gérant le 08/11/2026 pour corriger la Base de répartition indépendamment
+// du reste, « sans toucher l'Orange Money ».
+function totalAjustementBaseRepartitionPourMois(db, moisListe){
+  const moisSet = new Set(moisListe.map(({annee, mois}) => `${annee}-${String(mois).padStart(2,'0')}`));
+  return (db.ajustementsBaseRepartition||[]).reduce((s,a) => {
+    if(!a.date || !moisSet.has(a.date.slice(0,7))) return s;
+    return s + (Number(a.montant)||0);
   }, 0);
 }
 // db.manquantsCaisse = [{id, date, montant, description, caissier}] — manquants de caisse constatés (voir
@@ -5163,7 +5312,7 @@ function SuiviDistributionView({ db, setDb, employeId }){
         <StatCard label={`Total distribué — ${periodeLabel}`} value={fmtGNF(totalAVerser)} icon="euro" />
         <StatCard label={`Base de répartition (après avances personnelles mutualisées)`} value={fmtGNF(netPercuTotalBaseRepartition)} icon="chart" />
       </div>
-      {(lignes.totalDepensesPropresPeriode||0) > 0 && (
+      {((lignes.totalDepensesPropresPeriode||0) > 0 || (lignes.totalAjustementsPeriode||0) !== 0) && (
         <div className="card" style={{padding:'0.85rem 1.1rem', marginBottom:10, maxWidth:520}}>
           <div style={{fontSize:12.5, fontWeight:700, color:'var(--ink)', marginBottom:8}}>D'où vient la Base de répartition — {periodeLabel}</div>
           <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:4}}>
@@ -5174,6 +5323,12 @@ function SuiviDistributionView({ db, setDb, employeId }){
             <span>− Avances personnelles mutualisées des 6 acteurs (dont les 2 caissiers de Kipé, en tant qu'acteurs)</span>
             <span className="mono">− {fmtGNF(lignes.totalDepensesPropresPeriode||0)}</span>
           </div>
+          {(lignes.totalAjustementsPeriode||0) !== 0 && (
+            <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--steam)', marginBottom:4}}>
+              <span>{lignes.totalAjustementsPeriode > 0 ? '+' : '−'} Ajustement manuel de la Base de répartition (voir Centre de diagnostic)</span>
+              <span className="mono">{lignes.totalAjustementsPeriode > 0 ? '+ ' : '− '}{fmtGNF(Math.abs(lignes.totalAjustementsPeriode))}</span>
+            </div>
+          )}
           <div style={{display:'flex', justifyContent:'space-between', fontSize:12.5, color:'var(--ink)', fontWeight:700, borderTop:'1px dashed var(--line)', paddingTop:6, marginTop:2}}>
             <span>= Base de répartition</span>
             <span className="mono">{fmtGNF(netPercuTotalBaseRepartition)}</span>
