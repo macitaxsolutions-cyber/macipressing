@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-11-08-7">
+<meta name="app-version" content="2026-11-12-4">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-11-08-7';
+  const APP_VERSION_ACTUELLE = '2026-11-12-4';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -2629,6 +2629,8 @@ function DiagnosticView({ db, setDb, isOnline, pendingSync }){
   const [ajustementMessage, setAjustementMessage] = useState(null); // { ok, texte }
   const [ajustementEnEdition, setAjustementEnEdition] = useState(null); // ajustement en cours de modification (id) — null = nouvelle saisie
   const [ajustementASupprimer, setAjustementASupprimer] = useState(null); // ajustement à confirmer pour suppression
+  const [pointZeroSaisi, setPointZeroSaisi] = useState(null); // valeur en cours d'édition (null = pas en train d'éditer, utiliser db.pointZeroDeficitCaisse)
+  const [pointZeroMessage, setPointZeroMessage] = useState(null); // { ok, texte }
 
   const chargerSauvegardes = useCallback(async () => {
     setErreurChargement('');
@@ -2865,6 +2867,24 @@ function DiagnosticView({ db, setDb, isOnline, pendingSync }){
     setDb({ ...db, ajustementsBaseRepartition: (db.ajustementsBaseRepartition||[]).filter(a => a.id !== ajustementASupprimer.id) });
     setAjustementASupprimer(null);
     setAjustementMessage({ ok:true, texte:'Ajustement supprimé.' });
+  }
+
+  // Point zéro de la comptabilité des caissiers de Kipé (voir soldeReporteAvantPeriode) — aucun mois avant
+  // celui-ci ne compte plus dans le déficit reporté de Nene Djiba / Mamadou Alpha. Demandé par le gérant le
+  // 12/11/2026 : les comptes des deux caissiers sont soldés sur la base de ce qu'ils ont déclaré avoir en
+  // caisse pour la période du 01/12/2025 au 31/10/2026, et novembre 2026 repart avec un déficit reporté à
+  // zéro, point de départ de la « vraie » comptabilité selon ses mots.
+  function enregistrerPointZero(){
+    setPointZeroMessage(null);
+    if(!pointZeroSaisi){ setPointZeroMessage({ ok:false, texte:'Choisissez un mois.' }); return; }
+    setDb({ ...db, pointZeroDeficitCaisse: pointZeroSaisi });
+    setPointZeroMessage({ ok:true, texte:`Point zéro réglé sur ${pointZeroSaisi} — aucun mois avant celui-ci ne réduit plus le Disponible de Nene Djiba ou Mamadou Alpha via le déficit reporté.` });
+  }
+  function retirerPointZero(){
+    const { pointZeroDeficitCaisse, ...reste } = db;
+    setDb(reste);
+    setPointZeroSaisi(null);
+    setPointZeroMessage({ ok:true, texte:'Point zéro retiré — le déficit reporté redevient calculé depuis le tout début.' });
   }
 
   return (
@@ -3169,6 +3189,38 @@ function DiagnosticView({ db, setDb, isOnline, pendingSync }){
           onCancel={()=>setAjustementASupprimer(null)}
         />
       )}
+
+      <div className="card" style={{padding:'1.1rem 1.25rem', marginBottom:20}}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:4, flexWrap:'wrap', gap:10}}>
+          <h2 style={{margin:0, fontSize:16, color:'var(--pine)'}}>Point zéro — déficit reporté des caissiers</h2>
+        </div>
+        <p style={{fontSize:12.5, color:'var(--steam)', marginTop:0, marginBottom:14, lineHeight:1.5}}>
+          Quand les comptes de Nene Djiba et Mamadou Alpha sont soldés (comptage physique accepté comme référence, comptes remis à zéro), réglez ici le mois à partir duquel la « vraie » comptabilité recommence. Aucun déficit reporté d'un mois AVANT ce point zéro ne réduira plus leur Disponible — les mois d'avant restent visibles partout ailleurs, seul ce report d'un mois sur l'autre s'arrête net.
+        </p>
+        <div style={{display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', marginBottom:10}}>
+          <span style={{fontSize:12.5, color:'var(--steam)'}}>Point zéro actuel :</span>
+          <span className="mono" style={{fontWeight:700, color: db.pointZeroDeficitCaisse ? 'var(--pine)' : 'var(--steam)'}}>
+            {db.pointZeroDeficitCaisse || 'Aucun (déficit calculé depuis le tout début)'}
+          </span>
+          {db.pointZeroDeficitCaisse && (
+            <button className="btn btn-sm btn-danger" onClick={retirerPointZero}>Retirer le point zéro</button>
+          )}
+        </div>
+        {pointZeroMessage && (
+          <div style={{margin:'0 0 14px', padding:'8px 12px', borderRadius:8, fontSize:13, background: pointZeroMessage.ok ? 'var(--paper-2)' : 'var(--danger-light)', color: pointZeroMessage.ok ? 'var(--pine)' : 'var(--danger)'}}>
+            {pointZeroMessage.texte}
+          </div>
+        )}
+        <div style={{display:'flex', alignItems:'end', gap:12, flexWrap:'wrap'}}>
+          <div>
+            <label>Nouveau point zéro (mois)</label>
+            <input type="month" value={pointZeroSaisi ?? (db.pointZeroDeficitCaisse || '')} onChange={e=>setPointZeroSaisi(e.target.value)} />
+          </div>
+          <div>
+            <button className="btn btn-sm" onClick={enregistrerPointZero}>Enregistrer</button>
+          </div>
+        </div>
+      </div>
 
       <div className="card" style={{padding:'1.1rem 1.25rem'}}>
         <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:4, flexWrap:'wrap', gap:10}}>
@@ -3706,8 +3758,21 @@ function calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi){
 // payeParNom, payeDepuisCaisseDe, valide, dateValidation, valideParNom } — un seul paiement plat.
 // normaliserPaiementActeur() convertit transparemment l'ancien format en un versement unique, pour que
 // les données historiques restent lisibles sans migration.
-function clePeriodeDistribution(periode, moisChoisi, anneeChoisie){
-  return periode === 'mois' ? `M-${moisChoisi}` : `A-${anneeChoisie}`;
+// moisCouverts (4e argument, requis seulement pour periode === 'intervalle') : un paiement marqué pendant
+// que la vue « Intervalle » est affichée est enregistré sous la clé MENSUELLE du DERNIER mois couvert par
+// cet intervalle (même convention que calculerRepartitionActeursPourPeriode pour le % applicable) — pas une
+// nouvelle clé « I- » : ça réutilise directement tout le suivi mensuel existant (disponible, déficit
+// reporté, vue « Par mois » de ce mois-là verra aussi ce paiement), au prix d'un paiement qui peut dépasser
+// ce que CE mois précis a généré si l'intervalle couvre plusieurs mois — normal, assumé, demandé par le
+// gérant le 08/11/2026 pour pouvoir payer directement depuis la vue Intervalle.
+function clePeriodeDistribution(periode, moisChoisi, anneeChoisie, moisCouverts){
+  if(periode === 'mois') return `M-${moisChoisi}`;
+  if(periode === 'annee') return `A-${anneeChoisie}`;
+  if(periode === 'intervalle' && moisCouverts && moisCouverts.length){
+    const dernier = moisCouverts[moisCouverts.length-1];
+    return `M-${dernier.annee}-${String(dernier.mois).padStart(2,'0')}`;
+  }
+  return null;
 }
 function normaliserPaiementActeur(entree){
   if(!entree) return { versements: [] };
@@ -3958,6 +4023,31 @@ function totalAjustementBaseRepartitionPourMois(db, moisListe){
     return s + (Number(a.montant)||0);
   }, 0);
 }
+// Total versé par CE caissier (payeDepuisCaisseDe) aux 6 acteurs (Suivi distribution), pour les mois listés
+// — un versement compte s'il est enregistré sous une clé ('M-AAAA-MM' ou 'A-AAAA', voir
+// db.distributionPaiements) dont AU MOINS UN des mois couverts (moisCouvertsPourCle) figure dans moisListe.
+// Volontairement basé sur la clé comptable du versement, PAS sur sa date réelle de saisie (v.datePaiement) :
+// un gros versement de rattrapage saisi aujourd'hui mais comptabilisé sur un mois antérieur (ex: dernier
+// mois d'un intervalle passé, voir clePeriodeDistribution) ne doit pas apparaître comme ayant vidé la caisse
+// du mois EN COURS — cohérent avec le reste de l'appli (totalPayeParDetenteurPourCle, Disponible dans Suivi
+// distribution). Utilisé par « Mes encaissements Et Décaissements » (caissier) et sa vue gérant équivalente,
+// pour répondre à « combien me reste-t-il après avoir payé les acteurs ? » (demandé le 12/11/2026).
+function totalDistribueParCaissierPourMois(db, nomCaissier, moisListe){
+  if(!nomCaissier || !moisListe || !moisListe.length) return 0;
+  const moisSet = new Set(moisListe.map(({annee, mois}) => `${annee}-${String(mois).padStart(2,'0')}`));
+  let total = 0;
+  Object.entries(db.distributionPaiements||{}).forEach(([cle, parActeur]) => {
+    const intersecte = moisCouvertsPourCle(cle).some(({annee, mois}) => moisSet.has(`${annee}-${String(mois).padStart(2,'0')}`));
+    if(!intersecte) return;
+    Object.values(parActeur||{}).forEach(entree => {
+      normaliserPaiementActeur(entree).versements.forEach(v => {
+        if(v.payeDepuisCaisseDe !== nomCaissier) return;
+        total += Number(v.montant)||0;
+      });
+    });
+  });
+  return total;
+}
 // db.manquantsCaisse = [{id, date, montant, description, caissier}] — manquants de caisse constatés (voir
 // Centre de diagnostic), où « caissier » est l'id employé du caissier concerné (Nene Djiba / Mamadou Alpha),
 // ou null pour répartir selon le planning caisse du jour (comme depensesNonAttribueesPourMois). VOLONTAIREMENT
@@ -4047,11 +4137,17 @@ function totalPayeParDetenteurPourCle(db, nomPersonne, cle){
 // « Par mois », une seule clé mensuelle ; pour « Par année », la clé annuelle ET les 12 clés mensuelles de
 // cette même année. Sans ça, un acteur payé mois par mois (ex: en septembre) apparaîtrait comme « pas
 // encore payé » en vue « Par année », puisque les deux suivis sont enregistrés sous des clés différentes.
-function clesPourPeriode(periode, moisChoisi, anneeChoisie){
+function clesPourPeriode(periode, moisChoisi, anneeChoisie, moisCouverts){
   if(periode === 'mois') return [`M-${moisChoisi}`];
   if(periode === 'annee'){
     const mensuelles = Array.from({length:12}, (_,i) => `M-${anneeChoisie}-${String(i+1).padStart(2,'0')}`);
     return [`A-${anneeChoisie}`, ...mensuelles];
+  }
+  // Intervalle : toutes les clés mensuelles couvertes, pour que « Déjà payé » agrège correctement les
+  // paiements faits mois par mois ET ceux marqués directement depuis la vue Intervalle (toujours enregistrés
+  // sous la clé du dernier mois couvert — voir clePeriodeDistribution ci-dessus).
+  if(periode === 'intervalle' && moisCouverts && moisCouverts.length){
+    return moisCouverts.map(({annee, mois}) => `M-${annee}-${String(mois).padStart(2,'0')}`);
   }
   return [];
 }
@@ -4079,12 +4175,24 @@ function totalPayeParDetenteurPourCles(db, nomPersonne, cles){
 //
 // premierMoisPeriode = { annee, mois } du premier mois couvert par la période actuellement affichée (quel
 // que soit le mode : mois / année / intervalle / à ce jour) — tout ce qui est strictement AVANT compte.
+// db.pointZeroDeficitCaisse = 'AAAA-MM' (ou null) — « point zéro » de la comptabilité des caissiers de
+// Kipé, réglable dans Centre de diagnostic. Aucun mois STRICTEMENT AVANT ce mois n'est plus pris en compte
+// dans le déficit reporté ci-dessous : le gérant a soldé Nene Djiba et Mamadou Alpha sur la base des
+// montants qu'ils ont déclaré avoir en caisse (comptage physique, pas le calcul de l'appli) pour la période
+// du 01/12/2025 au 31/10/2026, et a demandé le 12/11/2026 que novembre 2026 reparte avec un déficit reporté
+// à zéro — la « vraie » comptabilité, selon ses mots, commence à ce mois-là. Les mois d'avant restent
+// visibles et inchangés partout ailleurs (Détail mensuel, Dépenses propres, etc.) ; seul ce report de
+// déficit d'un mois sur l'autre s'arrête net à ce point zéro.
 function soldeReporteAvantPeriode(db, nomPersonne, premierMoisPeriode, currentYear, currentMonth){
   if(!nomPersonne || !premierMoisPeriode) return 0;
   const tousLesMoisJusquaMaintenant = moisCouvertsDepuisDebut(currentYear, currentMonth);
-  const moisAvant = tousLesMoisJusquaMaintenant.filter(({annee, mois}) =>
-    annee < premierMoisPeriode.annee || (annee === premierMoisPeriode.annee && mois < premierMoisPeriode.mois)
-  );
+  const pointZero = db.pointZeroDeficitCaisse || null;
+  const moisAvant = tousLesMoisJusquaMaintenant.filter(({annee, mois}) => {
+    const avantPeriode = annee < premierMoisPeriode.annee || (annee === premierMoisPeriode.annee && mois < premierMoisPeriode.mois);
+    if(!avantPeriode) return false;
+    if(pointZero && `${annee}-${String(mois).padStart(2,'0')}` < pointZero) return false;
+    return true;
+  });
   if(!moisAvant.length) return 0;
   const site = siteKipe(db);
   if(!site) return 0;
@@ -5167,7 +5275,7 @@ function SuiviDistributionView({ db, setDb, employeId }){
     : periode === 'cumul' ? 'À ce jour (depuis le début)'
     : periode === 'intervalle' ? `Du ${fmtDate(intervalleDebut)} au ${fmtDate(intervalleFin||intervalleDebut)}`
     : `Année ${anneeChoisie}`;
-  const suiviPaiementDisponible = periode !== 'cumul' && periode !== 'intervalle'; // le suivi payé/validé se fait par mois ou par année, pas sur un cumul glissant ou un intervalle arbitraire
+  const suiviPaiementDisponible = periode !== 'cumul'; // le suivi payé/validé se fait par mois, par année ou par intervalle (voir clePeriodeDistribution) — pas sur un cumul glissant « À ce jour », qui n'a pas de fin fixe
 
   const totalAVerser = lignes.reduce((s,l)=>s+l.montantAVerser, 0);
   // Base RÉELLE sur laquelle les % de chaque acteur s'appliquent (net perçu du pressing pour la période).
@@ -5182,21 +5290,19 @@ function SuiviDistributionView({ db, setDb, employeId }){
   // tableau renvoyé par calculerRepartitionActeursPourPeriode) pour le détail affiché à l'utilisateur.
   const netPercuTotalBaseRepartition = lignes.reduce((s,l)=>s+l.montantBrut, 0);
 
-  const cle = suiviPaiementDisponible ? clePeriodeDistribution(periode, moisChoisi, anneeChoisie) : null;
+  const cle = suiviPaiementDisponible ? clePeriodeDistribution(periode, moisChoisi, anneeChoisie, moisCouverts) : null;
   // Toutes les clés à prendre en compte pour l'AFFICHAGE de cette période (voir clesPourPeriode) — en vue
   // « Par année », ça inclut aussi les 12 clés mensuelles de l'année, pour qu'un acteur déjà payé en
-  // septembre (par exemple) n'apparaisse pas comme « pas encore payé » quand on regarde toute l'année.
-  // Les NOUVEAUX paiements continuent d'être enregistrés sous « cle » uniquement (la période exacte choisie).
-  const cles = suiviPaiementDisponible ? clesPourPeriode(periode, moisChoisi, anneeChoisie) : [];
-  // Clés à additionner pour calculer « Déjà payé » dans le bloc Montant disponible — contrairement à
-  // « cles » ci-dessus (réservé au suivi payé/confirmé, qui n'existe qu'en vue Par mois / Par année), ce
-  // calcul doit aussi fonctionner en Intervalle et À ce jour : on additionne simplement la clé mensuelle
-  // 'M-AAAA-MM' de chaque mois couvert par la période choisie (voir moisCouverts ci-dessus). On ne peut pas
-  // inclure de clé annuelle 'A-AAAA' ici pour Intervalle (une année partiellement couverte ne doit pas
-  // compter un paiement enregistré sous la clé annuelle complète), donc seule la vue « Par année » garde ce
-  // cas via clesPourPeriode.
+  // septembre (par exemple) n'apparaisse pas comme « pas encore payé » quand on regarde toute l'année. En
+  // vue « Intervalle », ça inclut toutes les clés mensuelles couvertes. Les NOUVEAUX paiements marqués
+  // depuis Intervalle sont enregistrés sous « cle » uniquement (clé du dernier mois couvert — voir
+  // clePeriodeDistribution).
+  const cles = suiviPaiementDisponible ? clesPourPeriode(periode, moisChoisi, anneeChoisie, moisCouverts) : [];
+  // Clés à additionner pour calculer « Déjà payé » dans le bloc Montant disponible — en vue Intervalle,
+  // identiques à « cles » ci-dessus désormais ; pour « À ce jour » (suivi payé indisponible), on retombe sur
+  // la simple liste des clés mensuelles 'M-AAAA-MM' de chaque mois couvert.
   const clesPourDisponible = useMemo(() => {
-    if(periode === 'mois' || periode === 'annee') return cles;
+    if(periode === 'mois' || periode === 'annee' || periode === 'intervalle') return cles;
     return moisCouverts.map(({annee, mois}) => `M-${annee}-${String(mois).padStart(2,'0')}`);
   }, [periode, cles, moisCouverts]);
   const paiementsPeriode = useMemo(() => paiementsAgregesPourPeriode(db, cles), [db, cles.join(',')]);
@@ -5304,7 +5410,7 @@ function SuiviDistributionView({ db, setDb, employeId }){
       </div>
       {periode === 'intervalle' && (
         <p style={{fontSize:12.5, background:'var(--warn-light)', color:'var(--warn)', padding:'8px 12px', borderRadius:8, margin:'0 0 14px', lineHeight:1.5}}>
-          ⚠️ Cette page calcule mois par mois : « Intervalle » additionne donc des mois ENTIERS touchés par la période choisie, pas des jours exacts. Le suivi payé/confirmé n'est pas disponible sur un intervalle (choisissez « Par mois » ou « Par année » pour marquer un paiement) — voici uniquement les montants calculés pour information.
+          ⚠️ Cette page calcule mois par mois : « Intervalle » additionne donc des mois ENTIERS touchés par la période choisie, pas des jours exacts. Un paiement marqué depuis cette vue est enregistré sous le DERNIER mois couvert par l'intervalle (visible aussi en vue « Par mois » sur ce mois-là). Le montant payable ici n'est PAS réduit par ce qui a déjà été payé pour les mois couverts — vous pouvez marquer jusqu'au montant total de l'intervalle, EN PLUS de tout versement déjà enregistré.
         </p>
       )}
 
@@ -5342,7 +5448,7 @@ function SuiviDistributionView({ db, setDb, employeId }){
       <h2 style={{fontSize:16, color:'var(--ink)', margin:'0 0 6px'}}>Montant disponible pour payer — {periodeLabel}</h2>
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
         {DETENTEURS_CAISSE.join(' et ')} encaissent directement l'argent des clients à Maci Pressing Kipé, donc c'est eux qui le détiennent physiquement. Chacun ne peut payer les acteurs qu'à hauteur de ce qu'il a lui-même net reçu (Espèces + Orange Money, moins ses dépenses, les dépenses non attribuées décaissées depuis sa caisse — ex : Repasseur, selon le planning du jour — et ses avances décaissées) pour <strong>cette période précise</strong> — jamais plus. S'il n'a pas assez pour payer un acteur en entier, il peut payer ce qu'il a, et l'autre caissier peut compléter le reste. Le compte Orange Money est partagé par les deux — le détail ci-dessous montre ce que chacun y a personnellement encaissé. Si un caissier finit une période avec moins reçu que dépensé, ce déficit n'est pas effacé : il continue de réduire son disponible des périodes suivantes jusqu'à résorption (un solde positif non utilisé, lui, ne se reporte pas — il reste disponible tel quel pour la période où il a été reçu).
-        {!suiviPaiementDisponible && <> En « {periode==='intervalle'?'Intervalle':'À ce jour'} », ces montants sont calculés pour information : pour marquer un paiement, utilisez « Par mois » ou « Par année ».</>}
+        {!suiviPaiementDisponible && <> En « À ce jour », ces montants sont calculés pour information : pour marquer un paiement, utilisez « Par mois », « Par année » ou « Intervalle ».</>}
       </p>
       <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(240px, 1fr))', gap:10, marginBottom:20}}>
         {montantsDisponibles.map(d => {
@@ -5470,7 +5576,14 @@ function SuiviDistributionView({ db, setDb, employeId }){
         const paiement = paiementsPeriode[l.nom];
         const entreePaiement = normaliserPaiementActeur(paiement);
         const montantVerse = entreePaiement.versements.reduce((s,v)=>s+(Number(v.montant)||0), 0);
-        const montantRestant = Math.max(0, Math.round(l.montantAVerser) - Math.round(montantVerse));
+        // En vue Intervalle, demandé par le gérant le 12/11/2026 : le montant payable n'est PAS réduit par
+        // ce qui a déjà été payé pour les mois couverts (contrairement à « Par mois »/« Par année ») — on
+        // peut marquer jusqu'au montant total affiché pour l'intervalle, en plus de ce qui a déjà été versé.
+        // Assumé explicitement par le gérant : « Déjà payé » + ce nouveau versement peuvent donc dépasser le
+        // montant total à distribuer pour la période — ce n'est plus empêché ici.
+        const montantRestant = periode === 'intervalle'
+          ? Math.max(0, Math.round(l.montantAVerser))
+          : Math.max(0, Math.round(l.montantAVerser) - Math.round(montantVerse));
         // Chacun ne peut agir (marquer payé / confirmer reçu) que sur SA PROPRE ligne ; le gérant peut
         // agir sur toutes les lignes (beaucoup d'acteurs n'ont pas de compte employé dans l'app).
         const peutAgir = estGerant || nomsCorrespondent(monNom||'', l.nom);
@@ -5648,7 +5761,7 @@ function SuiviDistributionView({ db, setDb, employeId }){
 
             {!suiviPaiementDisponible ? (
               <div style={{padding:'10px 12px', background:'var(--paper-2)', borderRadius:8, fontSize:12.5, color:'var(--steam)'}}>
-                Le suivi payé / confirmé se fait mois par mois ou année par année — choisissez « Par mois » ou « Par année » pour marquer un paiement.
+                Le suivi payé / confirmé n'est pas disponible en « À ce jour » — choisissez « Par mois », « Par année » ou « Intervalle » pour marquer un paiement.
               </div>
             ) : (
               <>
@@ -5697,7 +5810,11 @@ function SuiviDistributionView({ db, setDb, employeId }){
                 {montantRestant > 0 && (
                   <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, padding:'10px 12px', background:'var(--warn-light)', borderRadius:8, flexWrap:'wrap'}}>
                     <div style={{fontSize:13}}>
-                      {montantVerse > 0 ? `Payé partiellement — reste ${fmtGNF(montantRestant)} à payer pour cette période.` : 'Pas encore marqué payé pour cette période.'}
+                      {montantVerse > 0
+                        ? (periode === 'intervalle'
+                          ? `${fmtGNF(montantVerse)} déjà payé sur cette période — vous pouvez marquer jusqu'à ${fmtGNF(montantRestant)} de plus (montant total de l'intervalle, non réduit).`
+                          : `Payé partiellement — reste ${fmtGNF(montantRestant)} à payer pour cette période.`)
+                        : 'Pas encore marqué payé pour cette période.'}
                     </div>
                     {peutMarquerPaye ? (
                       <div style={{display:'flex', alignItems:'center', gap:6, flexWrap:'wrap'}}>
@@ -7177,6 +7294,30 @@ function EncaissementsDecaissementsGlobalView({ db, updateSite }){
   const totalPercu = totaux.especes + totaux.orangeMoney;
   const netPercu = totalPercu - totaux.depenses;
 
+  // Mois couverts par la période actuellement choisie, pour « Solde après paiement des acteurs » ci-dessous
+  // (colonne visible côté gérant, pour Nene Djiba / Mamadou Alpha uniquement — voir
+  // totalDistribueParCaissierPourMois). Vide pour Aujourd'hui/Cette semaine : granularité trop fine pour une
+  // clé mensuelle de distribution (voir le même choix dans « Mes encaissements Et Décaissements »).
+  const moisListeDistributionGlobale = useMemo(() => {
+    if(periode === 'mois'){
+      const [a,m] = moisChoisi.split('-').map(Number);
+      return [{ annee:a, mois:m }];
+    }
+    if(periode === 'annee') return Array.from({length:12}, (_,i) => ({ annee:anneeChoisie, mois:i+1 }));
+    if(periode === 'total') return moisCouvertsDepuisDebut(Number(today.slice(0,4)), Number(today.slice(5,7)));
+    if(periode === 'intervalle'){
+      const a = intervalleDebut || today, b = intervalleFin || today;
+      const debut = a <= b ? a : b, fin = a <= b ? b : a;
+      const [ad, md] = debut.slice(0,7).split('-').map(Number);
+      const [af, mf] = fin.slice(0,7).split('-').map(Number);
+      const liste = []; let y=ad, m=md;
+      while(y<af || (y===af && m<=mf)){ liste.push({annee:y, mois:m}); m++; if(m>12){m=1;y++;} }
+      return liste;
+    }
+    return [];
+  }, [periode, moisChoisi, anneeChoisie, intervalleDebut, intervalleFin, today]);
+  const soldeApresDistributionGlobalDisponible = moisListeDistributionGlobale.length > 0;
+
   return (
     <div>
       <PageHeader title="Mes encaissements et décaissements" subtitle="Argent reçu et dépensé, tous pressings confondus"
@@ -7339,6 +7480,7 @@ function EncaissementsDecaissementsGlobalView({ db, updateSite }){
                         <th style={th}>Total encaissé</th>
                         <th style={th}>Dépenses</th>
                         <th style={th}>Net perçu</th>
+                        {site.id === (siteKipe(db)||{}).id && <th style={th}>Solde après paiement des acteurs</th>}
                       </tr>
                     </thead>
                     <tbody>
@@ -7346,21 +7488,30 @@ function EncaissementsDecaissementsGlobalView({ db, updateSite }){
                         const total = l.especes + l.orangeMoney;
                         const net = total - l.depenses;
                         const vide = total === 0 && l.depenses === 0;
+                        const nom = nomEmploye(l.empId);
+                        const estCaissierKipe = site.id === (siteKipe(db)||{}).id && DETENTEURS_CAISSE.some(n => n.toLowerCase() === nom.toLowerCase());
+                        const distribue = estCaissierKipe ? totalDistribueParCaissierPourMois(db, nom, moisListeDistributionGlobale) : 0;
+                        const soldeApres = net - distribue;
                         return (
                           <tr key={l.empId || 'gerant'} style={{borderTop:'1px solid var(--line)', opacity: vide ? 0.55 : 1}}>
-                            <td style={{...td, fontWeight:600}}>{nomEmploye(l.empId)}</td>
+                            <td style={{...td, fontWeight:600}}>{nom}</td>
                             <td style={td} className="mono">{fmtGNF(l.especes)}</td>
                             <td style={td} className="mono">{fmtGNF(l.orangeMoney)}</td>
                             <td style={{...td, fontWeight:600, color:'var(--pine)'}} className="mono">{fmtGNF(total)}</td>
                             <td style={{...td, color:'var(--danger)'}} className="mono">{fmtGNF(l.depenses)}</td>
                             <td style={{...td, fontWeight:600, color: net<0?'var(--danger)':'var(--ink)'}} className="mono">{fmtGNF(net)}</td>
+                            {site.id === (siteKipe(db)||{}).id && (
+                              <td style={{...td, fontWeight:600, color: !estCaissierKipe ? 'var(--steam)' : (soldeApres<0?'var(--danger)':'var(--ink)')}} className="mono">
+                                {estCaissierKipe ? (soldeApresDistributionGlobalDisponible ? fmtGNF(soldeApres) : 'n/a (choisir Mois/Année/Intervalle/À ce jour)') : '—'}
+                              </td>
+                            )}
                           </tr>
                         );
                       })}
                     </tbody>
                   </table>
                   <p style={{fontSize:11, color:'var(--steam)', margin:'8px 0 0'}}>
-                    « Gérant » = argent encaissé ou dépensé sans employé attribué (saisi directement par le gérant).
+                    « Gérant » = argent encaissé ou dépensé sans employé attribué (saisi directement par le gérant). « Solde après paiement des acteurs » (Nene Djiba / Mamadou Alpha uniquement) = Net perçu − montant versé aux 6 acteurs pour cette période (Suivi distribution), au mois comptable près — pas au jour près.
                   </p>
                 </div>
               )}
@@ -15661,6 +15812,43 @@ function MesEncaissementsView({ site, updateSite, db, employeId }){
   const mesDepensesPeriode = mesDepensesReelles + mesDepensesManuellesPeriode;
   const netPercuPeriode = totalGeneral - mesDepensesPeriode;
 
+  // Total versé par CE caissier aux 6 acteurs (Suivi distribution), sur cette même période — pour qu'il
+  // sache combien il lui reste APRÈS avoir payé les acteurs, pas seulement ce qu'il a personnellement
+  // encaissé. Basé sur la clé comptable du versement (voir totalDistribueParCaissierPourMois), PAS sur sa
+  // date réelle de saisie : un versement de rattrapage saisi aujourd'hui mais comptabilisé sur un mois
+  // antérieur (ex: clôture d'un vieil intervalle) ne doit pas apparaître comme ayant vidé la caisse du mois
+  // EN COURS. Comme les clés sont mensuelles, cette carte n'a de sens que pour les périodes « mois »,
+  // « année », « intervalle » et « à ce jour » — masquée pour Aujourd'hui/Cette semaine/Une date, trop fines
+  // pour être rattachées fiablement à un mois comptable. Demandé par le gérant le 12/11/2026.
+  const monNomPourDistribution = (() => {
+    const emp = (site.employes||[]).find(e => e.id === employeId);
+    return emp ? emp.nom : null;
+  })();
+  const moisListePourDistribution = useMemo(() => {
+    if(periode === 'mois'){
+      const [a,m] = moisChoisi.split('-').map(Number);
+      return [{ annee:a, mois:m }];
+    }
+    if(periode === 'annee') return Array.from({length:12}, (_,i) => ({ annee:anneeChoisie, mois:i+1 }));
+    if(periode === 'total') return moisCouvertsDepuisDebut(Number(today.slice(0,4)), Number(today.slice(5,7)));
+    if(periode === 'plage'){
+      const a = plageDebut || today, b = plageFin || today;
+      const debut = a <= b ? a : b, fin = a <= b ? b : a;
+      const [ad, md] = debut.slice(0,7).split('-').map(Number);
+      const [af, mf] = fin.slice(0,7).split('-').map(Number);
+      const liste = []; let y=ad, m=md;
+      while(y<af || (y===af && m<=mf)){ liste.push({annee:y, mois:m}); m++; if(m>12){m=1;y++;} }
+      return liste;
+    }
+    return []; // jour / semaine / date : non applicable (granularité trop fine pour une clé mensuelle)
+  }, [periode, moisChoisi, anneeChoisie, plageDebut, plageFin, today]);
+  const soldeApresDistributionsDisponible = moisListePourDistribution.length > 0;
+  const totalDistribueParMoiPeriode = useMemo(
+    () => totalDistribueParCaissierPourMois(db, monNomPourDistribution, moisListePourDistribution),
+    [db.distributionPaiements, monNomPourDistribution, moisListePourDistribution]
+  );
+  const soldeApresDistributionsPeriode = netPercuPeriode - totalDistribueParMoiPeriode;
+
   const periodeLabel = periode==='jour' ? "Aujourd'hui" : periode==='semaine' ? 'Cette semaine' : periode==='mois' ? 'Ce mois' : periode==='annee' ? 'Cette année' : periode==='date' ? `Le ${fmtDate(dateChoisie)}` : periode==='plage' ? `Du ${fmtDate(plageDebut)} au ${fmtDate(plageFin)}` : 'À ce jour (tout confondu)';
 
   const detailAnneeMois = useMemo(() => {
@@ -15710,13 +15898,22 @@ function MesEncaissementsView({ site, updateSite, db, employeId }){
         )}
       </div>
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:8}}>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(190px, 1fr))', gap:14, marginBottom:8}}>
         <StatCard label="Espèces" value={fmtGNF(totalEspeces)} icon="euro" />
         <StatCard label="Orange Money" value={fmtGNF(totalOrangeMoney)} icon="euro" />
         <StatCard label={`Total — ${periodeLabel}`} value={fmtGNF(totalGeneral)} icon="chart" />
         <StatCard label={`Net perçu — ${periodeLabel}`} value={fmtGNF(netPercuPeriode)} icon="chart" tone={netPercuPeriode>=0?'default':'danger'} />
+        {monNomPourDistribution && soldeApresDistributionsDisponible && (
+          <StatCard label={`Solde après paiement des acteurs — ${periodeLabel}`} value={fmtGNF(soldeApresDistributionsPeriode)} icon="chart" tone={soldeApresDistributionsPeriode>=0?'default':'danger'} />
+        )}
       </div>
       <p style={{fontSize:11.5, color:'var(--steam)', margin:'0 0 8px'}}>Net perçu = Total encaissé − vos dépenses personnelles saisies ({fmtGNF(mesDepensesPeriode)}) sur cette période.</p>
+      {monNomPourDistribution && soldeApresDistributionsDisponible && (
+        <p style={{fontSize:11.5, color:'var(--steam)', margin:'0 0 8px'}}>Solde après paiement des acteurs = Net perçu − montant que vous avez versé aux 6 acteurs sur cette période ({fmtGNF(totalDistribueParMoiPeriode)}, voir Suivi distribution). Informatif — pour le plafond exact de ce que vous pouvez encore payer, voir « Disponible » dans Suivi distribution, qui tient aussi compte des manquants de caisse et de la réserve Orange Money.</p>
+      )}
+      {monNomPourDistribution && !soldeApresDistributionsDisponible && (
+        <p style={{fontSize:11.5, color:'var(--steam)', margin:'0 0 8px'}}>« Solde après paiement des acteurs » n'est pas affiché pour « Aujourd'hui »/« Cette semaine »/« Une date » — les versements aux acteurs sont suivis au mois près, pas au jour près. Choisissez « Ce mois », « Cette année », « Intervalle » ou « À ce jour » pour le voir.</p>
+      )}
       {(totalManuelPeriode.especes > 0 || totalManuelPeriode.orangeMoney > 0) && (
         <p style={{fontSize:11.5, color:'var(--steam)', margin:'0 0 12px'}}>Inclut {fmtGNF(totalManuelPeriode.especes + totalManuelPeriode.orangeMoney)} saisis manuellement dans Détail mensuel pour cette période.</p>
       )}
