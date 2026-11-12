@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-11-12-4">
+<meta name="app-version" content="2026-11-12-6">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-11-12-4';
+  const APP_VERSION_ACTUELLE = '2026-11-12-6';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -4802,22 +4802,42 @@ function DistributionView({ db, setDb, anneeInitiale }){
   // Remboursement d'investissement : 20% du net perçu éligible des 4 acteurs concernés est redirigé vers la Conservation du Capital Fixe
   const totalRedirigeVersCapitalFixe = parts.reduce((s,p) => s + extraCapitalFixeActeur(p), 0);
 
+  // ---- Source de vérité UNIQUE pour « Répartition entre les acteurs » : la même fonction que Suivi
+  // distribution (calculerRepartitionActeursPourPeriode), pour que les deux pages ne puissent plus diverger
+  // (constaté par le gérant le 12/11/2026 — avant ce changement, cette page avait sa propre copie du calcul,
+  // qui n'avait pas suivi les évolutions faites côté Suivi distribution : Ajustement manuel de la Base de
+  // répartition, etc.). Non disponible en « Aujourd'hui »/« Cette semaine » (plus fin qu'un mois, comme
+  // Suivi distribution qui ne propose pas ces granularités) — ces deux vues gardent l'ancien calcul local
+  // ci-dessus, exact au jour près mais sans les mécanismes de Centre de diagnostic.
+  const lignesCanoniques = useMemo(() => {
+    if(periodeRepartition === 'jour' || periodeRepartition === 'semaine') return null;
+    return calculerRepartitionActeursPourPeriode(db, moisCouverts, moisChoisi);
+  }, [db, moisCouverts, moisChoisi, periodeRepartition]);
+  function ligneActeur(p){
+    if(lignesCanoniques){
+      const l = lignesCanoniques.find(x=>x.nom===p.nom);
+      if(l) return l;
+    }
+    const impayesPart = partActeur(p.nom, 'impayes');
+    const montantBrutAvantImpayes = partActeur(p.nom, 'recetteBrute');
+    const depensePropre = (depensesActeursPeriode[p.nom]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
+    const montantBrut = montantBrutPoolePourActeur(p);
+    const creditRemboursement = creditsRemboursement[p.nom] || 0;
+    const montantNet = montantBrut + creditRemboursement;
+    const extraCapitalFixe = extraCapitalFixeActeur(p);
+    const montantAVerser = p.nom === 'Conservation du Capital Fixe'
+      ? montantNet + totalRedirigeVersCapitalFixe
+      : montantNet - extraCapitalFixe;
+    return { nom: p.nom, pct: p.pct, montantBrutAvantImpayes, impayesPart, montantBrut, depensePropre, creditRemboursement, montantNet, montantAVerser, extraCapitalFixe, recuDesAutresActeurs: p.nom === 'Conservation du Capital Fixe' ? totalRedirigeVersCapitalFixe : 0 };
+  }
+
   // ---- Données du tableau "Répartition entre les acteurs", pour export CSV/PDF ----
   const lignesRepartitionExport = useMemo(() => {
     return parts.map(p => {
-      const impayesPart = partActeur(p.nom, 'impayes');
-      const montantBrutAvantImpayes = partActeur(p.nom, 'recetteBrute');
-      const depensePropre = (depensesActeursPeriode[p.nom]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
-      const montantBrut = montantBrutPoolePourActeur(p);
-      const creditRemboursement = creditsRemboursement[p.nom] || 0;
-      const montantNet = montantBrut + creditRemboursement;
-      const extraCapitalFixe = extraCapitalFixeActeur(p);
-      const montantAVerser = p.nom === 'Conservation du Capital Fixe'
-        ? montantNet + totalRedirigeVersCapitalFixe
-        : montantNet - extraCapitalFixe;
-      return [p.nom, `${p.pct}%`, Math.round(montantBrutAvantImpayes), Math.round(impayesPart), Math.round(montantBrut), Math.round(depensePropre), Math.round(creditRemboursement), Math.round(montantNet), Math.round(montantAVerser)];
+      const l = ligneActeur(p);
+      return [l.nom, `${l.pct}%`, Math.round(l.montantBrutAvantImpayes), Math.round(l.impayesPart), Math.round(l.montantBrut), Math.round(l.depensePropre), Math.round(l.creditRemboursement), Math.round(l.montantNet), Math.round(l.montantAVerser)];
     });
-  }, [periodeDonnees, donneesParAnneeMap, moisCouverts, db.partsHistorique, db.partsDistribution, db.remboursementHistorique, depensesActeursPeriode, depensesPropresEmployes, remboursementActif, totalRedirigeVersCapitalFixe, creditsRemboursement]);
+  }, [parts, lignesCanoniques, periodeDonnees, donneesParAnneeMap, moisCouverts, db.partsHistorique, db.partsDistribution, db.remboursementHistorique, depensesActeursPeriode, depensesPropresEmployes, remboursementActif, totalRedirigeVersCapitalFixe, creditsRemboursement]);
   const REPARTITION_HEADERS = ['Bénéficiaire', 'Part', "Montant brut avant impayés", 'Impayés (part)', 'Net perçu (après mutualisation des dépenses)', 'Dépenses propres (solde dû, info)', 'Crédit de remboursement', 'Net perçu', 'Montant à verser'];
 
   return (
@@ -5042,7 +5062,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
         <h2 style={{fontSize:16, color:'var(--ink)', margin:0}}>Répartition entre les acteurs — {periodeLabel}</h2>
         <ExportButtons
           onCSV={()=>exportTableToCSV(`repartition-acteurs-${annee}`, REPARTITION_HEADERS, lignesRepartitionExport)}
-          onPDF={()=>exportTableToPDF({ filename:`repartition-acteurs-${annee}`, title:'Répartition entre les acteurs', subtitle:`Maci Pressing — ${periodeLabel}`, headers:REPARTITION_HEADERS, rows:lignesRepartitionExport })}
+          onPDF={()=>exportTableToPDF({ filename:`repartition-acteurs-${annee}`, title:'Répartition entre les acteurs', subtitle:`Maci Pressing — ${periodeLabel}`, headers:REPARTITION_HEADERS, rows:lignesRepartitionExport.map(r => r.map((v,i) => i>=2 ? fmtGNFPdf(v) : v)) })}
         />
       </div>
 
@@ -5101,16 +5121,8 @@ function DistributionView({ db, setDb, anneeInitiale }){
           </thead>
           <tbody>
             {parts.map(p => {
-              const impayesPart = partActeur(p.nom, 'impayes');
-              const montantBrutAvantImpayes = partActeur(p.nom, 'recetteBrute');
-              const depensePropre = (depensesActeursPeriode[p.nom]||[]).reduce((s,e)=>s+(Number(e.montant)||0),0) + (depensesPropresEmployes[p.nom]||0);
-              const montantBrut = montantBrutPoolePourActeur(p);
-              const creditRemboursement = creditsRemboursement[p.nom] || 0;
-              const montantNet = montantBrut + creditRemboursement;
-              const extraCapitalFixe = extraCapitalFixeActeur(p);
-              const montantAVerser = p.nom === 'Conservation du Capital Fixe'
-                ? montantNet + totalRedirigeVersCapitalFixe
-                : montantNet - extraCapitalFixe;
+              const l = ligneActeur(p);
+              const { montantBrutAvantImpayes, impayesPart, montantBrut, depensePropre, creditRemboursement, montantNet, montantAVerser, extraCapitalFixe=0 } = l;
               return (
                 <tr key={p.nom} style={{borderTop:'1px solid var(--line)'}}>
                   <td style={td}>{p.nom}</td>
@@ -5128,7 +5140,7 @@ function DistributionView({ db, setDb, anneeInitiale }){
                   <td style={{...td, fontWeight:700, color:'var(--ok)'}} className="mono">
                     {fmtGNF(montantAVerser)}
                     {extraCapitalFixe > 0 && <div style={{fontSize:10.5, color:'var(--warn)', fontWeight:600}}>− {fmtGNF(extraCapitalFixe)} (→ Capital Fixe)</div>}
-                    {p.nom === 'Conservation du Capital Fixe' && totalRedirigeVersCapitalFixe > 0 && <div style={{fontSize:10.5, color:'var(--warn)', fontWeight:600}}>+ {fmtGNF(totalRedirigeVersCapitalFixe)} reçus</div>}
+                    {p.nom === 'Conservation du Capital Fixe' && l.recuDesAutresActeurs > 0 && <div style={{fontSize:10.5, color:'var(--warn)', fontWeight:600}}>+ {fmtGNF(l.recuDesAutresActeurs)} reçus</div>}
                   </td>
                 </tr>
               );
@@ -5139,14 +5151,19 @@ function DistributionView({ db, setDb, anneeInitiale }){
               <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(periodeDonnees.recetteBrute)}</td>
               <td style={{...td, fontWeight:700, color: periodeDonnees.impayes>0?'var(--danger)':'var(--steam)'}} className="mono">{periodeDonnees.impayes>0?fmtGNF(periodeDonnees.impayes):'—'}</td>
               <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(periodeDonnees.recetteNette)}</td>
-              <td style={{...td, fontWeight:700}} className="mono">{totalDepensesActeursPeriode>0 ? '− '+fmtGNF(totalDepensesActeursPeriode) : '—'}</td>
-              <td style={{...td, fontWeight:700}} className="mono">{(()=>{ const t = parts.reduce((s,p)=>s+(creditsRemboursement[p.nom]||0),0); return t>0 ? '+ '+fmtGNF(t) : '—'; })()}</td>
-              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(periodeDonnees.recetteNette - totalDepensesActeursPeriode + parts.reduce((s,p)=>s+(creditsRemboursement[p.nom]||0),0))}</td>
-              <td style={{...td, fontWeight:700, color:'var(--ok)'}} className="mono">{fmtGNF(periodeDonnees.recetteNette - totalDepensesActeursPeriode + parts.reduce((s,p)=>s+(creditsRemboursement[p.nom]||0),0))}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{(()=>{ const t = parts.reduce((s,p)=>s+ligneActeur(p).depensePropre,0); return t>0 ? '− '+fmtGNF(t) : '—'; })()}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{(()=>{ const t = parts.reduce((s,p)=>s+ligneActeur(p).creditRemboursement,0); return t>0 ? '+ '+fmtGNF(t) : '—'; })()}</td>
+              <td style={{...td, fontWeight:700}} className="mono">{fmtGNF(parts.reduce((s,p)=>s+ligneActeur(p).montantNet,0))}</td>
+              <td style={{...td, fontWeight:700, color:'var(--ok)'}} className="mono">{fmtGNF(parts.reduce((s,p)=>s+ligneActeur(p).montantAVerser,0))}</td>
             </tr>
           </tbody>
         </table>
       </div>
+      {lignesCanoniques && (lignesCanoniques.totalAjustementsPeriode||0) !== 0 && (
+        <p style={{fontSize:12, color:'var(--steam)', margin:'8px 0 0'}}>
+          Inclut un ajustement manuel de la Base de répartition de {lignesCanoniques.totalAjustementsPeriode > 0 ? '+ ' : '− '}{fmtGNF(Math.abs(lignesCanoniques.totalAjustementsPeriode))} pour cette période (voir Centre de diagnostic).
+        </p>
+      )}
 
       <h2 style={{fontSize:16, color:'var(--ink)', margin:'28px 0 6px'}}>Ce qu'il reste à distribuer — depuis le début</h2>
       <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 14px', lineHeight:1.5}}>
