@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-11-14-1">
+<meta name="app-version" content="2026-11-15-1">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-11-14-1';
+  const APP_VERSION_ACTUELLE = '2026-11-15-1';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -11778,6 +11778,7 @@ function EquipeView({ site, updateSite, db }){
   const [editTelEmp, setEditTelEmp] = useState(null);
   const [newTel, setNewTel] = useState('');
   const [telFlash, setTelFlash] = useState(false);
+  const [activerEmp, setActiverEmp] = useState(null);
 
   function removeEmp(id){
     const emp = site.employes.find(e=>e.id===id);
@@ -11818,9 +11819,16 @@ function EquipeView({ site, updateSite, db }){
               <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>setConfirmEmp(e)}><Icon name="trash" size={14}/></button>
             </div>
             <div style={{marginTop:10, display:'flex', alignItems:'center', gap:8, flexWrap:'wrap'}}>
-              <span style={{fontSize:11.5, color:'var(--steam)'}}>
-                🔒 Mot de passe géré par {e.nom} lui-même (depuis l'app). En cas d'oubli : console Firebase → Authentication → {e.authEmail || '—'}.
-              </span>
+              {e.authEmail ? (
+                <span style={{fontSize:11.5, color:'var(--steam)'}}>
+                  🔒 Mot de passe géré par {e.nom} lui-même (depuis l'app). En cas d'oubli : console Firebase → Authentication → {e.authEmail}.
+                </span>
+              ) : (
+                <>
+                  <span style={{fontSize:11.5, color:'var(--warn)'}}>⚠️ Connexion non activée — {e.nom} ne peut pas encore se connecter.</span>
+                  <button className="btn btn-rust btn-sm" style={{padding:'3px 10px', fontSize:11}} onClick={()=>setActiverEmp(e)}>Activer la connexion</button>
+                </>
+              )}
             </div>
             <div style={{marginTop:8, display:'flex', alignItems:'center', gap:8, flexWrap:'wrap'}}>
               <span style={{fontSize:12.5, color: e.tel ? 'var(--ink)' : 'var(--steam)'}}>
@@ -11885,7 +11893,79 @@ function EquipeView({ site, updateSite, db }){
         onConfirm={()=>{ removeEmp(confirmEmp.id); setConfirmEmp(null); }}
         onCancel={()=>setConfirmEmp(null)}
       />}
+
+      {activerEmp && <ActiverConnexionModal
+        site={site}
+        updateSite={updateSite}
+        employe={activerEmp}
+        onClose={()=>setActiverEmp(null)}
+      />}
     </div>
+  );
+}
+
+// Crée un vrai compte Firebase pour un employé EXISTANT qui n'en a pas encore (ancienne fiche
+// migrée depuis le système à mot de passe en clair). Même principe que NewEmployeModal, mais on
+// met à jour la fiche existante au lieu d'en créer une nouvelle — l'historique de l'employé
+// (commandes, dépenses, salaires) reste intact. Le mot de passe est toujours tapé par le gérant,
+// jamais généré par Claude.
+function ActiverConnexionModal({ site, updateSite, employe, onClose }){
+  const [motdepasse, setMotdepasse] = useState('');
+  const [showPass, setShowPass] = useState(false);
+  const [enCours, setEnCours] = useState(false);
+  const [erreur, setErreur] = useState('');
+
+  async function submit(){
+    if(!motdepasse.trim()) return;
+    if(motdepasse.trim().length < 6){
+      setErreur('Le mot de passe doit contenir au moins 6 caractères.');
+      return;
+    }
+    setErreur('');
+    setEnCours(true);
+    const authEmail = genererAuthEmail(employe.nom);
+    try{
+      const cred = await firebaseAuthSecondaire.createUserWithEmailAndPassword(authEmail, motdepasse.trim());
+      const uidCompte = cred.user.uid;
+      await firebaseAuthSecondaire.signOut();
+      await firebaseDB.ref(`comptes-autorises/${uidCompte}`).set(true);
+      updateSite({ ...site, employes: site.employes.map(e => e.id === employe.id ? { ...e, authEmail } : e) });
+      onClose();
+    }catch(e){
+      setErreur("Impossible de créer le compte. Réessayez.");
+      setEnCours(false);
+    }
+  }
+
+  return (
+    <ModalShell title={`Activer la connexion — ${employe.nom}`} onClose={onClose} width={400}>
+      <div style={{display:'grid', gap:14}}>
+        <p style={{fontSize:12.5, color:'var(--steam)', margin:0, lineHeight:1.5}}>
+          Choisissez un mot de passe temporaire pour {employe.nom}. Il pourra le changer lui-même ensuite dans « Mon compte ».
+        </p>
+        <div>
+          <label>Mot de passe temporaire</label>
+          <div style={{display:'flex', gap:8}}>
+            <input
+              type={showPass ? 'text' : 'password'}
+              placeholder="Au moins 6 caractères…"
+              value={motdepasse}
+              onChange={e=>setMotdepasse(e.target.value)}
+              autoFocus
+              style={{flex:1}}
+            />
+            <button className="btn btn-ghost btn-sm" type="button" onClick={()=>setShowPass(!showPass)}>
+              {showPass ? 'Masquer' : 'Voir'}
+            </button>
+          </div>
+        </div>
+        {erreur && <p style={{color:'var(--danger)', fontSize:13, margin:0}}>{erreur}</p>}
+        <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
+          <button className="btn" onClick={onClose}>Annuler</button>
+          <button className="btn btn-rust" disabled={!motdepasse.trim()||enCours} onClick={submit}>{enCours ? 'Création…' : 'Activer'}</button>
+        </div>
+      </div>
+    </ModalShell>
   );
 }
 
