@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-11-12-6">
+<meta name="app-version" content="2026-11-14-1">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-11-12-6';
+  const APP_VERSION_ACTUELLE = '2026-11-14-1';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -108,6 +108,12 @@
   const firebaseDB = firebase.database();
   const firebaseAuth = firebase.auth();
   const firebaseStorage = firebase.storage();
+  // Instance Firebase secondaire : sert UNIQUEMENT à créer le compte d'un nouvel employé
+  // sans déconnecter la session du gérant (createUserWithEmailAndPassword connecte
+  // automatiquement l'app qui l'appelle comme étant ce nouvel utilisateur — on isole donc
+  // cette opération dans sa propre instance, puis on la déconnecte juste après).
+  const firebaseAppSecondaire = firebase.initializeApp(firebaseConfig, "Secondaire");
+  const firebaseAuthSecondaire = firebaseAppSecondaire.auth();
 
   // Empêche la molette de souris de modifier accidentellement un champ numérique (montants)
   document.addEventListener('wheel', function(e){
@@ -1022,10 +1028,11 @@ function emptyDB(){
   const site2 = makeSite('Maci Pressing — Lambanyi', 'Lambanyi, Conakry, République de Guinée', '625 63 33 83');
   const site3 = makeSite('Maci Pressing — Hamdallaye', 'Hamdallaye, Conakry, République de Guinée', '625 63 33 83');
 
-  // Employés initiaux avec leurs mots de passe
+  // Employés initiaux — identifiés par leur compte Firebase (authEmail), plus aucun mot de
+  // passe n'est stocké dans la base ni dans le code : Firebase Authentication le gère seul.
   site1.employes = [
-    { id: uid('emp_'), nom: 'Mamadou Alpha', role: 'Caissier', motdepasse: 'Maci2026_1' },
-    { id: uid('emp_'), nom: 'Nene Djiba', role: 'Caissier', motdepasse: 'Maci2026_2' },
+    { id: uid('emp_'), nom: 'Mamadou Alpha', role: 'Caissier', authEmail: 'mamadoualpha@macipressing.app' },
+    { id: uid('emp_'), nom: 'Nene Djiba', role: 'Caissier', authEmail: 'nenedjiba@macipressing.app' },
   ];
 
   return {
@@ -1137,23 +1144,35 @@ function nextStatut(s){
 }
 
 /* ===================== MOTS DE PASSE ===================== */
-/* ===================== MOTS DE PASSE ===================== */
-const DEFAULT_PASS_GERANT = "Dero1981@";
-function getPassGerant(db){ return db.passGerant || DEFAULT_PASS_GERANT; }
+/* Depuis la correction de sécurité de novembre 2026 : plus AUCUN mot de passe n'est stocké
+   en clair dans le code ni dans la base de données. Chaque profil (gérant + employés) a son
+   propre compte Firebase Authentication réel ; le mot de passe n'est jamais comparé localement,
+   il est toujours vérifié directement par les serveurs Firebase. */
+const GERANT_AUTH_EMAIL = "gerant@macipressing.app";
 
-// Les mots de passe employés sont stockés dans la base de données Firebase
-// et gérés par le gérant directement dans l'application.
-// Format : { [mot_de_passe]: { nom, siteId } }
-
-function checkEmployePass(db, password){
+function trouverEmploiParId(db, employeId){
   for(const site of db.sites){
-    for(const emp of (site.employes||[])){
-      if(emp.motdepasse && emp.motdepasse === password){
-        return { employe: emp, siteId: site.id };
-      }
-    }
+    const emp = (site.employes||[]).find(e => e.id === employeId);
+    if(emp) return { employe: emp, siteId: site.id };
   }
   return null;
+}
+
+// Vérifie un mot de passe en le validant directement auprès de Firebase — jamais stocké,
+// jamais comparé en clair. Si la personne dont c'est le mot de passe est déjà connectée,
+// on "ré-authentifie" (ne change pas la session) ; sinon on se connecte avec ce compte.
+async function verifierMotDePasse(email, password){
+  try{
+    if(firebaseAuth.currentUser && firebaseAuth.currentUser.email === email){
+      const cred = firebase.auth.EmailAuthProvider.credential(email, password);
+      await firebaseAuth.currentUser.reauthenticateWithCredential(cred);
+    } else {
+      await firebaseAuth.signInWithEmailAndPassword(email, password);
+    }
+    return true;
+  }catch(e){
+    return false;
+  }
 }
 
 /* ===================== CORBEILLE (30 jours) ===================== */
@@ -1275,6 +1294,17 @@ function App(){
   const [currentSiteId, setCurrentSiteId] = useState(null);
   const [currentClientId, setCurrentClientId] = useState(null);
   const [currentEmployeId, setCurrentEmployeId] = useState(null);
+  // Annuaire léger (nom/rôle/site/email technique, AUCUNE donnée sensible) — lisible par
+  // tout le monde sans connexion, juste pour afficher l'écran "Qui êtes-vous ?" avant que
+  // quiconque se soit authentifié. La vraie base de données, elle, reste entièrement
+  // verrouillée derrière une vraie connexion (voir plus bas).
+  const [annuaire, setAnnuaire] = useState([]);
+  const postLoginActionsFaitesRef = useRef(false);
+  useEffect(() => {
+    firebaseDB.ref('annuaire-login').once('value')
+      .then(snap => setAnnuaire(snap.val() || []))
+      .catch(err => console.error('Erreur de lecture de l\'annuaire de connexion', err));
+  }, []);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [pendingSync, setPendingSync] = useState(false);
   const [conflitDonneesAnciennes, setConflitDonneesAnciennes] = useState(false);
@@ -1306,10 +1336,21 @@ function App(){
     let unsubscribeDB = null;
     let dejaCharge = false;
 
-    // Sécurité Firebase : on s'authentifie (anonymement) avant de lire/écrire la base
+    // Sécurité Firebase : la base n'est chargée qu'après une VRAIE connexion (email + mot de
+    // passe propre à chaque personne), jamais avant. Tant que personne n'est authentifié,
+    // on n'essaie plus de se connecter automatiquement (l'ancienne connexion "anonyme" ouvrait
+    // l'accès à toute la base à n'importe qui — corrigé en novembre 2026) : l'écran de connexion
+    // reste affiché et attend que handleLogin() réussisse une vraie connexion Firebase.
     const unsubscribeAuth = firebaseAuth.onAuthStateChanged((user) => {
       if(!user){
-        firebaseAuth.signInAnonymously().catch(err => console.error('Erreur connexion sécurisée Firebase:', err));
+        // Déconnexion (ou pas encore connecté) : on arrête proprement tout abonnement
+        // d'une éventuelle session précédente, pour qu'une nouvelle connexion puisse
+        // se réabonner normalement (voir "if(unsubscribeDB) return" plus bas).
+        if(unsubscribeDB){ unsubscribeDB(); unsubscribeDB = null; }
+        firebaseDB.ref('.info/connected').off();
+        dejaCharge = false;
+        setLoading(false);
+        setDb(null);
         return;
       }
 
@@ -1564,6 +1605,42 @@ function App(){
     });
   }, [tentativeSauvegarde]);
 
+  // Tient à jour l'annuaire public (sans mot de passe ni données sensibles) utilisé par l'écran
+  // "Qui êtes-vous ?" avant connexion — indépendant du mécanisme de sauvegarde principal ci-dessus
+  // (plus simple, pas besoin de passer par sa logique de conflit/fusion hors-ligne).
+  useEffect(() => {
+    if(!db || loading) return;
+    const liste = [];
+    db.sites.forEach(site => {
+      (site.employes||[]).forEach(emp => {
+        if(!emp.authEmail) return; // ancienne fiche jamais migrée vers un vrai compte — pas de connexion possible
+        liste.push({ id: emp.id, nom: emp.nom, role: emp.role, authEmail: emp.authEmail, siteId: site.id, siteNom: site.nom });
+      });
+    });
+    firebaseDB.ref('annuaire-login').set(liste).catch(err => console.error('Erreur de mise à jour de l\'annuaire de connexion', err));
+  }, [db, loading]);
+
+  // Actions déclenchées une fois après une connexion réussie (salaire journalier, journal des
+  // connexions) — exécutées ICI (une fois que "db" est réellement chargé), et non plus au moment
+  // du clic sur "Entrer", car avec la vraie authentification Firebase, la base ne commence à se
+  // charger qu'APRÈS la connexion : juste après avoir cliqué "Entrer", "db" est encore vide.
+  useEffect(() => {
+    if(!role || !db || loading) return;
+    if(postLoginActionsFaitesRef.current) return;
+    postLoginActionsFaitesRef.current = true;
+    if(role === 'gerant'){
+      persist(prevDb => ({ ...prevDb, journalConnexions: enregistrerConnexion(prevDb, { role: 'Gérant', nom: 'Gérant' }) }));
+    } else if(role === 'employe' && currentSiteId && currentEmployeId){
+      const site = db.sites.find(s => s.id === currentSiteId);
+      const emp = site && (site.employes||[]).find(e => e.id === currentEmployeId);
+      if(site && emp){
+        if(estEmployeSalaireJournalier(emp)) recordDailyCaissierExpense(persist, db, site.id, emp);
+        persist(prevDb => ({ ...prevDb, journalConnexions: enregistrerConnexion(prevDb, { role: 'Employé', nom: emp.nom, siteNom: site.nom }) }));
+      }
+    }
+  }, [role, db, loading, currentSiteId, currentEmployeId, persist]);
+  useEffect(() => { if(!role) postLoginActionsFaitesRef.current = false; }, [role]);
+
   // Correction ponctuelle (une seule fois, tous appareils confondus) : réattribue le "décaissement"
   // (saisiPar) des salaires journaliers automatiques déjà enregistrés depuis le 1er septembre 2026 à la
   // personne responsable de la caisse ce jour-là (planning : Nene Djiba lundi-mercredi, Mamadou Alpha
@@ -1797,23 +1874,24 @@ function App(){
   // pas toutes seules à la prochaine reconnexion, seul un envoi manuel volontaire les enverra.
   const ignorerAppareilAncien = () => setAppareilAncienBloque(null);
 
+  // L'écran de connexion n'a besoin ni de "db" ni de "loading" — il s'appuie sur l'annuaire
+  // public (voir plus haut) et fonctionne donc AVANT que la base ne commence à charger (ce
+  // qui ne peut arriver qu'APRÈS une connexion Firebase réelle et réussie, voir plus bas).
+  if(!role){
+    return (
+      <>
+        {!isOnline && <OfflineBanner pending={pendingSync} />}
+        <RoleSelect db={db} setDb={persist} annuaire={annuaire} onSelect={(r, siteId, clientId, employeId) => { setRole(r); setCurrentSiteId(siteId||null); setCurrentClientId(clientId||null); setCurrentEmployeId(employeId||null); }} />
+        <AppFooter />
+      </>
+    );
+  }
+
   if(loading || !db){
     return (
       <div style={{minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', color:'var(--pine)'}}>
         <div className="mono" style={{fontSize:13}}>Chargement…</div>
       </div>
-    );
-  }
-
-  if(!role){
-    return (
-      <>
-        {appareilAncienBloque && <AppareilAncienBanner depuisMs={appareilAncienBloque.depuisMs} onEnvoyer={forcerEnvoiAppareilAncien} onIgnorer={ignorerAppareilAncien} />}
-        {conflitDonneesAnciennes && <ConflitBanner onFermer={()=>setConflitDonneesAnciennes(false)} />}
-        {!isOnline && <OfflineBanner pending={pendingSync} />}
-        <RoleSelect db={db} setDb={persist} onSelect={(r, siteId, clientId, employeId) => { setRole(r); setCurrentSiteId(siteId||null); setCurrentClientId(clientId||null); setCurrentEmployeId(employeId||null); }} />
-        <AppFooter />
-      </>
     );
   }
 
@@ -1958,6 +2036,29 @@ function employeResponsableCaisse(site, dateISO){
   return (site.employes||[]).find(e => (e.nom||'').trim().toLowerCase().includes(entree.cible)) || null;
 }
 
+// Crédite le salaire journalier d'un employé qui vient de se connecter (appelée depuis App(),
+// une fois la base chargée après une connexion réussie — voir le useEffect "actions post-connexion").
+function recordDailyCaissierExpense(persist, db, siteId, emp){
+  const today = todayISO();
+  if(new Date(today + 'T00:00:00Z').getUTCDay() === 0) return; // pas de salaire journalier le dimanche
+  const site = db.sites.find(s => s.id === siteId);
+  if(!site) return;
+  const depenses = site.depenses || [];
+  const deja = depenses.some(d => d.autoCaissierId === emp.id && d.date === today);
+  if(deja) return;
+  const responsable = employeResponsableCaisse(site, today);
+  const dep = {
+    id: uid('dep_'),
+    date: today,
+    description: `Salaire journalier — ${emp.nom}`,
+    montant: 50000,
+    categorie: 'Salaires',
+    autoCaissierId: emp.id,
+    saisiPar: (responsable ? responsable.id : emp.id),
+  };
+  persist(prevDb => ({ ...prevDb, sites: prevDb.sites.map(s => s.id === siteId ? { ...s, depenses: [dep, ...(s.depenses||[])] } : s) }));
+}
+
 // Calcule la dépense « Salaire journalier » à ajouter pour EMP si elle n'a pas déjà été comptabilisée
 // AUJOURD'HUI, ou null sinon — à fusionner dans le MÊME appel updateSite que l'action en cours (nouvelle
 // commande, encaissement, encaissement sans commande) plutôt que d'appeler updateSite séparément : deux
@@ -1987,7 +2088,7 @@ function salaireJournalierDuSiNecessaire(site, emp){
   };
 }
 
-function RoleSelect({ db, setDb, onSelect }){
+function RoleSelect({ db, setDb, annuaire, onSelect }){
   const [mode, setMode] = useState(null);
   const [loginRole, setLoginRole] = useState(null);
   const [selectedEmp, setSelectedEmp] = useState(null); // {emp, siteId}
@@ -2006,68 +2107,45 @@ function RoleSelect({ db, setDb, onSelect }){
     } catch(e){ return null; }
   });
 
-  // Tous les employés de tous les sites
+  // Tous les employés de tous les sites — vient de l'annuaire public (disponible avant
+  // connexion), pas de "db" qui n'est chargée qu'APRÈS une connexion réussie.
   const allEmployes = useMemo(() => {
-    const list = [];
-    db.sites.forEach(site => {
-      (site.employes||[]).forEach(emp => {
-        list.push({ emp, site });
-      });
-    });
-    return list;
-  }, [db]);
+    return (annuaire||[]).map(a => ({
+      emp: { id: a.id, nom: a.nom, role: a.role, authEmail: a.authEmail },
+      site: { id: a.siteId, nom: a.siteNom },
+    }));
+  }, [annuaire]);
 
-  function recordDailyCaissierExpense(siteId, emp){
-    const today = todayISO();
-    // Le jour de la semaine est calculé à partir de la MÊME date que celle enregistrée sur la dépense
-    // (todayISO(), qui n'est pas toujours pareil que l'heure locale de la tablette) — sinon, sur un
-    // appareil dont l'horloge/le fuseau horaire est mal réglé, la vérification "dimanche" peut porter
-    // sur un jour différent de celui réellement inscrit, et laisser passer un salaire le dimanche.
-    if(new Date(today + 'T00:00:00Z').getUTCDay() === 0) return; // pas de salaire journalier le dimanche
-    const site = db.sites.find(s => s.id === siteId);
-    if(!site) return;
-    const depenses = site.depenses || [];
-    const deja = depenses.some(d => d.autoCaissierId === emp.id && d.date === today);
-    if(deja) return;
-    // Le salaire est dû à cet employé dès qu'il se connecte un jour non-dimanche — mais celui qui
-    // DÉCAISSE (saisiPar, donc dans les dépenses de qui le paiement apparaît) suit le planning caisse :
-    // c'est la personne responsable de la caisse ce jour-là qui paie, que ce soit son propre salaire
-    // ou celui de l'autre employé absent ce jour. Si personne du planning ne correspond sur ce site
-    // (autre pressing, ou noms différents), on retombe sur l'employé lui-même.
-    const responsable = employeResponsableCaisse(site, today);
-    const dep = {
-      id: uid('dep_'),
-      date: today,
-      description: `Salaire journalier — ${emp.nom}`,
-      montant: 50000,
-      categorie: 'Salaires',
-      autoCaissierId: emp.id,
-      saisiPar: (responsable ? responsable.id : emp.id),
-    };
-    setDb(prevDb => ({ ...prevDb, sites: prevDb.sites.map(s => s.id === siteId ? { ...s, depenses: [dep, ...(s.depenses||[])] } : s) }));
-  }
-
-  function handleLogin(){
+  const [connexionEnCours, setConnexionEnCours] = useState(false);
+  async function handleLogin(){
+    if(connexionEnCours) return;
+    setConnexionEnCours(true);
+    setError('');
+    // La vérification se fait toujours directement auprès de Firebase (jamais de comparaison
+    // locale) — les actions qui suivaient une connexion réussie (salaire journalier, journal
+    // des connexions) sont désormais déclenchées plus haut dans App(), une fois que la base a
+    // réellement fini de se charger après cette connexion.
     if(loginRole === 'gerant'){
-      if(password === getPassGerant(db)){
-        setDb(prevDb => ({ ...prevDb, journalConnexions: enregistrerConnexion(prevDb, { role: 'Gérant', nom: 'Gérant' }) }));
+      const ok = await verifierMotDePasse(GERANT_AUTH_EMAIL, password);
+      setConnexionEnCours(false);
+      if(ok){
         onSelect('gerant');
       } else {
         setError('Mot de passe incorrect. Réessayez.');
         setPassword('');
       }
     } else if(loginRole === 'employe' && selectedEmp){
-      if(password === selectedEmp.emp.motdepasse){
-        if(estEmployeSalaireJournalier(selectedEmp.emp)){
-          recordDailyCaissierExpense(selectedEmp.site.id, selectedEmp.emp);
-        }
-        setDb(prevDb => ({ ...prevDb, journalConnexions: enregistrerConnexion(prevDb, { role: 'Employé', nom: selectedEmp.emp.nom, siteNom: selectedEmp.site.nom }) }));
+      const ok = await verifierMotDePasse(selectedEmp.emp.authEmail, password);
+      setConnexionEnCours(false);
+      if(ok){
         onSelect('employe', selectedEmp.site.id, null, selectedEmp.emp.id);
         setLoginRole(null); setSelectedEmp(null); setPassword(''); setError('');
       } else {
         setError('Mot de passe incorrect. Réessayez.');
         setPassword('');
       }
+    } else {
+      setConnexionEnCours(false);
     }
   }
 
@@ -2152,7 +2230,7 @@ function RoleSelect({ db, setDb, onSelect }){
           <Logo size={68} />
         </div>
         <p className="mono" style={{color:'var(--steam)', fontSize:13, marginTop:6}}>
-          {db.sites.length > 1 ? `${db.sites.length} sites — choisissez votre espace` : 'Gestion de pressing — choisissez votre espace'}
+          Gestion de pressing — choisissez votre espace
         </p>
       </div>
 
@@ -2160,16 +2238,11 @@ function RoleSelect({ db, setDb, onSelect }){
         <div style={{display:'flex', gap:18, flexWrap:'wrap', justifyContent:'center', maxWidth:760}}>
           <RoleCard icon="home" title="Gérant" desc="Supervision de tous les sites, finances, stock" onClick={() => setLoginRole('gerant')} />
           <RoleCard icon="ticket" title="Employé" desc="Caisse, création et suivi des commandes" onClick={() => setLoginRole('employe')} />
-          <RoleCard icon="users" title="Client" desc="Suivre mes commandes et factures" onClick={() => setMode('client')} />
         </div>
       )}
 
-      {mode === 'employe' && (
+      {mode === 'employe' && db && (
         <SitePicker db={db} title="Quel pressing ?" onPick={(siteId) => onSelect('employe', siteId)} onBack={()=>setMode(null)} />
-      )}
-
-      {mode === 'client' && (
-        <ClientLoginFlow db={db} onPick={(siteId, clientId) => onSelect('client', siteId, clientId)} onCreate={createClientAndLogin} onBack={()=>setMode(null)} />
       )}
     </div>
   );
@@ -10079,9 +10152,14 @@ function NewCommandeModal({ site, updateSite, onClose, employeId }){
 function ConfirmDelete({ message, onConfirm, onCancel, db, title='Confirmer la suppression', actionLabel='Supprimer' }){
   const [pass, setPass] = useState('');
   const [error, setError] = useState('');
+  const [verifying, setVerifying] = useState(false);
 
-  function handleConfirm(){
-    if(pass === getPassGerant(db)){
+  async function handleConfirm(){
+    if(verifying) return;
+    setVerifying(true);
+    const ok = await verifierMotDePasse(GERANT_AUTH_EMAIL, pass);
+    setVerifying(false);
+    if(ok){
       onConfirm();
     } else {
       setError('Mot de passe incorrect.');
@@ -10317,15 +10395,24 @@ function ConfirmerModification({ db, site, employeId, message, actionLabel='Conf
   const isGerant = employeId == null;
   const monProfil = !isGerant ? (site.employes||[]).find(e => e.id === employeId) : null;
 
-  function handleConfirm(){
+  const [verifying, setVerifying] = useState(false);
+  async function handleConfirm(){
+    if(verifying) return;
     if(isGerant){
-      if(pass !== getPassGerant(db)){ setError('Mot de passe incorrect.'); setPass(''); return; }
+      setVerifying(true);
+      const ok = await verifierMotDePasse(GERANT_AUTH_EMAIL, pass);
+      setVerifying(false);
+      if(!ok){ setError('Mot de passe incorrect.'); setPass(''); return; }
       onConfirm({ auteurNom: 'Gérant', auteurRole: 'Gérant', motif: motif.trim() });
       return;
     }
     if(avecMotif && !motif.trim()){ setError('Indiquez la raison du changement.'); return; }
-    if(!monProfil || pass !== monProfil.motdepasse){
-      setError(pass && pass === getPassGerant(db) ? 'Entrez VOTRE propre mot de passe, pas celui du gérant.' : 'Mot de passe incorrect.');
+    if(!monProfil || !monProfil.authEmail){ setError('Mot de passe incorrect.'); setPass(''); return; }
+    setVerifying(true);
+    const ok = await verifierMotDePasse(monProfil.authEmail, pass);
+    setVerifying(false);
+    if(!ok){
+      setError('Mot de passe incorrect.');
       setPass(''); return;
     }
     onConfirm({ auteurNom: monProfil.nom, auteurRole: monProfil.role, motif: motif.trim() });
@@ -11684,12 +11771,7 @@ function NewStockModal({ site, updateSite, onClose }){
 
 function EquipeView({ site, updateSite, db }){
   const [showNew, setShowNew] = useState(false);
-  const [showPass, setShowPass] = useState({});
   const [confirmEmp, setConfirmEmp] = useState(null);
-  const [editPassEmp, setEditPassEmp] = useState(null);
-  const [newPass, setNewPass] = useState('');
-  const [showNewPass, setShowNewPass] = useState(false);
-  const [passFlash, setPassFlash] = useState(false);
   const [editNomEmp, setEditNomEmp] = useState(null);
   const [newNom, setNewNom] = useState('');
   const [nomFlash, setNomFlash] = useState(false);
@@ -11701,13 +11783,6 @@ function EquipeView({ site, updateSite, db }){
     const emp = site.employes.find(e=>e.id===id);
     const entry = { id: uid('trash_'), type:'employe', label: emp ? `Employé : ${emp.nom}` : 'Employé', data: emp, dateSuppression: new Date().toISOString() };
     updateSite({ ...site, employes: site.employes.filter(e=>e.id!==id), corbeille: [entry, ...(site.corbeille||[])] });
-  }
-  function togglePass(id){ setShowPass(prev => ({...prev, [id]: !prev[id]})); }
-  function saveNewPass(){
-    if(!newPass.trim()) return;
-    updateSite({ ...site, employes: site.employes.map(e => e.id===editPassEmp.id ? {...e, motdepasse: newPass.trim()} : e) });
-    setPassFlash(true);
-    setTimeout(()=>{ setPassFlash(false); setEditPassEmp(null); setNewPass(''); }, 1500);
   }
   function saveNewNom(){
     if(!newNom.trim()) return;
@@ -11743,15 +11818,9 @@ function EquipeView({ site, updateSite, db }){
               <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>setConfirmEmp(e)}><Icon name="trash" size={14}/></button>
             </div>
             <div style={{marginTop:10, display:'flex', alignItems:'center', gap:8, flexWrap:'wrap'}}>
-              <span className="mono" style={{fontSize:12, color:'var(--pine)', background:'var(--pine-light)', padding:'3px 8px', borderRadius:6}}>
-                {showPass[e.id] ? (e.motdepasse || '—') : '••••••••'}
+              <span style={{fontSize:11.5, color:'var(--steam)'}}>
+                🔒 Mot de passe géré par {e.nom} lui-même (depuis l'app). En cas d'oubli : console Firebase → Authentication → {e.authEmail || '—'}.
               </span>
-              <button className="btn btn-ghost btn-sm" style={{padding:'3px 8px', fontSize:11}} onClick={()=>togglePass(e.id)}>
-                {showPass[e.id] ? 'Masquer' : 'Voir mdp'}
-              </button>
-              <button className="btn btn-ghost btn-sm" style={{padding:'3px 8px', fontSize:11, color:'var(--rust)'}} onClick={()=>{ setEditPassEmp(e); setNewPass(''); setShowNewPass(false); }}>
-                <Icon name="edit" size={12}/> Changer mdp
-              </button>
             </div>
             <div style={{marginTop:8, display:'flex', alignItems:'center', gap:8, flexWrap:'wrap'}}>
               <span style={{fontSize:12.5, color: e.tel ? 'var(--ink)' : 'var(--steam)'}}>
@@ -11767,29 +11836,6 @@ function EquipeView({ site, updateSite, db }){
       </div>
 
       {showNew && <NewEmployeModal site={site} updateSite={updateSite} onClose={()=>setShowNew(false)} />}
-
-      {editPassEmp && (
-        <ModalShell title={`Changer le mot de passe — ${editPassEmp.nom}`} onClose={()=>{ setEditPassEmp(null); setNewPass(''); }} width={400}>
-          <div style={{display:'grid', gap:14}}>
-            <div>
-              <label>Nouveau mot de passe</label>
-              <div style={{display:'flex', gap:8}}>
-                <input type={showNewPass ? 'text' : 'password'} placeholder="Nouveau mot de passe…" value={newPass} onChange={e=>setNewPass(e.target.value)} autoFocus />
-                <button className="btn btn-ghost btn-sm" onClick={()=>setShowNewPass(!showNewPass)}>{showNewPass ? 'Masquer' : 'Voir'}</button>
-              </div>
-            </div>
-            <p style={{fontSize:12.5, color:'var(--steam)', margin:0, lineHeight:1.5}}>
-              L'employé devra utiliser ce nouveau mot de passe à sa prochaine connexion.
-            </p>
-            <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
-              <button className="btn" onClick={()=>{ setEditPassEmp(null); setNewPass(''); }}>Annuler</button>
-              <button className="btn btn-rust" disabled={!newPass.trim()} onClick={saveNewPass}>
-                {passFlash ? <><Icon name="check" size={14}/> Modifié !</> : 'Enregistrer'}
-              </button>
-            </div>
-          </div>
-        </ModalShell>
-      )}
 
       {editNomEmp && (
         <ModalShell title={`Renommer — ${editNomEmp.nom}`} onClose={()=>{ setEditNomEmp(null); setNewNom(''); }} width={400}>
@@ -11844,8 +11890,9 @@ function EquipeView({ site, updateSite, db }){
 }
 
 // Page en libre-service permettant à l'employé (caissier ou repasseur) de choisir son propre mot de passe.
-// Le mot de passe choisi reste enregistré dans le même champ que celui géré par le gérant (Équipe) —
-// il n'est donc jamais caché au gérant, qui peut toujours le consulter ou le changer à nouveau lui-même.
+// Le mot de passe est vérifié et modifié directement via Firebase Authentication — jamais comparé ou
+// stocké en clair dans la base de données. Le gérant ne peut plus le consulter ; en cas d'oubli, il doit
+// réinitialiser le compte depuis la console Firebase.
 function MonCompteView({ site, updateSite, employeId }){
   const monProfil = (site.employes||[]).find(e => e.id === employeId);
   const [motdepasseActuel, setMotdepasseActuel] = useState('');
@@ -11854,6 +11901,7 @@ function MonCompteView({ site, updateSite, employeId }){
   const [voirMdp, setVoirMdp] = useState(false);
   const [erreur, setErreur] = useState('');
   const [succes, setSucces] = useState(false);
+  const [enCours, setEnCours] = useState(false);
 
   if(!monProfil){
     return (
@@ -11864,24 +11912,40 @@ function MonCompteView({ site, updateSite, employeId }){
     );
   }
 
-  function submit(){
+  async function submit(){
     setErreur(''); setSucces(false);
-    if(motdepasseActuel !== monProfil.motdepasse){
-      setErreur('Le mot de passe actuel est incorrect.');
+    if(!monProfil.authEmail){
+      setErreur('Compte non configuré. Contactez le gérant.');
       return;
     }
     if(!nouveauMdp.trim()){
       setErreur('Choisissez un nouveau mot de passe.');
       return;
     }
+    if(nouveauMdp.trim().length < 6){
+      setErreur('Le nouveau mot de passe doit contenir au moins 6 caractères.');
+      return;
+    }
     if(nouveauMdp !== confirmMdp){
       setErreur('Les deux mots de passe ne correspondent pas.');
       return;
     }
-    updateSite({ ...site, employes: site.employes.map(e => e.id === employeId ? { ...e, motdepasse: nouveauMdp.trim() } : e) });
-    setSucces(true);
-    setMotdepasseActuel(''); setNouveauMdp(''); setConfirmMdp('');
-    setTimeout(()=>setSucces(false), 2500);
+    setEnCours(true);
+    try{
+      const ok = await verifierMotDePasse(monProfil.authEmail, motdepasseActuel);
+      if(!ok){
+        setErreur('Le mot de passe actuel est incorrect.');
+        setEnCours(false);
+        return;
+      }
+      await firebaseAuth.currentUser.updatePassword(nouveauMdp.trim());
+      setSucces(true);
+      setMotdepasseActuel(''); setNouveauMdp(''); setConfirmMdp('');
+      setTimeout(()=>setSucces(false), 2500);
+    }catch(e){
+      setErreur('Impossible de modifier le mot de passe. Réessayez.');
+    }
+    setEnCours(false);
   }
 
   return (
@@ -11907,14 +11971,21 @@ function MonCompteView({ site, updateSite, employeId }){
           </label>
           {erreur && <p style={{color:'var(--danger)', fontSize:13, margin:0}}>{erreur}</p>}
           {succes && <p style={{color:'var(--ok)', fontSize:13, margin:0, display:'flex', alignItems:'center', gap:6}}><Icon name="check" size={14}/> Mot de passe modifié.</p>}
-          <button className="btn btn-rust" onClick={submit}>Enregistrer</button>
+          <button className="btn btn-rust" disabled={enCours} onClick={submit}>{enCours ? 'Vérification…' : 'Enregistrer'}</button>
         </div>
       </div>
       <p style={{fontSize:12, color:'var(--steam)', margin:'14px 0 0', maxWidth:420, lineHeight:1.5}}>
-        ℹ️ Le gérant peut voir ce mot de passe à tout moment dans le menu Équipe — le choisir vous-même ne le rend pas privé.
+        🔒 Ce mot de passe est privé : seul vous le connaissez. En cas d'oubli, demandez au gérant de le réinitialiser depuis la console Firebase.
       </p>
     </div>
   );
+}
+
+// Génère une adresse Firebase Auth interne (jamais une vraie boîte mail) à partir du nom de l'employé,
+// avec un suffixe aléatoire pour garantir l'unicité même en cas d'homonymes.
+function genererAuthEmail(nom){
+  const base = sansAccentsMin(nom).replace(/[^a-z0-9]+/g, '') || 'employe';
+  return `${base}-${uid('')}@macipressing.app`;
 }
 
 function NewEmployeModal({ site, updateSite, onClose }){
@@ -11923,11 +11994,29 @@ function NewEmployeModal({ site, updateSite, onClose }){
   const [tel, setTel] = useState('');
   const [motdepasse, setMotdepasse] = useState('');
   const [showPass, setShowPass] = useState(false);
+  const [enCours, setEnCours] = useState(false);
+  const [erreur, setErreur] = useState('');
 
-  function submit(){
+  async function submit(){
     if(!nom.trim() || !motdepasse.trim()) return;
-    updateSite({ ...site, employes: [...site.employes, { id: uid('emp_'), nom: nom.trim(), role, tel: tel.trim(), motdepasse: motdepasse.trim() }] });
-    onClose();
+    if(motdepasse.trim().length < 6){
+      setErreur('Le mot de passe doit contenir au moins 6 caractères.');
+      return;
+    }
+    setErreur('');
+    setEnCours(true);
+    const authEmail = genererAuthEmail(nom);
+    try{
+      const cred = await firebaseAuthSecondaire.createUserWithEmailAndPassword(authEmail, motdepasse.trim());
+      const uidCompte = cred.user.uid;
+      await firebaseAuthSecondaire.signOut();
+      await firebaseDB.ref(`comptes-autorises/${uidCompte}`).set(true);
+      updateSite({ ...site, employes: [...site.employes, { id: uid('emp_'), nom: nom.trim(), role, tel: tel.trim(), authEmail }] });
+      onClose();
+    }catch(e){
+      setErreur("Impossible de créer le compte. Réessayez.");
+      setEnCours(false);
+    }
   }
   return (
     <ModalShell title="Ajouter un employé" onClose={onClose} width={400}>
@@ -11967,12 +12056,13 @@ function NewEmployeModal({ site, updateSite, onClose }){
             </button>
           </div>
           <p style={{fontSize:11.5, color:'var(--steam)', margin:'5px 0 0', lineHeight:1.4}}>
-            Ce mot de passe sera utilisé par l'employé pour se connecter à l'application.
+            Ce mot de passe sera utilisé par l'employé pour se connecter à l'application. Il pourra le changer lui-même ensuite dans « Mon compte ».
           </p>
         </div>
+        {erreur && <p style={{color:'var(--danger)', fontSize:13, margin:0}}>{erreur}</p>}
         <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
           <button className="btn" onClick={onClose}>Annuler</button>
-          <button className="btn btn-rust" disabled={!nom.trim()||!motdepasse.trim()} onClick={submit}>Ajouter</button>
+          <button className="btn btn-rust" disabled={!nom.trim()||!motdepasse.trim()||enCours} onClick={submit}>{enCours ? 'Création…' : 'Ajouter'}</button>
         </div>
       </div>
     </ModalShell>
@@ -14092,15 +14182,24 @@ function ParametresView({ site, updateSite, db, setDb }){
   const [passError, setPassError] = useState('');
   const [passFlash, setPassFlash] = useState(false);
 
-  function changePassGerant(){
-    if(ancienPass !== getPassGerant(db)){ setPassError('Ancien mot de passe incorrect.'); return; }
+  const [passEnCours, setPassEnCours] = useState(false);
+
+  async function changePassGerant(){
     if(nouveauPass.length < 6){ setPassError('Le nouveau mot de passe doit contenir au moins 6 caractères.'); return; }
     if(nouveauPass !== confirmPass){ setPassError('Les deux mots de passe ne correspondent pas.'); return; }
-    setDb({ ...db, passGerant: nouveauPass });
     setPassError('');
-    setAncienPass(''); setNouveauPass(''); setConfirmPass('');
-    setPassFlash(true);
-    setTimeout(()=>{ setPassFlash(false); setShowPassFields(false); }, 2000);
+    setPassEnCours(true);
+    try{
+      const ok = await verifierMotDePasse(GERANT_AUTH_EMAIL, ancienPass);
+      if(!ok){ setPassError('Ancien mot de passe incorrect.'); setPassEnCours(false); return; }
+      await firebaseAuth.currentUser.updatePassword(nouveauPass);
+      setAncienPass(''); setNouveauPass(''); setConfirmPass('');
+      setPassFlash(true);
+      setTimeout(()=>{ setPassFlash(false); setShowPassFields(false); }, 2000);
+    }catch(e){
+      setPassError('Impossible de modifier le mot de passe. Réessayez.');
+    }
+    setPassEnCours(false);
   }
 
   // Config SMS — stockée dans le site
@@ -14227,8 +14326,8 @@ function ParametresView({ site, updateSite, db, setDb }){
               <input type="password" value={confirmPass} onChange={e=>setConfirmPass(e.target.value)} placeholder="Répétez le nouveau mot de passe" />
             </div>
             {passError && <p style={{color:'var(--danger)', fontSize:13, margin:0}}>{passError}</p>}
-            <button className="btn btn-rust" style={{justifySelf:'start'}} onClick={changePassGerant} disabled={!ancienPass||!nouveauPass||!confirmPass}>
-              Enregistrer le nouveau mot de passe
+            <button className="btn btn-rust" style={{justifySelf:'start'}} onClick={changePassGerant} disabled={!ancienPass||!nouveauPass||!confirmPass||passEnCours}>
+              {passEnCours ? 'Vérification…' : 'Enregistrer le nouveau mot de passe'}
             </button>
           </div>
         )}
