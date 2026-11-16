@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-11-15-1">
+<meta name="app-version" content="2026-11-16-1">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-11-15-1';
+  const APP_VERSION_ACTUELLE = '2026-11-16-1';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -1299,11 +1299,19 @@ function App(){
   // quiconque se soit authentifié. La vraie base de données, elle, reste entièrement
   // verrouillée derrière une vraie connexion (voir plus bas).
   const [annuaire, setAnnuaire] = useState([]);
+  // Avant : une erreur de lecture de l'annuaire (ex: règles Firebase mal configurées pour un
+  // appareil jamais encore connecté) ne faisait que l'écrire dans la console — invisible pour
+  // l'employé, qui voyait juste une liste vide sans comprendre pourquoi. Désormais on garde
+  // l'erreur pour l'afficher clairement sur l'écran "Qui êtes-vous ?" (voir RoleSelect).
+  const [annuaireErreur, setAnnuaireErreur] = useState(null);
   const postLoginActionsFaitesRef = useRef(false);
   useEffect(() => {
     firebaseDB.ref('annuaire-login').once('value')
-      .then(snap => setAnnuaire(snap.val() || []))
-      .catch(err => console.error('Erreur de lecture de l\'annuaire de connexion', err));
+      .then(snap => { setAnnuaire(snap.val() || []); setAnnuaireErreur(null); })
+      .catch(err => {
+        console.error('Erreur de lecture de l\'annuaire de connexion', err);
+        setAnnuaireErreur(err && err.message ? err.message : 'Erreur inconnue');
+      });
   }, []);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [pendingSync, setPendingSync] = useState(false);
@@ -1881,7 +1889,7 @@ function App(){
     return (
       <>
         {!isOnline && <OfflineBanner pending={pendingSync} />}
-        <RoleSelect db={db} setDb={persist} annuaire={annuaire} onSelect={(r, siteId, clientId, employeId) => { setRole(r); setCurrentSiteId(siteId||null); setCurrentClientId(clientId||null); setCurrentEmployeId(employeId||null); }} />
+        <RoleSelect db={db} setDb={persist} annuaire={annuaire} annuaireErreur={annuaireErreur} onSelect={(r, siteId, clientId, employeId) => { setRole(r); setCurrentSiteId(siteId||null); setCurrentClientId(clientId||null); setCurrentEmployeId(employeId||null); }} />
         <AppFooter />
       </>
     );
@@ -2088,7 +2096,7 @@ function salaireJournalierDuSiNecessaire(site, emp){
   };
 }
 
-function RoleSelect({ db, setDb, annuaire, onSelect }){
+function RoleSelect({ db, setDb, annuaire, annuaireErreur, onSelect }){
   const [mode, setMode] = useState(null);
   const [loginRole, setLoginRole] = useState(null);
   const [selectedEmp, setSelectedEmp] = useState(null); // {emp, siteId}
@@ -2166,6 +2174,11 @@ function RoleSelect({ db, setDb, annuaire, onSelect }){
         </div>
         <div className="card" style={{padding:'1.75rem', width:400, maxWidth:'90vw'}}>
           <label>Sélectionnez votre nom</label>
+          {annuaireErreur && (
+            <div style={{background:'var(--warn-light)', color:'#B45309', borderRadius:8, padding:'10px 12px', fontSize:12.5, lineHeight:1.5, margin:'8px 0'}}>
+              ⚠️ Impossible de charger la liste des employés ({annuaireErreur}). Vérifiez votre connexion internet et réessayez (rechargez la page). Si le problème persiste, prévenez le gérant.
+            </div>
+          )}
           <div style={{display:'grid', gap:8, marginTop:6}}>
             {allEmployes.map(({emp, site}) => (
               <button key={emp.id} className="btn" style={{textAlign:'left', display:'flex', justifyContent:'space-between', alignItems:'center'}}
@@ -2174,7 +2187,7 @@ function RoleSelect({ db, setDb, annuaire, onSelect }){
                 <span style={{fontSize:12, color:'var(--steam)'}}>{emp.role} · {site.nom}</span>
               </button>
             ))}
-            {allEmployes.length === 0 && <p style={{color:'var(--steam)', fontSize:13}}>Aucun employé enregistré. Le gérant doit d'abord créer des fiches employés.</p>}
+            {allEmployes.length === 0 && !annuaireErreur && <p style={{color:'var(--steam)', fontSize:13}}>Aucun employé enregistré. Le gérant doit d'abord créer des fiches employés.</p>}
           </div>
           <button className="btn btn-ghost btn-sm" style={{marginTop:12}} onClick={()=>{ setLoginRole(null); setError(''); }}>← Retour</button>
         </div>
