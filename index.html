@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-11-16-1">
+<meta name="app-version" content="2026-11-16-2">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-11-16-1';
+  const APP_VERSION_ACTUELLE = '2026-11-16-2';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -1617,7 +1617,7 @@ function App(){
   // "Qui êtes-vous ?" avant connexion — indépendant du mécanisme de sauvegarde principal ci-dessus
   // (plus simple, pas besoin de passer par sa logique de conflit/fusion hors-ligne).
   useEffect(() => {
-    if(!db || loading) return;
+    if(!db || loading || !Array.isArray(db.sites)) return;
     const liste = [];
     db.sites.forEach(site => {
       (site.employes||[]).forEach(emp => {
@@ -1625,7 +1625,17 @@ function App(){
         liste.push({ id: emp.id, nom: emp.nom, role: emp.role, authEmail: emp.authEmail, siteId: site.id, siteNom: site.nom });
       });
     });
-    firebaseDB.ref('annuaire-login').set(liste).catch(err => console.error('Erreur de mise à jour de l\'annuaire de connexion', err));
+    // Sécurité (incident du 16/11/2026) : db.sites peut momentanément être un tableau vide pendant une
+    // phase de chargement/reconnexion incomplète (après une mise à jour forcée de l'app, par exemple),
+    // sans que le garde-fou "loading" ci-dessus ne l'empêche. Dans ce cas "liste" serait vide alors que
+    // de vrais employés existent déjà côté serveur — on NE DOIT JAMAIS écraser l'annuaire existant par
+    // une liste vide : on vérifie d'abord ce qu'il y a réellement sur le serveur, et on n'écrase que si
+    // la nouvelle liste est non vide, ou si l'annuaire était déjà vide (premier réglage légitime).
+    firebaseDB.ref('annuaire-login').once('value').then(snap => {
+      const actuel = snap.val() || [];
+      if(liste.length === 0 && actuel.length > 0) return; // on ne clobber jamais du vide sur de l'existant
+      firebaseDB.ref('annuaire-login').set(liste).catch(err => console.error('Erreur de mise à jour de l\'annuaire de connexion', err));
+    }).catch(err => console.error('Erreur de lecture de l\'annuaire avant mise à jour', err));
   }, [db, loading]);
 
   // Actions déclenchées une fois après une connexion réussie (salaire journalier, journal des
