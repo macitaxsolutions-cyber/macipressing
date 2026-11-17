@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-11-16-2">
+<meta name="app-version" content="2026-11-17-1">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-11-16-2';
+  const APP_VERSION_ACTUELLE = '2026-11-17-1';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -1175,6 +1175,32 @@ async function verifierMotDePasse(email, password){
   }
 }
 
+// Filet de sécurité global (incident du 17/11/2026 — salaire de Nene Djiba crédité deux fois le même
+// jour) : plusieurs mécanismes indépendants peuvent créditer le salaire journalier automatique d'un
+// caissier (connexion, action active en cours de saisie, vérification périodique, rattrapage sur
+// tablette laissée allumée — voir salaireJournalierDuSiNecessaire et verifierSalaireJournalier). Même
+// avec les vérifications `deja` à chaque point d'appel, certains d'entre eux composent leur écriture
+// via updateSite(objetComplet) plutôt que persist(prevDb=>...), ce qui ne garantit pas de voir les
+// écritures concurrentes les plus récentes. Par sécurité, avant tout enregistrement (local ou serveur),
+// on ne garde jamais plus d'une dépense "salaire journalier" (même autoCaissierId + même date) par site.
+function dedupeSalairesJournaliers(dbData){
+  if(!dbData || !Array.isArray(dbData.sites)) return dbData;
+  let changed = false;
+  const sites = dbData.sites.map(site => {
+    const vus = new Set();
+    const avant = site.depenses || [];
+    const depenses = avant.filter(d => {
+      if(!d || !d.autoCaissierId || !d.date) return true;
+      const cle = `${d.autoCaissierId}|${d.date}`;
+      if(vus.has(cle)){ changed = true; return false; } // doublon : on garde seulement le premier
+      vus.add(cle);
+      return true;
+    });
+    return depenses.length !== avant.length ? { ...site, depenses } : site;
+  });
+  return changed ? { ...dbData, sites } : dbData;
+}
+
 /* ===================== CORBEILLE (30 jours) ===================== */
 
 function purgeCorbeille(dbData){
@@ -1569,7 +1595,7 @@ function App(){
       // fois) au lieu de perdre le changement local en silence.
       if(res.fraiche && typeof next === 'function' && essai < 5){
         const fraichePurgee = purgeCorbeille(res.fraiche);
-        const rejoue = next(fraichePurgee);
+        const rejoue = dedupeSalairesJournaliers(next(fraichePurgee));
         setDb(rejoue);
         tentativeSauvegarde(next, rejoue, essai + 1);
         return;
@@ -1601,7 +1627,7 @@ function App(){
       // la fonction garantit toujours de partir de l'état le plus à jour,
       // même si l'appelant avait une référence "db" un peu ancienne, et permet
       // de la rejouer en cas de conflit de révision (voir tentativeSauvegarde).
-      const resolved = mutator(prevDb);
+      const resolved = dedupeSalairesJournaliers(mutator(prevDb));
       if(saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
         const mutateursAEnvoyer = pendingMutators.current;
@@ -2059,22 +2085,31 @@ function employeResponsableCaisse(site, dateISO){
 function recordDailyCaissierExpense(persist, db, siteId, emp){
   const today = todayISO();
   if(new Date(today + 'T00:00:00Z').getUTCDay() === 0) return; // pas de salaire journalier le dimanche
-  const site = db.sites.find(s => s.id === siteId);
-  if(!site) return;
-  const depenses = site.depenses || [];
-  const deja = depenses.some(d => d.autoCaissierId === emp.id && d.date === today);
-  if(deja) return;
-  const responsable = employeResponsableCaisse(site, today);
-  const dep = {
-    id: uid('dep_'),
-    date: today,
-    description: `Salaire journalier — ${emp.nom}`,
-    montant: 50000,
-    categorie: 'Salaires',
-    autoCaissierId: emp.id,
-    saisiPar: (responsable ? responsable.id : emp.id),
-  };
-  persist(prevDb => ({ ...prevDb, sites: prevDb.sites.map(s => s.id === siteId ? { ...s, depenses: [dep, ...(s.depenses||[])] } : s) }));
+  // Correctif (incident du 17/11/2026 — salaire de Nene Djiba crédité deux fois le même jour) : la
+  // vérification `deja` était faite AVANT d'appeler persist(), contre le `db` reçu en paramètre (un
+  // instantané pris au moment de l'appel). Si ce mécanisme et un autre (vérification périodique ou
+  // rattrapage dans EmployeApp, voir verifierSalaireJournalier) se déclenchaient presque en même temps,
+  // les deux passaient la vérification avant qu'aucun des deux n'ait encore écrit — d'où le doublon.
+  // On vérifie désormais DANS la fonction passée à persist(), contre prevDb (toujours la version la
+  // plus fraîche, y compris les mutations encore en attente d'envoi) : le deuxième appel voit alors
+  // forcément l'ajout du premier et ne recrédite jamais.
+  persist(prevDb => {
+    const site = (prevDb.sites||[]).find(s => s.id === siteId);
+    if(!site) return prevDb;
+    const deja = (site.depenses||[]).some(d => d.autoCaissierId === emp.id && d.date === today);
+    if(deja) return prevDb;
+    const responsable = employeResponsableCaisse(site, today);
+    const dep = {
+      id: uid('dep_'),
+      date: today,
+      description: `Salaire journalier — ${emp.nom}`,
+      montant: 50000,
+      categorie: 'Salaires',
+      autoCaissierId: emp.id,
+      saisiPar: (responsable ? responsable.id : emp.id),
+    };
+    return { ...prevDb, sites: prevDb.sites.map(s => s.id === siteId ? { ...s, depenses: [dep, ...(s.depenses||[])] } : s) };
+  });
 }
 
 // Calcule la dépense « Salaire journalier » à ajouter pour EMP si elle n'a pas déjà été comptabilisée
