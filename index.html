@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-11-17-1">
+<meta name="app-version" content="2026-11-19-3">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-11-17-1';
+  const APP_VERSION_ACTUELLE = '2026-11-19-3';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -14996,6 +14996,30 @@ function ServicesRemunerationEmployeView({ site, updateSite, db, employeId }){
 
 function PaiementsAValiderView({ site, updateSite, employeId }){
   const remunerations = site.remunerations || [];
+  const today = todayISO();
+
+  // Filtres de période (ajoutés le 19/11/2026, mêmes options que les autres pages — voir
+  // RepassageApercuView) : appliqués UNIQUEMENT à l'historique « Confirmés » ci-dessous. « Paiements à
+  // confirmer » reste volontairement toujours complet, quelle que soit la période choisie — ce sont des
+  // paiements réellement en attente d'action, et les cacher parce qu'ils sont d'une période antérieure
+  // ferait perdre de vue de l'argent pas encore confirmé reçu (demande explicite du gérant).
+  const [periode, setPeriode] = useState('jour');
+  const [moisChoisi, setMoisChoisi] = useState(today.slice(0,7));
+  const [anneeChoisie, setAnneeChoisie] = useState(Number(today.slice(0,4)));
+  const [dateChoisie, setDateChoisie] = useState(today);
+  const [plageDebut, setPlageDebut] = useState(today);
+  const [plageFin, setPlageFin] = useState(today);
+
+  const getWeekDates = () => {
+    const d = new Date(today + 'T00:00:00');
+    const day = d.getDay() || 7;
+    const monday = new Date(d); monday.setDate(d.getDate() - day + 1);
+    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+    const toISO = (dt) => dt.toISOString().slice(0,10);
+    return { start: toISO(monday), end: toISO(sunday) };
+  };
+  const week = getWeekDates();
+  const plageBornes = useMemo(() => { const a = plageDebut || today, b = plageFin || today; return a <= b ? { debut:a, fin:b } : { debut:b, fin:a }; }, [plageDebut, plageFin, today]);
 
   const paiementsAValider = useMemo(() => {
     return remunerations
@@ -15003,12 +15027,42 @@ function PaiementsAValiderView({ site, updateSite, employeId }){
       .sort((a,b) => new Date(b.date) - new Date(a.date));
   }, [remunerations, employeId]);
 
-  const paiementsConfirmes = useMemo(() => {
-    return remunerations
-      .filter(r => r.employeId === employeId && r.type !== 'livraison' && r.valideParRepasseur)
-      .sort((a,b) => new Date(b.dateValidationRepasseur||b.date) - new Date(a.dateValidationRepasseur||a.date))
-      .slice(0, 10);
+  const mesConfirmes = useMemo(() => {
+    return remunerations.filter(r => r.employeId === employeId && r.type !== 'livraison' && r.valideParRepasseur);
   }, [remunerations, employeId]);
+
+  const anneesDisponibles = useMemo(() => {
+    const set = new Set(mesConfirmes.map(r => Number((r.date||'').slice(0,4))));
+    set.add(Number(today.slice(0,4)));
+    return Array.from(set).sort((a,b)=>b-a);
+  }, [mesConfirmes, today]);
+  const moisDisponibles = useMemo(() => {
+    const mois = new Set(mesConfirmes.map(r => (r.date||'').slice(0,7)));
+    mois.add(today.slice(0,7));
+    return [...mois].sort().reverse();
+  }, [mesConfirmes, today]);
+
+  const paiementsConfirmes = useMemo(() => {
+    const filtres = mesConfirmes.filter(r => {
+      const d = (r.date||'').slice(0,10);
+      if(periode === 'jour') return d === today;
+      if(periode === 'semaine') return d >= week.start && d <= week.end;
+      if(periode === 'mois') return (r.date||'').slice(0,7) === moisChoisi;
+      if(periode === 'annee') return Number((r.date||'').slice(0,4)) === anneeChoisie;
+      if(periode === 'date') return d === dateChoisie;
+      if(periode === 'plage') return d >= plageBornes.debut && d <= plageBornes.fin;
+      return true; // 'total' = À ce jour
+    });
+    return filtres.sort((a,b) => new Date(b.dateValidationRepasseur||b.date) - new Date(a.dateValidationRepasseur||a.date));
+  }, [mesConfirmes, periode, today, week, moisChoisi, anneeChoisie, dateChoisie, plageBornes]);
+  const totalConfirmePeriode = paiementsConfirmes.reduce((s,r)=>s+Number(r.montant),0);
+  const periodeLabel = periode==='jour' ? "Aujourd'hui"
+    : periode==='semaine' ? 'Cette semaine'
+    : periode==='mois' ? 'Ce mois'
+    : periode==='annee' ? 'Cette année'
+    : periode==='total' ? 'À ce jour'
+    : periode==='date' ? `Le ${fmtDate(dateChoisie)}`
+    : `Du ${fmtDate(plageBornes.debut)} au ${fmtDate(plageBornes.fin)}`;
 
   function validerReception(rem){
     const nextRemunerations = remunerations.map(r => r.id === rem.id
@@ -15034,6 +15088,8 @@ function PaiementsAValiderView({ site, updateSite, employeId }){
               <div key={r.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, padding:'10px 12px', background:'var(--warn-light)', borderRadius:8, flexWrap:'wrap'}}>
                 <div style={{fontSize:13}}>
                   <span style={{fontWeight:600}}>{fmtGNF(r.montant)}</span> — {r.type === 'repassage' ? '👔 Repassage' : '🚗 Livraison'} du {fmtDate(r.date)}
+                  {r.ticketSuffix && <span className="mono" style={{marginLeft:6, color:'var(--steam)'}}>#{r.ticketSuffix}</span>}
+                  {r.clientNom && <span style={{marginLeft:6, color:'var(--steam)'}}>— {r.clientNom}</span>}
                   <span className="tag" style={{marginLeft:8, background: r.modePaiementRepasseur==='Orange Money' ? '#FFF3E0' : 'var(--pine-light)', color: r.modePaiementRepasseur==='Orange Money' ? '#E65100' : 'var(--pine)'}}>{r.modePaiementRepasseur}</span>
                 </div>
                 <button className="btn btn-rust btn-sm" onClick={()=>validerReception(r)}>J'ai bien reçu</button>
@@ -15043,19 +15099,53 @@ function PaiementsAValiderView({ site, updateSite, employeId }){
         </div>
       )}
 
-      {paiementsConfirmes.length > 0 && (
-        <div>
-          <h3 style={{margin:'0 0 10px', fontSize:14, color:'var(--steam)'}}>Confirmés récemment</h3>
-          <div style={{display:'grid', gap:6}}>
+      <div>
+        <h3 style={{margin:'0 0 10px', fontSize:14, color:'var(--steam)'}}>Historique des confirmations</h3>
+        <div style={{display:'flex', gap:8, marginBottom:12, flexWrap:'wrap', alignItems:'center'}}>
+          {['jour','semaine','mois','annee','total','date','plage'].map(v => (
+            <button key={v} className="btn btn-sm" onClick={()=>setPeriode(v)}
+              style={{background:periode===v?'var(--pine)':'transparent', color:periode===v?'var(--white)':'var(--ink)', borderColor:periode===v?'var(--pine)':'var(--line-strong)'}}>
+              {v === 'jour' ? "Aujourd'hui" : v === 'semaine' ? 'Cette semaine' : v === 'mois' ? 'Ce mois' : v === 'annee' ? 'Cette année' : v === 'total' ? 'À ce jour' : v === 'date' ? 'Une date' : 'Intervalle'}
+            </button>
+          ))}
+          {periode === 'mois' && (
+            <select value={moisChoisi} onChange={e=>setMoisChoisi(e.target.value)} style={{width:'auto', minWidth:160}}>
+              {moisDisponibles.map(m => <option key={m} value={m}>{formatMoisAnnee(m)}</option>)}
+            </select>
+          )}
+          {periode === 'annee' && (
+            <select value={anneeChoisie} onChange={e=>setAnneeChoisie(Number(e.target.value))} style={{width:'auto', minWidth:100}}>
+              {anneesDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+          )}
+          {periode === 'date' && (
+            <input type="date" value={dateChoisie} max={today} onChange={e=>setDateChoisie(e.target.value)} style={{width:'auto'}} />
+          )}
+          {periode === 'plage' && (
+            <span style={{display:'flex', gap:6, alignItems:'center', flexWrap:'wrap'}}>
+              <span style={{fontSize:12.5}}>du</span>
+              <input type="date" value={plageDebut} max={today} onChange={e=>setPlageDebut(e.target.value)} style={{width:'auto'}} />
+              <span style={{fontSize:12.5}}>au</span>
+              <input type="date" value={plageFin} max={today} onChange={e=>setPlageFin(e.target.value)} style={{width:'auto'}} />
+            </span>
+          )}
+        </div>
+
+        <StatCard label={`Total confirmé — ${periodeLabel}`} value={fmtGNF(totalConfirmePeriode)} icon="euro" />
+
+        {paiementsConfirmes.length === 0 ? (
+          <p style={{color:'var(--steam)', fontSize:13, marginTop:12}}>Aucune confirmation sur cette période.</p>
+        ) : (
+          <div style={{display:'grid', gap:6, marginTop:12}}>
             {paiementsConfirmes.map(r => (
               <div key={r.id} style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 10px', background:'var(--paper-2)', borderRadius:8, fontSize:12.5}}>
-                <span>{fmtGNF(r.montant)} — {r.type === 'repassage' ? '👔 Repassage' : '🚗 Livraison'} du {fmtDate(r.date)} ({r.modePaiementRepasseur})</span>
+                <span>{fmtGNF(r.montant)} — {r.type === 'repassage' ? '👔 Repassage' : '🚗 Livraison'} du {fmtDate(r.date)}{r.ticketSuffix ? ` — #${r.ticketSuffix}` : ''}{r.clientNom ? ` — ${r.clientNom}` : ''} ({r.modePaiementRepasseur})</span>
                 <span className="tag" style={{background:'var(--pine-light)', color:'var(--pine)'}}>✓ Confirmé</span>
               </div>
             ))}
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
@@ -15144,6 +15234,10 @@ function RepassageApercuView({ site, updateSite, employeId }){
   const [dateChoisie, setDateChoisie] = useState(today);
   const [plageDebut, setPlageDebut] = useState(today);
   const [plageFin, setPlageFin] = useState(today);
+  // Traçabilité des cartes « Total articles repassés » / « Total » (demande du 19/11/2026) : au clic,
+  // affiche un tableau CONSOLIDÉ (tous repasseurs confondus) de toutes les commandes de la période —
+  // le détail par repasseur plus bas reste inchangé, c'est une vue d'ensemble en plus, pas à la place.
+  const [detailTotalVisible, setDetailTotalVisible] = useState(false);
 
   const getWeekDates = () => {
     const d = new Date(today + 'T00:00:00');
@@ -15347,9 +15441,9 @@ function RepassageApercuView({ site, updateSite, employeId }){
         )}
       </div>
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:20}}>
-        <StatCard label={`Total articles repassés — ${periodeLabel}`} value={totalArticlesGeneral} icon="shirt" />
-        <StatCard label={`Total — ${periodeLabel}`} value={fmtGNF(totalGeneral)} icon="euro" />
+      <div style={{display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:4}}>
+        <StatCard label={`Total articles repassés — ${periodeLabel}`} value={totalArticlesGeneral} icon="shirt" onClick={()=>setDetailTotalVisible(v=>!v)} />
+        <StatCard label={`Total — ${periodeLabel}`} value={fmtGNF(totalGeneral)} icon="euro" onClick={()=>setDetailTotalVisible(v=>!v)} />
         <StatCard label="Reste à repasser (actuellement)" value={articlesRestantARepasser} icon="shirt" />
         <StatCard
           label="Commandes restant à repasser"
@@ -15358,6 +15452,48 @@ function RepassageApercuView({ site, updateSite, employeId }){
           onClick={commandesRestantARepasser.length > 0 ? ()=>setAfficherListeRepassage(true) : undefined}
         />
       </div>
+
+      {detailTotalVisible && (() => {
+        const triees = [...filtres].sort((a,b) => new Date(b.date) - new Date(a.date));
+        return (
+          <div style={{marginBottom:20}}>
+            <h3 style={{fontSize:14.5, color:'var(--pine)', margin:'10px 0 6px'}}>Détail consolidé — toutes commandes — {periodeLabel}</h3>
+            <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 10px'}}>{triees.length} commande(s)/ticket(s) sur cette période, tous repasseurs confondus.</p>
+            {triees.length === 0 ? (
+              <div className="card" style={{padding:'1.25rem', textAlign:'center', color:'var(--steam)', fontSize:13}}>Aucune commande sur cette période.</div>
+            ) : (
+              <div className="card" style={{overflow:'hidden'}}>
+                <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
+                  <thead>
+                    <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                      <th style={th}>Date</th>
+                      <th style={th}>Ticket</th>
+                      <th style={th}>Client</th>
+                      <th style={th}>Repasseur</th>
+                      <th style={th}>Articles</th>
+                      <th style={th}>Montant</th>
+                      <th style={th}>Statut</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {triees.map(r => (
+                      <tr key={r.id} style={{borderTop:'1px solid var(--line)'}}>
+                        <td style={td}>{fmtDate(r.date)}</td>
+                        <td style={{...td}} className="mono">{r.ticketSuffix ? `#${r.ticketSuffix}` : '—'}</td>
+                        <td style={td}>{r.clientNom || '—'}</td>
+                        <td style={td}>{(site.employes.find(e=>e.id===r.employeId)||{}).nom || 'Employé inconnu'}</td>
+                        <td style={{...td, fontSize:12}}>{r.detail || '—'}</td>
+                        <td style={{...td, fontWeight:600}} className="mono">{fmtGNF(r.montant)}</td>
+                        <td style={td}>{r.statutPaiement==='paye' ? <span className="tag" style={{background:'var(--pine-light)', color:'var(--pine)'}}>Payé</span> : <span className="tag" style={{background:'var(--warn-light)', color:'var(--warn)'}}>Non payé</span>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {afficherListeRepassage && (
         <ModalShell title="Commandes restant à repasser" onClose={()=>setAfficherListeRepassage(false)} width={620}>
@@ -16576,6 +16712,14 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
   const week = getWeekDates();
   const [periodeStats, setPeriodeStats] = useState('jour');
   const [anneeStats, setAnneeStats] = useState(Number(todayISO().slice(0,4)));
+  // Mêmes options que « Suivi repassage » côté gérant (voir RepassageApercuView) : À ce jour, Une date,
+  // Intervalle — ajoutées sur demande du 19/11/2026, en plus de jour/semaine/mois/année déjà existants.
+  const [dateStatsChoisie, setDateStatsChoisie] = useState(today);
+  const [plageStatsDebut, setPlageStatsDebut] = useState(today);
+  const [plageStatsFin, setPlageStatsFin] = useState(today);
+  // Traçabilité des 3 cartes ci-dessous (demande du 19/11/2026) : au clic, affiche le détail des
+  // commandes/tickets qui composent le total, comme pour les cartes Espèces/Orange Money de Vue globale.
+  const [detailStatsSelectionne, setDetailStatsSelectionne] = useState(null); // null | 'repasse' | 'paye' | 'impaye'
 
   // Filtrer uniquement les repassages DE CET EMPLOYÉ
   const repassageOnly = remunerations.filter(r => r.type === 'repassage' && r.employeId === employeId);
@@ -16736,26 +16880,36 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
     set.add(Number(todayISO().slice(0,4)));
     return Array.from(set).sort((a,b)=>b-a);
   }, [mesRepassages]);
+  const plageStatsBornes = useMemo(() => { const a = plageStatsDebut || today, b = plageStatsFin || today; return a <= b ? { debut:a, fin:b } : { debut:b, fin:a }; }, [plageStatsDebut, plageStatsFin, today]);
   const repassagesPeriode = useMemo(() => {
     if(periodeStats === 'jour') return mesRepassages.filter(r => (r.date||'').slice(0,10) === today);
     if(periodeStats === 'semaine') return mesRepassages.filter(r => { const d=(r.date||'').slice(0,10); return d >= week.start && d <= week.end; });
     if(periodeStats === 'mois') return mesRepassages.filter(r => r.date.slice(0,7) === filterMois);
-    return mesRepassages.filter(r => Number(r.date.slice(0,4)) === anneeStats);
-  }, [mesRepassages, periodeStats, today, week, filterMois, anneeStats]);
+    if(periodeStats === 'annee') return mesRepassages.filter(r => Number(r.date.slice(0,4)) === anneeStats);
+    if(periodeStats === 'date') return mesRepassages.filter(r => (r.date||'').slice(0,10) === dateStatsChoisie);
+    if(periodeStats === 'plage') return mesRepassages.filter(r => { const d=(r.date||'').slice(0,10); return d >= plageStatsBornes.debut && d <= plageStatsBornes.fin; });
+    return mesRepassages; // 'total' = À ce jour
+  }, [mesRepassages, periodeStats, today, week, filterMois, anneeStats, dateStatsChoisie, plageStatsBornes]);
   const totalRepasseStats = repassagesPeriode.reduce((s,r)=>s+Number(r.montant),0);
   const totalPayeStats = repassagesPeriode.filter(r=>r.statutPaiement==='paye').reduce((s,r)=>s+Number(r.montant),0);
   const totalImpayeStats = totalRepasseStats - totalPayeStats;
-  const periodeStatsLabel = periodeStats==='jour' ? "Aujourd'hui" : periodeStats==='semaine' ? 'Cette semaine' : periodeStats==='mois' ? 'Ce mois' : 'Cette année';
+  const periodeStatsLabel = periodeStats==='jour' ? "Aujourd'hui"
+    : periodeStats==='semaine' ? 'Cette semaine'
+    : periodeStats==='mois' ? 'Ce mois'
+    : periodeStats==='annee' ? 'Cette année'
+    : periodeStats==='total' ? 'À ce jour'
+    : periodeStats==='date' ? `Le ${fmtDate(dateStatsChoisie)}`
+    : `Du ${fmtDate(plageStatsBornes.debut)} au ${fmtDate(plageStatsBornes.fin)}`;
 
   return (
     <div>
       <PageHeader title={`Ma rémunération${monProfil ? ` — ${monProfil.nom}` : ''}`} subtitle={`Total ${formatMoisAnnee(filterMois)} : ${fmtGNF(totalMois)}`} />
 
       <div style={{display:'flex', gap:8, marginBottom:14, flexWrap:'wrap', alignItems:'center'}}>
-        {['jour','semaine','mois','annee'].map(v => (
+        {['jour','semaine','mois','annee','total','date','plage'].map(v => (
           <button key={v} className="btn btn-sm" onClick={()=>setPeriodeStats(v)}
             style={{background:periodeStats===v?'var(--pine)':'transparent', color:periodeStats===v?'var(--white)':'var(--ink)', borderColor:periodeStats===v?'var(--pine)':'var(--line-strong)'}}>
-            {v === 'jour' ? "Aujourd'hui" : v === 'semaine' ? 'Cette semaine' : v === 'mois' ? 'Ce mois' : 'Cette année'}
+            {v === 'jour' ? "Aujourd'hui" : v === 'semaine' ? 'Cette semaine' : v === 'mois' ? 'Ce mois' : v === 'annee' ? 'Cette année' : v === 'total' ? 'À ce jour' : v === 'date' ? 'Une date' : 'Intervalle'}
           </button>
         ))}
         {periodeStats === 'annee' && (
@@ -16763,13 +16917,74 @@ function RemunerationView({ site, updateSite, db, siteId, employeId }){
             {anneesStatsDisponibles.map(y => <option key={y} value={y}>{y}</option>)}
           </select>
         )}
+        {periodeStats === 'date' && (
+          <input type="date" value={dateStatsChoisie} max={today} onChange={e=>setDateStatsChoisie(e.target.value)} style={{width:'auto'}} />
+        )}
+        {periodeStats === 'plage' && (
+          <span style={{display:'flex', gap:6, alignItems:'center', flexWrap:'wrap'}}>
+            <span style={{fontSize:12.5}}>du</span>
+            <input type="date" value={plageStatsDebut} max={today} onChange={e=>setPlageStatsDebut(e.target.value)} style={{width:'auto'}} />
+            <span style={{fontSize:12.5}}>au</span>
+            <input type="date" value={plageStatsFin} max={today} onChange={e=>setPlageStatsFin(e.target.value)} style={{width:'auto'}} />
+          </span>
+        )}
       </div>
 
-      <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20}}>
-        <StatCard label={`Total repassé — ${periodeStatsLabel}`} value={fmtGNF(totalRepasseStats)} icon="shirt" />
-        <StatCard label={`Total payé — ${periodeStatsLabel}`} value={fmtGNF(totalPayeStats)} icon="euro" />
-        <StatCard label={`Impayé par l'entreprise — ${periodeStatsLabel}`} value={fmtGNF(totalImpayeStats)} icon="euro" tone={totalImpayeStats>0?'danger':'default'} />
+      <div style={{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:4}}>
+        <div onClick={()=>setDetailStatsSelectionne(detailStatsSelectionne==='repasse' ? null : 'repasse')} style={{cursor:'pointer', borderRadius:12, outline: detailStatsSelectionne==='repasse' ? '2px solid var(--pine)' : 'none', outlineOffset:2}}>
+          <StatCard label={`Total repassé — ${periodeStatsLabel}`} value={fmtGNF(totalRepasseStats)} icon="shirt" onClick={()=>{}} />
+        </div>
+        <div onClick={()=>setDetailStatsSelectionne(detailStatsSelectionne==='paye' ? null : 'paye')} style={{cursor:'pointer', borderRadius:12, outline: detailStatsSelectionne==='paye' ? '2px solid var(--pine)' : 'none', outlineOffset:2}}>
+          <StatCard label={`Total payé — ${periodeStatsLabel}`} value={fmtGNF(totalPayeStats)} icon="euro" onClick={()=>{}} />
+        </div>
+        <div onClick={()=>setDetailStatsSelectionne(detailStatsSelectionne==='impaye' ? null : 'impaye')} style={{cursor:'pointer', borderRadius:12, outline: detailStatsSelectionne==='impaye' ? '2px solid var(--pine)' : 'none', outlineOffset:2}}>
+          <StatCard label={`Impayé par l'entreprise — ${periodeStatsLabel}`} value={fmtGNF(totalImpayeStats)} icon="euro" tone={totalImpayeStats>0?'danger':'default'} onClick={()=>{}} />
+        </div>
       </div>
+
+      {detailStatsSelectionne && (() => {
+        const lignes = detailStatsSelectionne === 'repasse' ? repassagesPeriode
+          : detailStatsSelectionne === 'paye' ? repassagesPeriode.filter(r=>r.statutPaiement==='paye')
+          : repassagesPeriode.filter(r=>r.statutPaiement!=='paye');
+        const titreDetail = detailStatsSelectionne === 'repasse' ? 'Total repassé' : detailStatsSelectionne === 'paye' ? 'Total payé' : 'Impayé par l\'entreprise';
+        const triees = [...lignes].sort((a,b) => new Date(b.date) - new Date(a.date));
+        return (
+          <div style={{marginBottom:20}}>
+            <h3 style={{fontSize:14.5, color:'var(--pine)', margin:'10px 0 6px'}}>Détail — {titreDetail} — {periodeStatsLabel}</h3>
+            <p style={{fontSize:12.5, color:'var(--steam)', margin:'0 0 10px'}}>{triees.length} commande(s)/ticket(s) sur cette période.</p>
+            {triees.length === 0 ? (
+              <div className="card" style={{padding:'1.25rem', textAlign:'center', color:'var(--steam)', fontSize:13}}>Aucune commande sur cette période.</div>
+            ) : (
+              <div className="card" style={{overflow:'hidden'}}>
+                <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
+                  <thead>
+                    <tr style={{background:'var(--paper-2)', textAlign:'left'}}>
+                      <th style={th}>Date</th>
+                      <th style={th}>Ticket</th>
+                      <th style={th}>Client</th>
+                      <th style={th}>Articles</th>
+                      <th style={th}>Montant</th>
+                      <th style={th}>Statut</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {triees.map(r => (
+                      <tr key={r.id} style={{borderTop:'1px solid var(--line)'}}>
+                        <td style={td}>{fmtDate(r.date)}</td>
+                        <td style={{...td}} className="mono">{r.ticketSuffix ? `#${r.ticketSuffix}` : '—'}</td>
+                        <td style={td}>{r.clientNom || '—'}</td>
+                        <td style={{...td, fontSize:12}}>{r.detail || '—'}</td>
+                        <td style={{...td, fontWeight:600}} className="mono">{fmtGNF(r.montant)}</td>
+                        <td style={td}>{r.statutPaiement==='paye' ? <span className="tag" style={{background:'var(--pine-light)', color:'var(--pine)'}}>Payé</span> : <span className="tag" style={{background:'var(--warn-light)', color:'var(--warn)'}}>Non payé</span>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       <div className="card" style={{padding:'1.5rem', marginBottom:20}}>
         <h3 style={{margin:'0 0 14px', fontSize:15}}>Enregistrer une prestation</h3>
