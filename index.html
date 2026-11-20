@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-11-19-3">
+<meta name="app-version" content="2026-11-19-6">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-11-19-3';
+  const APP_VERSION_ACTUELLE = '2026-11-19-6';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -9109,6 +9109,7 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
   const [openTicket, setOpenTicket] = useState(null);
   const [editCmd, setEditCmd] = useState(null);
   const [confirmDeleteCmd, setConfirmDeleteCmd] = useState(null);
+  const [correctionPaiementCmd, setCorrectionPaiementCmd] = useState(null);
   const [encaisserCmd, setEncaisserCmd] = useState(null);
   const [showEncaisserSansCommande, setShowEncaisserSansCommande] = useState(false);
   const [showNewClient, setShowNewClient] = useState(false);
@@ -9554,7 +9555,10 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
                       {editable && cmd.statut === 'Reçu' && (
                         <button className="btn btn-ghost btn-sm" style={{color:'var(--pine)'}} onClick={()=>setEditCmd(cmd)}><Icon name="edit" size={13}/></button>
                       )}
-                      {editable && (
+                      {editable && !employeId && (
+                        // Réservé au gérant (demande du 19/11/2026, même logique que « Marquer impayé ») :
+                        // supprimer une commande est irréversible pour l'employé (ça part en Corbeille, mais
+                        // il n'y a plus accès) — seul le gérant peut encore le faire.
                         <button className="btn btn-ghost btn-sm" style={{color:'var(--danger)'}} onClick={()=>setConfirmDeleteCmd(cmd)}><Icon name="trash" size={13}/></button>
                       )}
                       {editable && client && client.tel && (
@@ -9583,8 +9587,18 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
                           !employeId && <button className="btn btn-sm" onClick={()=>advanceStatut(cmd)}>→ Prêt</button>
                         )
                       )}
-                      {editable && cmd.paiement === 'paye' && (
+                      {editable && !employeId && cmd.paiement === 'paye' && (
+                        // Réservé au gérant (demande du 19/11/2026) : annuler un paiement déjà enregistré est
+                        // une action financière sensible — un employé qui l'a cliqué par erreur (ou pour
+                        // masquer une erreur de caisse) ne doit plus pouvoir la défaire lui-même sans passer
+                        // par le gérant.
                         <button className="btn btn-sm" onClick={()=>togglePaiement(cmd)}>Marquer impayé</button>
+                      )}
+                      {editable && !employeId && Number(cmd.acompte) > 0 && (
+                        // Réservé au gérant, disponible quel que soit le statut (même « Récupéré ») — demande
+                        // du 19/11/2026 : corriger un montant reçu mal enregistré, y compris sur une commande
+                        // déjà terminée, ce que « Modifier » (réservé au statut « Reçu ») ne permet pas.
+                        <button className="btn btn-sm" style={{color:'var(--warn)', borderColor:'var(--warn)'}} onClick={()=>setCorrectionPaiementCmd(cmd)}>Corriger le paiement</button>
                       )}
                       {editable && total > (Number(cmd.acompte)||0) && (
                         <button className="btn btn-sm" style={{color:'var(--ok)', borderColor:'var(--ok)'}} onClick={()=>setEncaisserCmd(cmd)}>💰 Encaisser</button>
@@ -9611,7 +9625,78 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
       {showNewClient && <NewClientModal site={site} updateSite={updateSite} onClose={()=>setShowNewClient(false)} />}
       {showEncaisserSansCommande && <EncaisserSansCommandeModal site={site} updateSite={updateSite} employeId={employeId} onClose={()=>setShowEncaisserSansCommande(false)} />}
       {encaisserCmd && <EncaisserModal cmd={encaisserCmd} site={site} onClose={()=>setEncaisserCmd(null)} onSave={(montant, mode, rabaisSupp, datePaiement)=>enregistrerPaiement(encaisserCmd, montant, mode, rabaisSupp, datePaiement)} />}
+      {correctionPaiementCmd && <CorrigerPaiementModal cmd={correctionPaiementCmd} site={site} updateSite={updateSite} db={db} employeId={employeId||null} onClose={()=>setCorrectionPaiementCmd(null)} />}
     </div>
+  );
+}
+
+// Corrige le montant réellement reçu sur une commande déjà créée, quel que soit son statut (contrairement
+// à « Modifier », réservé au statut « Reçu ») — réservé au gérant, voir le bouton « Corriger le paiement »
+// dans CommandesView. Demande du 19/11/2026 (commande marquée payée par erreur, aucun moyen de la corriger
+// une fois « Récupéré »). Remplace l'historique des paiements de la commande par une seule entrée reflétant
+// le montant corrigé (ou aucune entrée si 0), pour que tous les rapports qui lisent getPaiementsCommande()
+// restent cohérents avec le nouvel acompte — l'ancien historique individuel n'est pas conservé, mais la
+// correction elle-même est tracée dans le Journal des modifications (motif obligatoire, mot de passe gérant).
+function CorrigerPaiementModal({ cmd, site, updateSite, db, employeId, onClose }){
+  const total = calcCommandeTotal(cmd, site.services);
+  const acompteActuel = Number(cmd.acompte) || 0;
+  const [nouveauMontant, setNouveauMontant] = useState(String(acompteActuel));
+  const [etape, setEtape] = useState('saisie'); // 'saisie' | 'confirmation'
+  const client = (site.clients||[]).find(c => c.id === cmd.clientId);
+
+  const nouveauMontantNum = Math.max(0, Math.min(total, Number(nouveauMontant) || 0));
+  const inchangé = nouveauMontantNum === acompteActuel;
+
+  function appliquer({ auteurNom, auteurRole, motif }){
+    const nouveauPaiements = nouveauMontantNum > 0
+      ? [{ id: uid('pmt_'), montant: nouveauMontantNum, mode: cmd.modePaiement || 'Espèces', date: new Date().toISOString(), employeId: null, correction: true }]
+      : [];
+    const cmdMaj = {
+      ...cmd,
+      acompte: nouveauMontantNum,
+      paiement: nouveauMontantNum >= total ? 'paye' : 'impaye',
+      paiements: nouveauPaiements,
+    };
+    const description = `a CORRIGÉ le paiement de la commande ${cmd.numero}${client ? ` (${client.nom})` : ''} : ${fmtGNF(acompteActuel)} → ${fmtGNF(nouveauMontantNum)}${motif ? ` — raison : ${motif}` : ''}`;
+    updateSite({
+      ...site,
+      commandes: site.commandes.map(c => c.id === cmd.id ? cmdMaj : c),
+      journalConfig: ajouterAuJournalConfig(site, { section: 'Commandes', description, auteurNom, auteurRole }),
+    });
+    onClose();
+  }
+
+  if(etape === 'confirmation'){
+    return (
+      <ConfirmerModification db={db} site={site} employeId={employeId} avecMotif
+        titre="Corriger le paiement"
+        message={`Confirmer : le montant reçu pour la commande ${cmd.numero} passe de ${fmtGNF(acompteActuel)} à ${fmtGNF(nouveauMontantNum)}.`}
+        actionLabel="Corriger"
+        onConfirm={appliquer}
+        onCancel={()=>setEtape('saisie')}
+      />
+    );
+  }
+
+  return (
+    <ModalShell title={`Corriger le paiement — ${cmd.numero}`} onClose={onClose} width={420}>
+      <div style={{display:'grid', gap:14}}>
+        <p style={{fontSize:12.5, color:'var(--steam)', margin:0, lineHeight:1.5}}>
+          {client ? `${client.nom} — ` : ''}Total de la commande : {fmtGNF(total)}. Montant actuellement enregistré comme reçu : <strong>{fmtGNF(acompteActuel)}</strong>.
+        </p>
+        <div>
+          <label>Montant réellement reçu (GNF)</label>
+          <input type="number" min="0" max={total} value={nouveauMontant} onChange={e=>setNouveauMontant(e.target.value)} autoFocus />
+        </div>
+        <p style={{fontSize:12, color:'var(--steam)', margin:0, lineHeight:1.4}}>
+          Nouveau solde restant : {fmtGNF(Math.max(0, total - nouveauMontantNum))} — statut : {nouveauMontantNum >= total ? 'Payé' : nouveauMontantNum > 0 ? 'Partiel / impayé' : 'Impayé'}.
+        </p>
+        <div style={{display:'flex', justifyContent:'flex-end', gap:10}}>
+          <button className="btn" onClick={onClose}>Annuler</button>
+          <button className="btn btn-rust" disabled={inchangé} onClick={()=>setEtape('confirmation')}>Continuer</button>
+        </div>
+      </div>
+    </ModalShell>
   );
 }
 
