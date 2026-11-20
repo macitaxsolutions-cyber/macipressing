@@ -10,7 +10,7 @@
 <title>Maci Pressing — Gestion</title>
 <!-- Numéro de version de la page : à changer à chaque déploiement pour que les appareils restés ouverts
      en continu (tablettes de caisse) détectent la mise à jour et se rechargent tout seuls. -->
-<meta name="app-version" content="2026-11-19-6">
+<meta name="app-version" content="2026-11-20-2">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#2D4A3E">
@@ -25,7 +25,7 @@
   // téléphone ouvert ponctuellement récupère une version plus fraîche. On vérifie donc régulièrement, en
   // relisant directement index.html sur le serveur, si le numéro de version a changé — et si oui, on
   // recharge la page pour appliquer la nouvelle version.
-  const APP_VERSION_ACTUELLE = '2026-11-19-6';
+  const APP_VERSION_ACTUELLE = '2026-11-20-2';
   let dejaRecharge = false;
   // Une mise à jour ne doit JAMAIS recharger la page pendant qu'un caissier a l'écran ouvert et actif :
   // s'il est en train de saisir une commande (données pas encore enregistrées, donc pas encore dans la
@@ -9115,6 +9115,10 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
   const [showNewClient, setShowNewClient] = useState(false);
   const [sortBy, setSortBy] = useState(null); // 'ticket'|'client'|'total'|'statut'|'paiement'|'depot'|'rdv'
   const [sortDir, setSortDir] = useState('asc');
+  // Pagination du tableau — la liste ne fait que grandir avec le temps, donc on n'affiche qu'une page à
+  // la fois au lieu de toutes les commandes d'un coup (sinon le tableau devient énorme et lent à charger).
+  const COMMANDES_PAR_PAGE = 50;
+  const [page, setPage] = useState(1);
 
   function toggleSort(field){
     if(sortBy === field) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -9258,6 +9262,14 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
     }
     return list;
   }, [site.commandes, site.clients, filter, search, sortBy, sortDir]);
+
+  // Revenir à la page 1 dès que le filtre, la recherche ou le tri change, pour ne pas se retrouver
+  // bloqué sur une page vide (ex: page 4 alors que le nouveau filtre n'a que 2 pages).
+  useEffect(() => { setPage(1); }, [filter, search, sortBy, sortDir]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / COMMANDES_PAR_PAGE));
+  const pageActuelle = Math.min(page, totalPages);
+  const commandesPage = filtered.slice((pageActuelle - 1) * COMMANDES_PAR_PAGE, pageActuelle * COMMANDES_PAR_PAGE);
 
   function updateCommande(updated){
     updateSite({ ...site, commandes: site.commandes.map(c => c.id === updated.id ? updated : c) });
@@ -9511,7 +9523,7 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
             {filtered.length === 0 && (
               <tr><td colSpan={10} style={{...td, textAlign:'center', color:'var(--steam)', padding:'2rem'}}>Aucune commande ne correspond.</td></tr>
             )}
-            {filtered.map(cmd => {
+            {commandesPage.map(cmd => {
               const client = site.clients.find(c => c.id === cmd.clientId);
               const total = calcCommandeTotal(cmd, site.services);
               return (
@@ -9594,10 +9606,13 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
                         // par le gérant.
                         <button className="btn btn-sm" onClick={()=>togglePaiement(cmd)}>Marquer impayé</button>
                       )}
-                      {editable && !employeId && Number(cmd.acompte) > 0 && (
-                        // Réservé au gérant, disponible quel que soit le statut (même « Récupéré ») — demande
-                        // du 19/11/2026 : corriger un montant reçu mal enregistré, y compris sur une commande
-                        // déjà terminée, ce que « Modifier » (réservé au statut « Reçu ») ne permet pas.
+                      {editable && Number(cmd.acompte) > 0 && (
+                        // Disponible quel que soit le statut (même « Récupéré ») — demande du 19/11/2026 :
+                        // corriger un montant reçu mal enregistré, y compris sur une commande déjà terminée,
+                        // ce que « Modifier » (réservé au statut « Reçu ») ne permet pas. Ouvert aux employés
+                        // aussi (demande du 20/11/2026) : chacun confirme avec SON PROPRE mot de passe (jamais
+                        // celui du gérant — voir ConfirmerModification), et le gérant est averti via le même
+                        // bandeau d'alerte « modifiée par un employé » que pour Modifier/Supprimer.
                         <button className="btn btn-sm" style={{color:'var(--warn)', borderColor:'var(--warn)'}} onClick={()=>setCorrectionPaiementCmd(cmd)}>Corriger le paiement</button>
                       )}
                       {editable && total > (Number(cmd.acompte)||0) && (
@@ -9611,6 +9626,21 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
           </tbody>
         </table>
       </div>
+
+      {filtered.length > 0 && (
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10, marginTop:12}}>
+          <span style={{fontSize:12.5, color:'var(--steam)'}}>
+            {(pageActuelle - 1) * COMMANDES_PAR_PAGE + 1}–{Math.min(pageActuelle * COMMANDES_PAR_PAGE, filtered.length)} sur {filtered.length} commande{filtered.length > 1 ? 's' : ''}
+          </span>
+          {totalPages > 1 && (
+            <div style={{display:'flex', alignItems:'center', gap:10}}>
+              <button className="btn btn-sm" disabled={pageActuelle <= 1} onClick={()=>setPage(p=>Math.max(1, p-1))}>← Précédent</button>
+              <span style={{fontSize:12.5}}>Page {pageActuelle} / {totalPages}</span>
+              <button className="btn btn-sm" disabled={pageActuelle >= totalPages} onClick={()=>setPage(p=>Math.min(totalPages, p+1))}>Suivant →</button>
+            </div>
+          )}
+        </div>
+      )}
 
       {showNew && <NewCommandeModal site={site} updateSite={updateSite} employeId={employeId} onClose={()=>setShowNew(false)} />}
       {openTicket && <TicketModal cmd={openTicket} site={site} onClose={()=>setOpenTicket(null)} />}
@@ -9631,8 +9661,8 @@ function CommandesView({ site, updateSite, editable, employeId, db }){
 }
 
 // Corrige le montant réellement reçu sur une commande déjà créée, quel que soit son statut (contrairement
-// à « Modifier », réservé au statut « Reçu ») — réservé au gérant, voir le bouton « Corriger le paiement »
-// dans CommandesView. Demande du 19/11/2026 (commande marquée payée par erreur, aucun moyen de la corriger
+// à « Modifier », réservé au statut « Reçu ») — gérant ET employés (chacun avec son propre mot de passe),
+// voir le bouton « Corriger le paiement » dans CommandesView. Demande du 19/11/2026 (commande marquée payée par erreur, aucun moyen de la corriger
 // une fois « Récupéré »). Remplace l'historique des paiements de la commande par une seule entrée reflétant
 // le montant corrigé (ou aucune entrée si 0), pour que tous les rapports qui lisent getPaiementsCommande()
 // restent cohérents avec le nouvel acompte — l'ancien historique individuel n'est pas conservé, mais la
